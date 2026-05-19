@@ -132,3 +132,14 @@
 
 ### vite.config.js [DO NOT TOUCH]
 - Dev server config (port 5173, auto-open)
+
+## TODO (CURRENT FIXES)
+1. [x] Add displayed timestamps to comments and notifications.
+2. [x] Fix post modal overlap with notification bar:
+    - When the post modal is open and the notification tab/bar is visible, the modal should account for notification bar width.
+    - Prevent the modal from extending fully to the right so users can reliably click the post modal close button.
+3. [x] Improve controls inside the post modal:
+    - Hover-to-control behavior: zoom actions affect the pane currently being hovered.
+    - If content is an image, zoom should apply to the image viewer.
+    - If content is a PDF, use a PDF viewer with vertical scrolling through all pages.
+    - If content has multiple images/files, allow left/right arrow key navigation.

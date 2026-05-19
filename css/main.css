@@ -1,0 +1,2179 @@
+﻿/* ============================================ */
+/* main.css — Main page & post feed styles (8.0 – 15.0) */
+/* ============================================ */
+
+/* ============================================ */
+/* 8.0 MAIN PAGE CONTAINER                     */
+/* ============================================ */
+
+.main-page-container {
+    width: 100vw;
+    height: 100vh;
+    padding: 2%;
+    background-image: var(--bg-url);
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    background-attachment: fixed;
+    color: white;
+}
+
+/* ============================================ */
+/* 9.0 POST FEED                               */
+/* ============================================ */
+
+.post-feed {
+    width: 100%;
+    height: 100%;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 30px;
+    padding-bottom: 40px;
+}
+
+/* ============================================ */
+/* 10.0 POST FORM OVERLAY                      */
+/* ============================================ */
+
+.post-form-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 44px;
+    right: var(--notif-bar-w);
+    padding: 24px;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+}
+
+/* === 10.1 POST FORM === */
+.post-form {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    align-items: stretch;
+    width: min(100%, 836px);
+    min-width: 0;
+    max-width: 836px;
+    min-height: 340px;
+    max-height: 88vh;
+    resize: horizontal;
+    overflow: auto;
+}
+
+.post-form-title {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid rgba(255, 255, 255, 0.18);
+    color: rgba(255, 255, 255, 0.3);
+    font-size: var(--font-size-lg);
+    font-family: inherit;
+    outline: none;
+    padding: 5px 0;
+    transition: color 0.15s ease, border-bottom-color 0.15s ease;
+}
+
+.post-form-title::placeholder {
+    color: rgba(255, 255, 255, 0.3);
+}
+
+.post-form-title:focus {
+    color: rgba(255, 255, 255, 0.8);
+    border-bottom-color: rgba(255, 255, 255, 0.5);
+}
+
+/* === 10.2 POST FORM CATEGORY ROW === */
+.post-form-category-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+}
+
+.post-form-category-custom {
+    flex: 1;
+    position: relative;
+    min-width: 0;
+}
+
+.post-form-category-display {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid rgba(255, 255, 255, 0.18);
+    color: rgba(255, 255, 255, 0.3);
+    font-size: var(--font-size-md);
+    font-family: inherit;
+    outline: none;
+    padding: 5px 0;
+    cursor: pointer;
+    text-align: left;
+    transition: border-bottom-color 0.15s ease, color 0.15s ease;
+}
+
+.post-form-category-display.is-open {
+    color: rgba(255, 255, 255, 0.8);
+    border-bottom-color: rgba(255, 255, 255, 0.5);
+}
+
+.post-form-category-display .is-placeholder {
+    color: rgba(255, 255, 255, 0.3);
+}
+
+.post-form-category-chevron {
+    color: rgba(255, 255, 255, 0.3);
+    font-size: 0.85rem;
+    flex-shrink: 0;
+    transition: transform 0.15s ease;
+}
+
+.post-form-category-display.is-open .post-form-category-chevron {
+    transform: rotate(180deg);
+}
+
+.post-form-category-dropdown {
+    display: none;
+    flex-direction: column;
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 2px;
+    z-index: 50;
+    max-height: 180px;
+    overflow-y: auto;
+    backdrop-filter: blur(18px);
+}
+
+.post-form-category-option {
+    padding: 8px 12px;
+    color: rgba(255, 255, 255, 0.78);
+    font-size: 0.82rem;
+    font-family: inherit;
+    cursor: pointer;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    transition: color 0.12s ease, background-color 0.12s ease;
+}
+
+.post-form-category-option:last-child {
+    border-bottom: none;
+}
+
+.post-form-category-option:hover {
+    color: rgba(255, 255, 255, 0.95);
+    background: rgba(255, 255, 255, 0.08);
+}
+
+/* ============================================ */
+/* CUSTOM CATEGORY COLOR PICKER                 */
+/* ============================================ */
+.cat-color-picker {
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+    position: fixed;
+    z-index: 9999;
+    width: 192px;
+    padding: 10px;
+    background: rgba(255, 255, 255, 0.06);
+    backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 2px;
+}
+
+.cat-color-picker.open {
+    display: flex;
+}
+
+.ccp-sb {
+    width: 100%;
+    aspect-ratio: 1;
+    position: relative;
+    cursor: crosshair;
+    border-radius: 1px;
+    overflow: hidden;
+    flex-shrink: 0;
+}
+
+.ccp-sb-white {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(to right, #fff, transparent);
+}
+
+.ccp-sb-black {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(to bottom, transparent, #000);
+}
+
+.ccp-cursor {
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 1.5px solid rgba(255, 255, 255, 0.9);
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    box-shadow: 0 0 3px rgba(0,0,0,0.5);
+}
+
+.ccp-hue {
+    width: 100%;
+    height: 10px;
+    appearance: none;
+    -webkit-appearance: none;
+    background: linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00);
+    border-radius: 1px;
+    cursor: pointer;
+    outline: none;
+    flex-shrink: 0;
+}
+
+.ccp-hue::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 10px;
+    height: 14px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px solid rgba(0, 0, 0, 0.25);
+    cursor: pointer;
+}
+
+.ccp-hue::-moz-range-thumb {
+    width: 10px;
+    height: 14px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px solid rgba(0, 0, 0, 0.25);
+    cursor: pointer;
+}
+
+.ccp-confirm {
+    align-self: flex-end;
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: rgba(255, 255, 255, 0.65);
+    font-size: 0.88rem;
+    padding: 3px 14px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.ccp-confirm:hover {
+    color: rgba(255, 255, 255, 0.95);
+    border-color: rgba(255, 255, 255, 0.45);
+}
+
+.post-form-category-menu-btn {
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    min-width: 38px;
+    height: 38px;
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 1rem;
+    cursor: pointer;
+    line-height: 1;
+    transition: color 0.2s ease, border-color 0.2s ease, background-color 0.2s ease;
+    flex-shrink: 0;
+    z-index: 1;
+    pointer-events: auto;
+    visibility: visible;
+}
+
+.post-form-category-menu-btn:hover,
+.post-form-category-menu-btn.is-open {
+    color: rgba(255, 255, 255, 0.92);
+    border-color: rgba(255, 255, 255, 0.34);
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.post-form-category-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 16px 18px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.04);
+    position: relative;
+}
+
+.post-form-category-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.post-form-category-panel-title {
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 0.76rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.post-form-category-panel-close {
+    background: transparent;
+    border: none;
+    color: rgba(255, 255, 255, 0.45);
+    font-size: 1rem;
+    cursor: pointer;
+    line-height: 1;
+    transition: color 0.2s ease;
+}
+
+.post-form-category-panel-close:hover {
+    color: rgba(255, 255, 255, 0.95);
+}
+
+/* === 10.3 POST FORM CATEGORY INPUT (inline add) === */
+.post-form-category-create-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.post-form-category-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid rgba(255, 255, 255, 0.18);
+    color: rgba(255, 255, 255, 0.3);
+    font-size: var(--font-size-md);
+    font-family: inherit;
+    outline: none;
+    padding: 5px 0;
+    transition: color 0.15s ease, border-bottom-color 0.15s ease;
+}
+
+.post-form-category-input:focus {
+    color: rgba(255, 255, 255, 0.8);
+    border-bottom-color: rgba(255, 255, 255, 0.5);
+}
+
+.post-form-category-input::placeholder {
+    color: rgba(255, 255, 255, 0.3);
+}
+
+.post-form-category-create-btn {
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    color: rgba(255, 255, 255, 0.55);
+    font-size: 0.78rem;
+    font-family: inherit;
+    padding: 8px 12px;
+    cursor: pointer;
+    transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.post-form-category-create-btn:hover {
+    color: rgba(255, 255, 255, 0.92);
+    border-color: rgba(255, 255, 255, 0.32);
+}
+
+.post-form-category-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 220px;
+    overflow-y: auto;
+}
+
+.post-form-category-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    padding-bottom: 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.post-form-category-item:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+}
+
+.post-form-category-color-swatch {
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
+    border: 1px solid rgba(255, 255, 255, 0.28);
+    border-radius: 2px;
+    cursor: pointer;
+    padding: 0;
+    transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.post-form-category-color-swatch:hover {
+    border-color: rgba(255, 255, 255, 0.68);
+    transform: scale(1.08);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+
+.post-form-category-picker {
+    position: absolute;
+    z-index: 8;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px;
+    width: 148px;
+    padding: 9px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.06);
+    backdrop-filter: blur(3px);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.28);
+}
+
+.post-form-category-picker-sv {
+    --picker-hue: 210;
+    position: relative;
+    grid-column: 1 / -1;
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    cursor: crosshair;
+    background:
+      linear-gradient(to top, #000, rgba(0, 0, 0, 0)),
+      linear-gradient(to right, #fff, hsl(var(--picker-hue), 100%, 50%));
+}
+
+.post-form-category-picker-sv-cursor {
+    position: absolute;
+    width: 9px;
+    height: 9px;
+    border: 1px solid rgba(255, 255, 255, 0.95);
+    border-radius: 50%;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+}
+
+.post-form-category-picker-hue {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    margin: 0;
+    height: 12px;
+    background: transparent;
+}
+
+.post-form-category-picker-hue::-webkit-slider-runnable-track {
+    height: 6px;
+    border-radius: 99px;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    background: linear-gradient(
+      to right,
+      #ff0000 0%,
+      #ffff00 17%,
+      #00ff00 33%,
+      #00ffff 50%,
+      #0000ff 67%,
+      #ff00ff 83%,
+      #ff0000 100%
+    );
+}
+
+.post-form-category-picker-hue::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.92);
+    background: rgba(255, 255, 255, 0.18);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+    margin-top: -3px;
+    cursor: pointer;
+}
+
+.post-form-category-picker-hue::-moz-range-track {
+    height: 6px;
+    border-radius: 99px;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    background: linear-gradient(
+      to right,
+      #ff0000 0%,
+      #ffff00 17%,
+      #00ff00 33%,
+      #00ffff 50%,
+      #0000ff 67%,
+      #ff00ff 83%,
+      #ff0000 100%
+    );
+}
+
+.post-form-category-picker-hue::-moz-range-thumb {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.92);
+    background: rgba(255, 255, 255, 0.18);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+    cursor: pointer;
+}
+
+.post-form-category-picker-submit {
+    justify-self: end;
+    align-self: center;
+    width: 16px;
+    height: 16px;
+    border: 1px solid rgba(255, 255, 255, 0.28);
+    border-radius: 2px;
+    color: rgba(255, 255, 255, 0.92);
+    background: rgba(255, 255, 255, 0.2);
+    font-family: inherit;
+    font-size: 0.58rem;
+    cursor: pointer;
+    line-height: 1;
+    transition: transform 0.15s ease, border-color 0.15s ease;
+}
+
+.post-form-category-picker-submit:hover {
+    border-color: rgba(255, 255, 255, 0.7);
+    transform: scale(1.06);
+}
+
+.post-form-category-name,
+.post-form-category-edit-input {
+    flex: 1;
+    min-width: 0;
+    color: rgba(255, 255, 255, 0.78);
+    font-size: 0.82rem;
+    font-family: inherit;
+}
+
+.post-form-category-name {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: text;
+}
+
+.post-form-category-edit-input {
+    background: transparent;
+    border: none;
+    outline: none;
+    padding: 0;
+    margin: 0;
+    box-shadow: none;
+    caret-color: rgba(255, 255, 255, 0.78);
+}
+
+.post-form-category-edit-input::selection {
+    background: rgba(255, 255, 255, 0.16);
+    color: rgba(255, 255, 255, 0.96);
+}
+
+.post-form-category-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.post-form-category-action {
+    background: transparent;
+    border: none;
+    color: rgba(255, 255, 255, 0.42);
+    font-size: 0.7rem;
+    font-family: inherit;
+    cursor: pointer;
+    padding: 0;
+    transition: color 0.15s ease;
+}
+
+.post-form-category-action:hover {
+    color: rgba(255, 255, 255, 0.92);
+}
+
+.post-form-category-action.delete:hover {
+    color: rgba(255, 120, 120, 0.95);
+}
+
+.post-form-category-empty {
+    color: rgba(255, 255, 255, 0.28);
+    font-size: 0.78rem;
+}
+
+.post-form-asset-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 14px;
+}
+
+/* === 10.4 POST FORM FILE === */
+.post-form-file-label {
+    display: flex;
+    align-items: center;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 2px;
+    color: rgba(255, 255, 255, 0.3);
+    font-size: 0.74rem;
+    font-style: italic;
+    cursor: pointer;
+    padding: 8px 10px;
+    min-width: 0;
+    transition: color 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.post-form-file-label:focus-within {
+    color: rgba(255, 255, 255, 0.8);
+    border-color: rgba(255, 255, 255, 0.34);
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.post-form-file-label input[type="file"] {
+    display: none;
+}
+
+/* === 10.5 POST FORM TEXT === */
+.post-form-text {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid rgba(255, 255, 255, 0.18);
+    color: rgba(255, 255, 255, 0.3);
+    font-size: var(--font-size-md);
+    font-family: inherit;
+    outline: none;
+    min-height: 160px;
+    padding: 5px 0;
+    overflow-y: auto;
+    white-space: normal;
+    transition: color 0.15s ease, border-bottom-color 0.15s ease;
+}
+
+.post-form-text:empty::before {
+  content: attr(data-placeholder);
+    color: rgba(255, 255, 255, 0.3);
+  pointer-events: none;
+}
+
+.post-form-text:focus {
+    color: rgba(255, 255, 255, 0.8);
+    border-bottom-color: rgba(255, 255, 255, 0.5);
+}
+
+.post-form-text p,
+.post-form-text div,
+.post-body p,
+.post-body div {
+  margin: 0 0 0.75em;
+}
+
+.post-form-text p:last-child,
+.post-form-text div:last-child,
+.post-body p:last-child,
+.post-body div:last-child {
+  margin-bottom: 0;
+}
+
+.post-form-text ul,
+.post-form-text ol,
+.post-body ul,
+.post-body ol {
+  margin: 0.35em 0 0.75em;
+  padding-left: 1.35em;
+  list-style-position: outside;
+}
+
+.post-form-text ul,
+.post-body ul {
+  list-style-type: disc;
+}
+
+.post-form-text ol,
+.post-body ol {
+  list-style-type: decimal;
+}
+
+.post-form-text li,
+.post-body li {
+  margin: 0.2em 0;
+}
+
+.post-form-text strong,
+.post-body strong {
+  font-weight: bold;
+}
+
+.post-form-text em,
+.post-body em {
+  font-style: italic;
+}
+
+.mention-token {
+    text-decoration: underline;
+    text-decoration-thickness: 1.25px;
+    text-underline-offset: 0.12em;
+    text-decoration-color: currentColor;
+}
+
+.mention-token-link {
+    color: inherit;
+    cursor: pointer;
+    transition: opacity 0.15s ease;
+}
+
+.mention-token-link:hover {
+    opacity: 0.8;
+}
+
+/* === 10.6 YOUTUBE INPUT === */
+.post-form-link {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 2px;
+  color: rgba(255, 255, 255, 0.3);
+  font-size: 0.74rem;
+  font-style: italic;
+  font-family: inherit;
+  outline: none;
+  width: 100%;
+  padding: 8px 10px;
+  min-width: 0;
+  transition: color 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.post-form-link::placeholder {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.post-form-link:focus {
+  color: rgba(255, 255, 255, 0.8);
+  border-color: rgba(255, 255, 255, 0.34);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.post-external-link {
+    display: inline;
+    color: inherit;
+    text-decoration: underline;
+    text-decoration-thickness: 1.1px;
+    text-underline-offset: 0.15em;
+    transition: opacity 0.15s ease;
+    max-width: 100%;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    vertical-align: bottom;
+    word-break: break-word;
+}
+
+a.post-external-link:hover {
+    opacity: 0.8;
+}
+
+.post-body.post-body-external-link {
+    border-bottom: 0;
+    padding-bottom: 0;
+}
+
+@media (max-width: 760px) {
+    .post-form-overlay {
+        padding: 12px;
+    }
+
+    .post-form-asset-row {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* === 10.7 POST FORM BUTTONS === */
+.post-form-buttons {
+    display: flex;
+    gap: 20px;
+    justify-content: flex-end;
+}
+
+.post-form-buttons button {
+    background: transparent;
+    border: none;
+    color: rgba(255, 255, 255, 0.6);
+    font-size: var(--font-size-lg);
+    font-family: inherit;
+    cursor: pointer;
+    transition: opacity 0.2s ease, text-shadow 0.2s ease;
+    opacity: 0.7;
+    padding: 0;
+}
+
+.post-form-buttons button:hover {
+    opacity: 1;
+    text-shadow: 0 0 10px rgba(255, 255, 255, 0.3);
+    color: rgba(255, 255, 255, 0.9);
+}
+
+/* ============================================ */
+/* 11.0 POST CARDS                             */
+/* ============================================ */
+
+.post-card {
+    --edit-post-outline-pad: 20px;
+    --post-scale: 1;
+    display: flex;
+    flex-direction: column;
+    max-width: 600px;
+    overflow: visible; /* allow title to bleed past card edges */
+    transform: scale(var(--post-scale));
+    transform-origin: top left;
+}
+
+.post-lod-badge {
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
+    display: none;
+    padding: 6px 8px;
+    border-radius: 2px;
+    background: rgba(0, 0, 0, 0.34);
+    color: rgba(255, 255, 255, 0.74);
+    font-size: 0.62rem;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: none;
+}
+
+.post-card[data-lod="mid"] .post-card-content,
+.post-card[data-lod="mid"] .post-footer {
+    opacity: 0.82;
+}
+
+.post-card[data-lod="far"] .post-card-content,
+.post-card[data-lod="far"] .post-footer {
+    opacity: 0;
+    pointer-events: none;
+    content-visibility: hidden;
+}
+
+.post-card[data-lod="far"] .post-lod-badge {
+    display: block;
+}
+
+.main-page-container.zoomed-out-intentional .post-card[data-lod="mid"] .post-card-content,
+.main-page-container.zoomed-out-intentional .post-card[data-lod="mid"] .post-footer {
+    filter: blur(0.55px) saturate(0.9);
+}
+
+.main-page-container.zoomed-out-intentional .post-card[data-lod="far"] .post-lod-badge {
+    filter: blur(0.35px);
+}
+
+.post-resize-handle {
+    position: absolute;
+    z-index: 6;
+    cursor: ew-resize;
+}
+
+.post-resize-handle.width-right {
+    right: calc(var(--edit-post-outline-pad) * -1 - 12px);
+    bottom: calc(var(--edit-post-outline-pad) * -1 - 12px);
+    top: auto;
+}
+
+.main-page-container.edit-mode .post-card .post-resize-handle {
+    opacity: 1;
+}
+
+.main-page-container.edit-mode .post-card .post-resize-handle:hover {
+    transform: translateY(-1px);
+}
+
+/* === 11.1 POST CARD CONTENT === */
+.post-card-content {
+    display: flex;
+    flex-direction: column;
+    overflow: visible; /* allow title to bleed */
+}
+
+/* ============================================ */
+/* 11.2 POST TITLE                             */
+/* ============================================ */
+
+/* Same size/weight as login-signup input text */
+.post-title {
+    font-size: var(--post-title-size);
+    color: rgba(0, 0, 0, 0.8);
+    line-height: 1.2;
+    font-family: inherit;
+    white-space: nowrap;
+    overflow: hidden;
+  text-overflow: clip;
+  position: relative;
+  margin-left: -22px;
+  margin-right: -22px;
+  width: calc(100% + 44px);
+  max-width: calc(100% + 44px);
+  padding-left: 22px;
+  padding-right: 22px;
+}
+
+.post-fileline,
+.post-filelist {
+    font-size: calc(var(--post-body-size) * 1.2);
+    color: rgba(0, 0, 0, 0.68);
+    line-height: 1.24;
+    font-family: inherit;
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+    width: 300px;
+    max-width: 100%;
+    overflow: hidden;
+    white-space: nowrap;
+    margin-bottom: 8px;
+    text-shadow: 0 1px 6px rgba(255, 255, 255, 0.45);
+}
+
+.post-fileline-track {
+    display: inline-block;
+    white-space: nowrap;
+    will-change: transform;
+    text-decoration: inherit;
+}
+
+.post-filelist-track {
+    display: inline-block;
+    white-space: nowrap;
+    will-change: transform;
+    text-decoration: inherit;
+}
+
+.post-fileline.is-marquee {
+    -webkit-mask-image: linear-gradient(
+        to right,
+        transparent 0%,
+        black 14%,
+        black 86%,
+        transparent 100%
+    );
+    mask-image: linear-gradient(
+        to right,
+        transparent 0%,
+        black 14%,
+        black 86%,
+        transparent 100%
+    );
+}
+
+.post-fileline.is-marquee .post-fileline-track {
+    animation: post-title-marquee 13s linear infinite;
+}
+
+.post-filelist.is-marquee .post-filelist-track {
+    animation: post-title-marquee 13s linear infinite;
+}
+
+.post-filelist-track,
+.post-fileline-track {
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+}
+
+/* ============================================ */
+/* 11.3 POST BODY                              */
+/* ============================================ */
+
+/* Half the size of title */
+.post-body {
+    font-size: var(--post-body-size);
+    color: rgba(0, 0, 0, 0.6);
+    line-height: 1.5;
+    font-family: inherit;
+}
+
+/* ============================================ */
+/* 11.4 POST IMAGE                             */
+/* ============================================ */
+
+.post-image {
+    display: block;
+    max-width: 100%;
+}
+
+/* ============================================ */
+/* 11.5 POST LAYOUT VARIANTS                   */
+/* ============================================ */
+
+/* --- TITLE ONLY --- */
+/* Single line, tweet-like */
+.post-layout-title .post-title {
+    border-bottom: 0;
+    padding-bottom: 0;
+}
+
+/* --- TEXT ONLY --- */
+.post-layout-text .post-body {
+    padding-bottom: 0;
+}
+
+/* --- TITLE + TEXT --- */
+.post-layout-title-text .post-title {
+    margin-bottom: 6px;
+}
+
+.post-layout-title-text .post-body {
+    padding-bottom: 0;
+}
+
+/* --- VISUAL ONLY --- */
+.post-layout-visual .post-image {
+    width: auto;
+    max-width: 400px;
+    max-height: 400px;
+    display: block;
+    object-fit: unset; /* override the global width:100% / object-fit:cover */
+}
+
+/* --- TITLE + VISUAL --- */
+/* --- TITLE + VISUAL + TEXT --- */
+.post-layout-title-visual-text .post-title {
+    margin-bottom: 8px;
+}
+
+/* short text = stacked */
+.post-visual-text-row {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    align-items: flex-start;
+}
+
+.post-visual-text-row .post-body,
+.post-visual-text-row .post-image,
+.post-visual-text-row .post-file-preview {
+    width: 300px;
+    max-width: 100%;
+}
+
+.post-visual-text-row .post-image,
+.post-visual-text-row .post-file-preview {
+    height: 300px;
+    flex-shrink: 0;
+}
+
+.post-visual-text-row .post-image {
+    height: auto;       /* let the full image show — don't clip to 300px box */
+    max-height: 400px;  /* still prevent enormous PNGs from overwhelming the card */
+    object-fit: contain;
+    display: block;
+}
+
+.post-visual-text-row .post-body {
+    line-height: 1.5;
+}
+
+/* long text = side by side */
+.post-layout-title-visual-text.is-long-text .post-visual-text-row {
+    flex-direction: row;
+    align-items: stretch;
+}
+
+.post-layout-title-visual-text.is-long-text .post-visual-text-row .post-body {
+    position: relative;
+    height: 340px;         /* slightly taller extra room is the top fade zone */
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding-top: 30px;     /* pushes first line below the top fade at scroll=0 */
+    padding-right: 12px;
+    line-height: 1.5;
+    /* Pull the box up by the same amount so the card height stays the same */
+    margin-top: -30px;
+
+    -webkit-mask-image: linear-gradient(
+        to bottom,
+        transparent 0%,
+        rgba(0,0,0,0.3) 8%,
+        black 50%,         /* fade zone is now much wider */
+        black 74%,
+        rgba(0,0,0,0.5) 88%,
+        transparent 100%
+    );
+    mask-image: linear-gradient(
+        to bottom,
+        transparent 0%,
+        rgba(0,0,0,0.3) 8%,
+        black 50%,
+        black 74%,
+        rgba(0,0,0,0.5) 88%,
+        transparent 100%
+    );
+}
+
+/* long text, no file: same overall width as 300 + 12 + 300 */
+.post-layout-title-text.is-long-text .post-body {
+    width: 612px;
+    max-width: 100%;
+    height: 340px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    line-height: 1.5;
+    padding-top: 30px;
+    padding-right: 12px;
+    margin-top: -30px;
+
+    -webkit-mask-image: linear-gradient(
+        to bottom,
+        transparent 0%,
+        black 50%,
+        black 50%,
+        rgba(0,0,0,0.5) 88%,
+        transparent 100%
+    );
+    mask-image: linear-gradient(
+        to bottom,
+        transparent 0%,
+        black 50%,
+        black 50%,
+        rgba(0,0,0,0.5) 88%,
+        transparent 100%
+    );
+}
+
+/* Text-only long: contained scrollable box */
+.post-layout-text.is-long-text {
+    width: 300px;
+}
+.post-layout-text.is-long-text + .post-footer {
+    width: 300px;
+}
+.post-layout-text.is-long-text .post-body {
+    width: 300px;
+    max-width: 100%;
+    height: 220px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    line-height: 1.5;
+    padding-top: 16px;
+    padding-right: 12px;
+    margin-top: -16px;
+    -webkit-mask-image: linear-gradient(
+        to bottom,
+        transparent 0%,
+        black 12%,
+        black 78%,
+        transparent 100%
+    );
+    mask-image: linear-gradient(
+        to bottom,
+        transparent 0%,
+        black 12%,
+        black 78%,
+        transparent 100%
+    );
+}
+
+/* Visual+text long (no title): side by side */
+.post-layout-visual-text.is-long-text .post-visual-text-row {
+    flex-direction: row;
+    align-items: stretch;
+}
+
+.post-layout-visual-text.is-long-text .post-visual-text-row .post-body {
+    position: relative;
+    height: 330px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding-top: 20px;
+    padding-right: 12px;
+    line-height: 1.5;
+    margin-top: -20px;
+    -webkit-mask-image: linear-gradient(
+        to bottom,
+        transparent 0%,
+        black 12%,
+        black 78%,
+        transparent 100%
+    );
+    mask-image: linear-gradient(
+        to bottom,
+        transparent 0%,
+        black 12%,
+        black 78%,
+        transparent 100%
+    );
+}
+.post-layout-visual-text.is-long-text .post-visual-text-row .post-image,
+.post-layout-visual-text.is-long-text .post-visual-text-row .post-file-preview,
+.post-layout-title-visual-text.is-long-text .post-visual-text-row .post-image,
+.post-layout-title-visual-text.is-long-text .post-visual-text-row .post-file-preview {
+    height: 300px;
+    flex-shrink: 0;
+    object-fit: cover; /* restore cover for the side-by-side panel */
+}
+
+
+
+/* Natural video card shrinks to actual rendered video width */
+.post-card-natural-video {
+    width: 300px; /* JS overrides this once video metadata loads */
+    max-width: 300px;
+}
+
+/* Override the generic 300px fixed width that post-layout-visual sets */
+.post-card-natural-video .post-layout-visual {
+    width: auto;
+}
+
+/* Content and footer must stay inside the JS-measured card width */
+.post-card-natural-video .post-layout-visual-natural {
+    width: 100% !important;
+    max-width: 100% !important;
+}
+
+/* Content and footer must stay inside the JS-measured card width;
+   prevent pfp and category from overflowing narrow portrait videos */
+.post-card-natural-video .post-footer {
+  width: 100% !important;
+  max-width: 100% !important;
+  overflow: hidden;
+  gap: 4px;
+}
+.post-card-natural-video .post-footer-pfp {
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+    min-width: 0;
+}
+
+.post-card-natural-video .post-footer-username {
+    min-width: 0;
+}
+
+.post-card-natural-video .post-footer-category {
+    flex-shrink: 1;
+    min-width: 0;
+    max-width: 80px;
+}
+
+.post-title-track {
+    display: inline-block;
+    min-width: 100%;
+    white-space: nowrap;
+    will-change: transform;
+}
+
+/* When marquee is active: soft fade both sides so scrolling text fades in/out */
+/* === MARQUEE ACTIVE: fade at the bleed edges === */
+/* Short/fitting titles get NO fade only .is-marquee gets one */
+.post-title.is-marquee {
+    -webkit-mask-image: linear-gradient(
+        to right,
+        transparent 0%,
+        black 20%,
+        black 82%,
+        transparent 100%
+    );
+    mask-image: linear-gradient(
+        to right,
+        transparent 0%,
+        black 20%,
+        black 82%,
+        transparent 100%
+    );
+}
+
+/* The track drives the seamless loop animation */
+.post-title.is-marquee .post-title-track {
+    animation: post-title-marquee 14s linear infinite;
+}
+
+/* Keyframe uses a CSS variable set by JS for a pixel-perfect seam */
+@keyframes post-title-marquee {
+    from { transform: translateX(0); }
+    to   { transform: translateX(var(--marquee-end-pct, -50%)); }
+}
+
+/* ─── LOD + animation-mode marquee pausing ────────────────────────── */
+/* far cards always stop, regardless of user animation setting */
+.post-card[data-lod="far"] .post-title-track,
+.post-card[data-lod="far"] .post-fileline-track,
+.post-card[data-lod="far"] .post-filelist-track,
+.post-card[data-lod="far"] .post-footer-username-track,
+.post-card[data-lod="far"] .post-footer-category-track {
+    animation-play-state: paused !important;
+}
+
+/* reduced mode — mid cards also paused */
+body.anim-reduced .post-card[data-lod="mid"] .post-title-track,
+body.anim-reduced .post-card[data-lod="mid"] .post-fileline-track,
+body.anim-reduced .post-card[data-lod="mid"] .post-filelist-track,
+body.anim-reduced .post-card[data-lod="mid"] .post-footer-username-track,
+body.anim-reduced .post-card[data-lod="mid"] .post-footer-category-track {
+    animation-play-state: paused !important;
+}
+
+/* off mode — all card marquees paused */
+body.anim-off .post-card .post-title-track,
+body.anim-off .post-card .post-fileline-track,
+body.anim-off .post-card .post-filelist-track,
+body.anim-off .post-card .post-footer-username-track,
+body.anim-off .post-card .post-footer-category-track {
+    animation-play-state: paused !important;
+}
+
+.post-layout-title-visual-text.is-long-text .post-visual-text-row .post-body,
+.post-layout-visual-text.is-long-text .post-visual-text-row .post-body,
+.post-layout-title-text.is-long-text .post-body {
+    text-align: left;
+}
+
+/* ============================================ */
+/* 11.6 FILE PREVIEW TILES                      */
+/* ============================================ */
+
+/* Base tile */
+.post-file-preview {
+  position: relative;
+  width: 300px;
+  height: 300px;
+  max-width: 100%;
+  flex-shrink: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+    border: 2px solid rgba(0, 0, 0, 0.28);
+
+}
+
+.post-file-preview.has-cover,
+.post-file-preview-youtube.has-cover {
+    border: none;
+}
+
+/* Cover image fills the tile */
+.post-file-preview-cover {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: opacity 0.2s ease, filter 0.2s ease;
+}
+
+/* Video element fills the tile */
+.post-preview-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* File extension watermark (disabled for audio/download tiles) */
+.post-file-preview-label {
+  position: absolute;
+  bottom: 8px;
+  right: 10px;
+  font-size: clamp(2.2rem, 6.2vw, 3.1rem);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: rgba(0, 0, 0, 0.44);
+  background: transparent;
+  border-radius: 0;
+  pointer-events: none;
+  user-select: none;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  z-index: 3;
+}
+
+.post-file-preview-audio .post-file-preview-label,
+.post-file-preview-download .post-file-preview-label {
+  display: none;
+}
+
+/* File name badge stays visible for non-visual tiles */
+.post-file-preview-filename {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    max-width: calc(100% - 20px);
+    padding: 6px 10px;
+    border-radius: 7px;
+    font-size: clamp(0.82rem, 0.76rem + 0.2vw, 0.96rem);
+    line-height: 1.15;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    color: rgba(0, 0, 0, 0.7);
+    border: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: none;
+    user-select: none;
+    z-index: 2;
+}
+
+.post-file-preview-icon {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: rgba(0, 0, 0, 0.8);
+    font-size: clamp(4.2rem, 11vw, 7rem);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    pointer-events: none;
+    user-select: none;
+    transition: opacity 0.18s ease;
+    z-index: 1;
+}
+
+.post-file-preview-icon.is-audio,
+.post-file-preview-icon.is-files {
+    font-size: clamp(5.4rem, 14vw, 8.6rem);
+}
+
+.post-file-preview-icon.is-code {
+    font-size: clamp(4.6rem, 11.8vw, 7.2rem);
+}
+
+/* ---- Shared action button base ---- */
+/* Play/download controls: large and centered */
+.post-file-preview-play,
+.post-file-preview-download-btn {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  background: transparent;
+  border: none;
+  color: rgba(0, 0, 0, 0.88);
+  font: inherit;
+  font-size: clamp(4.6rem, 13vw, 7.1rem);
+  line-height: 0.9;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: none;
+  pointer-events: auto;
+  z-index: 3;
+}
+
+.post-preview-mute-btn {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    opacity: 0;
+    transition: opacity 0.18s ease;
+    background: transparent;
+    border: none;
+    color: rgba(0, 0, 0, 0.88);
+    font: inherit;
+    font-size: clamp(4.6rem, 13vw, 7.1rem);
+    line-height: 0.9;
+    cursor: pointer;
+    padding: 0;
+    text-decoration: none;
+    pointer-events: auto;
+    z-index: 3;
+}
+
+/* Download button uses an <a> tag keep it centered */
+.post-file-preview-download-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.post-file-preview-download-btn.is-display-only {
+    pointer-events: none;
+}
+
+.post-file-preview-download-btn:disabled {
+    opacity: 0.78;
+    cursor: progress;
+    pointer-events: none;
+}
+
+.post-file-preview-download-gif {
+    width: 28px;
+    height: 28px;
+    object-fit: cover;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.06);
+    box-shadow: none;
+}
+
+/* ---- Hover reveals ---- */
+.post-file-preview-audio:hover .post-file-preview-play {
+  opacity: 1;
+}
+
+.post-file-preview-download:hover .post-file-preview-download-btn {
+  opacity: 1;
+}
+
+.post-file-preview-audio:hover .post-file-preview-icon,
+.post-file-preview-download:hover .post-file-preview-icon {
+  opacity: 0;
+}
+
+.post-file-preview-audio.has-cover:hover .post-file-preview-cover,
+.post-file-preview-download.has-cover:hover .post-file-preview-cover {
+  opacity: 0.5;
+  filter: brightness(0.82) saturate(0.82);
+}
+
+/* Video: mute button appears on hover, label fades (matches download behavior) */
+.post-file-preview-video:hover .post-preview-mute-btn {
+  opacity: 1;
+}
+
+.post-file-preview-video:hover .post-file-preview-label {
+  opacity: 0;
+}
+
+.post-file-preview-audio:not(.has-cover),
+.post-file-preview-download:not(.has-cover),
+.post-file-preview-video {
+    background: linear-gradient(160deg, rgba(255, 255, 255, 0.08), rgba(0, 0, 0, 0.04));
+}
+
+/* YouTube: poster brightens on hover (matches download.has-cover behavior) */
+.post-file-preview-youtube-shell:hover .post-file-preview-cover {
+  opacity: 1;
+  filter: brightness(1.18) saturate(1.1);
+}
+
+.post-file-preview-youtube-shell:hover .post-file-preview-youtube-activate,
+.pd-youtube-shell:hover .pd-youtube-activate {
+  opacity: 1;
+}
+
+/* Stronger readability only when a cover image sits behind controls */
+.post-file-preview.has-cover .post-file-preview-filename {
+    color: rgba(0, 0, 0, 0.82);
+    background: rgba(255, 255, 255, 0.36);
+}
+
+.post-file-preview-audio.has-cover .post-file-preview-play,
+.post-file-preview-download.has-cover .post-file-preview-download-btn {
+    color: rgba(0, 0, 0, 0.94);
+}
+
+/* Solo video natural aspect ratio, no fixed box */
+.post-file-preview-video.post-file-preview-video-natural {
+  width: auto;
+  height: auto;
+  max-width: 300px;
+  max-height: 400px;
+  border: none;
+  background: transparent;
+}
+
+/* width: auto lets the video use its intrinsic aspect ratio */
+.post-file-preview-video.post-file-preview-video-natural .post-preview-video {
+  width: auto;
+  height: auto;
+  max-width: 300px;
+  max-height: 400px;
+  object-fit: unset;
+  display: block;
+}
+
+/* ---- Audio with cover image ---- */
+
+/* Reveal play button on hover when a cover image is present */
+.post-file-preview-audio.has-cover:hover .post-file-preview-play {
+  opacity: 1;
+}
+
+/* === YOUTUBE CARD PREVIEW === */
+.post-file-preview-youtube {
+  position: relative;
+  overflow: hidden;
+        background: #0d1110;
+        border: none;
+}
+
+.post-file-preview-youtube-shell.has-cover {
+    background: transparent;
+}
+
+.post-file-preview-youtube-shell,
+.pd-youtube-shell {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: linear-gradient(165deg, rgba(24, 30, 28, 0.95), rgba(8, 10, 9, 0.95));
+}
+
+.post-file-preview-youtube-player,
+.post-file-preview-youtube .post-file-preview-cover,
+.pd-youtube-shell .post-file-preview-cover {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.post-file-preview-youtube-shell .post-file-preview-cover,
+.pd-youtube-shell .post-file-preview-cover {
+    filter: saturate(0.9) contrast(1.02) brightness(1.0);
+}
+
+.post-file-preview-youtube-shell::after,
+.pd-youtube-shell::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+        radial-gradient(circle at 50% 50%, rgba(9, 12, 11, 0.0) 0%, rgba(9, 12, 11, 0.38) 74%),
+        linear-gradient(to bottom, rgba(7, 10, 9, 0.05), rgba(7, 10, 9, 0.28));
+    pointer-events: none;
+    transition: opacity 0.18s ease;
+    opacity: 1;
+}
+
+.post-file-preview-youtube-shell:hover::after,
+.pd-youtube-shell:hover::after {
+    opacity: 0.5;
+}
+
+.post-file-preview-youtube-activate,
+.pd-youtube-activate {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  background: transparent;
+  border: none;
+  color: rgba(0, 0, 0, 0.88);
+  font: inherit;
+  font-size: clamp(4.6rem, 13vw, 7.1rem);
+  line-height: 0.9;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: none;
+  pointer-events: auto;
+  z-index: 3;
+}
+
+.post-file-preview-youtube-activate-icon,
+.pd-youtube-activate-icon {
+    pointer-events: none;
+}
+
+/* === YOUTUBE DETAIL MODAL EMBED === */
+.pd-visual-youtube {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: none;
+  display: block;
+}
+
+.pd-youtube-shell {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+}
+
+/* ============================================ */
+/* 11.7 TITLE HIERARCHY                         */
+/* ============================================ */
+
+/* lightweight/header-style titles only */
+/* big lightweight titles only */
+.post-layout-title .post-title,
+.post-layout-title-text:not(.is-long-text) .post-title {
+    font-size: calc(var(--post-title-size) * 1.45);
+    line-height: 1.08;
+}
+
+/* any title with a file stays smaller */
+.post-layout-title-visual .post-title,
+.post-layout-title-visual-text .post-title {
+    font-size: var(--post-title-size);
+    line-height: 1.2;
+}
+
+/* long titles stay modest */
+.post-title.is-long-title {
+    font-size: var(--post-title-size);
+    line-height: 1.2;
+}
+
+/* any long-text card gets normal title size */
+.post-layout-title-text.is-long-text .post-title,
+.post-layout-title-text.is-long-text .post-title.is-long-title,
+.post-layout-title-visual-text.is-long-text .post-title,
+.post-layout-title-visual-text.is-long-text .post-title.is-long-title {
+    font-size: var(--post-title-size);
+    line-height: 1.2;
+}
+
+/* ============================================ */
+/* 11.8 POST FOOTER                            */
+/* ============================================ */
+
+.post-layout-title-visual,
+.post-layout-visual {
+    width: 300px;
+}
+
+.post-layout-title-visual + .post-footer,
+.post-layout-visual + .post-footer {
+    width: 300px;
+}
+
+.post-layout-title-visual-text:not(.is-long-text) {
+    width: 300px;
+}
+
+.post-layout-title-visual-text:not(.is-long-text) + .post-footer {
+    width: 300px;
+}
+
+.post-layout-title-visual-text.is-long-text {
+    width: 612px;
+}
+
+.post-layout-title-visual-text.is-long-text + .post-footer {
+    width: 612px;
+}
+
+.post-layout-title-text.is-long-text,
+.post-layout-title-text.is-long-text + .post-footer {
+    width: 612px;
+}
+
+.post-footer {
+    display: flex;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 8px;
+    padding-top: 8px;
+}
+
+.post-footer-pfp {
+    width: 44px;
+    height: 44px;
+    object-fit: cover;
+    flex-shrink: 0;
+}
+
+.post-footer-username {
+    font-size: var(--post-footer-size);
+    color: rgba(0, 0, 0, 0.5);
+    font-family: inherit;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.post-footer-username-track {
+    display: inline-block;
+    white-space: nowrap;
+    will-change: transform;
+}
+
+.post-footer-username.is-marquee {
+    -webkit-mask-image: linear-gradient(
+        to right,
+        transparent 0%,
+        black 14%,
+        black 86%,
+        transparent 100%
+    );
+    mask-image: linear-gradient(
+        to right,
+        transparent 0%,
+        black 14%,
+        black 86%,
+        transparent 100%
+    );
+}
+
+.post-footer-username.is-marquee .post-footer-username-track {
+    animation: post-username-marquee 10s linear infinite;
+}
+
+@keyframes post-username-marquee {
+    from { transform: translateX(0); }
+    to   { transform: translateX(var(--marquee-end-pct, -50%)); }
+}
+
+.post-footer-category {
+    font-size: var(--post-footer-size);
+    color: rgba(0, 0, 0, 0.3);
+    font-family: inherit;
+    overflow: hidden;
+    white-space: nowrap;
+    max-width: 120px;
+    flex-shrink: 0;
+}
+
+.post-footer-category-track {
+    display: inline-block;
+    white-space: nowrap;
+    will-change: transform;
+}
+
+.post-footer-category.is-marquee {
+    -webkit-mask-image: linear-gradient(
+        to right,
+        transparent 0%,
+        black 14%,
+        black 86%,
+        transparent 100%
+    );
+    mask-image: linear-gradient(
+        to right,
+        transparent 0%,
+        black 14%,
+        black 86%,
+        transparent 100%
+    );
+}
+
+.post-footer-category.is-marquee .post-footer-category-track {
+    animation: post-category-marquee 10s linear infinite;
+}
+
+@keyframes post-category-marquee {
+    from { transform: translateX(0); }
+    to   { transform: translateX(var(--marquee-end-pct, -50%)); }
+}
+
+/* ============================================ */
+/* 12.0 COVER IMAGE PROMPT                     */
+/* ============================================ */
+
+.cover-image-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+}
+
+.cover-image-prompt {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    align-items: stretch;
+    width: 400px;
+}
+
+.cover-image-prompt-text {
+    font-size: var(--font-size-lg);
+    color: rgba(255, 255, 255, 0.8);
+    font-family: inherit;
+}
+
+.cover-image-file-label {
+    border-bottom: 2px solid rgba(0, 0, 0, 0.5);
+    color: rgba(0, 0, 0, 0.5);
+    font-size: var(--font-size-md);
+    font-family: inherit;
+    cursor: pointer;
+    padding: 5px 0;
+}
+
+.cover-image-file-label:hover {
+    color: rgba(255, 255, 255, 0.8);
+}
+
+.cover-image-file-label input[type="file"] {
+    display: none;
+}
+
+.cover-image-buttons {
+    display: flex;
+    gap: 20px;
+    justify-content: flex-end;
+}
+
+.cover-image-buttons button {
+    background: transparent;
+    border: none;
+    color: rgba(255, 255, 255, 0.6);
+    font-size: var(--font-size-lg);
+    font-family: inherit;
+    cursor: pointer;
+    transition: opacity 0.2s ease, text-shadow 0.2s ease;
+    opacity: 0.7;
+    padding: 0;
+}
+
+.cover-image-buttons button:hover {
+    opacity: 1;
+    text-shadow: 0 0 10px rgba(255, 255, 255, 0.3);
+    color: rgba(255, 255, 255, 0.9);
+}
+
+/* Safety net: never show extension label on video tiles */
+.post-file-preview-video .post-file-preview-label {
+  display: none;
+}
+
+/* ============================================ */
+/* 13.0 EDIT MODE                              */
+/* ============================================ */
+
+/* Edit mode indicator - subtle border so you know you're in edit mode */
+.main-page-container.edit-mode {
+    outline: 1px solid rgba(255, 255, 255, 0.34);
+    outline-offset: -2px;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+
+.main-page-container.edit-mode .post-card {
+    box-shadow: none;
+}
+
+.main-page-container.edit-mode .post-card .post-card-content,
+.main-page-container.edit-mode .post-card .post-footer {
+    opacity: 0.68;
+    transition: opacity 0.15s ease;
+}
+
+.main-page-container.edit-mode .post-card:hover .post-card-content,
+.main-page-container.edit-mode .post-card:hover .post-footer,
+.main-page-container.edit-mode .post-card.post-card-resizing .post-card-content,
+.main-page-container.edit-mode .post-card.post-card-resizing .post-footer {
+    opacity: 0.78;
+}
+
+.main-page-container.edit-mode .post-card .post-footer-pfp,
+.main-page-container.edit-mode .post-card .post-footer-username,
+.main-page-container.edit-mode .post-card .post-footer-category,
+.main-page-container.edit-mode .post-card a.post-external-link,
+.main-page-container.edit-mode .post-card .mention-token-link,
+.main-page-container.edit-mode .post-card .post-file-preview,
+.main-page-container.edit-mode .post-card .post-file-preview *,
+.main-page-container.edit-mode .post-card .post-file-preview-play,
+.main-page-container.edit-mode .post-card .post-file-preview-download-btn,
+.main-page-container.edit-mode .post-card .post-preview-mute-btn,
+.main-page-container.edit-mode .post-card .post-file-preview-youtube-activate {
+    pointer-events: none !important;
+    cursor: default !important;
+}
+
+.main-page-container.edit-mode .post-card .post-title-track,
+.main-page-container.edit-mode .post-card .post-fileline-track,
+.main-page-container.edit-mode .post-card .post-filelist-track,
+.main-page-container.edit-mode .post-card .post-footer-username-track,
+.main-page-container.edit-mode .post-card .post-footer-category-track {
+    animation: none !important;
+    transform: none !important;
+}
+
+.main-page-container.edit-mode .post-card::after {
+    content: '';
+    position: absolute;
+    inset: calc(-1 * var(--edit-post-outline-pad));
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    background: rgba(255, 255, 255, 0.03);
+    pointer-events: none;
+}
+
+.main-page-container.edit-mode .post-card::before {
+    content: '';
+    position: absolute;
+    inset: calc(-1 * var(--edit-post-outline-pad));
+    pointer-events: none;
+        background:
+        linear-gradient(rgba(255,255,255,0.62), rgba(255,255,255,0.62)) left top / 10px 1px no-repeat,
+        linear-gradient(rgba(255,255,255,0.62), rgba(255,255,255,0.62)) left top / 1px 10px no-repeat,
+        linear-gradient(rgba(255,255,255,0.62), rgba(255,255,255,0.62)) right top / 10px 1px no-repeat,
+        linear-gradient(rgba(255,255,255,0.62), rgba(255,255,255,0.62)) right top / 1px 10px no-repeat,
+        linear-gradient(rgba(255,255,255,0.62), rgba(255,255,255,0.62)) left bottom / 10px 1px no-repeat,
+        linear-gradient(rgba(255,255,255,0.62), rgba(255,255,255,0.62)) left bottom / 1px 10px no-repeat,
+        linear-gradient(rgba(255,255,255,0.62), rgba(255,255,255,0.62)) right bottom / 10px 1px no-repeat,
+        linear-gradient(rgba(255,255,255,0.62), rgba(255,255,255,0.62)) right bottom / 1px 10px no-repeat;
+}
+
+.main-page-container.edit-mode .post-card:hover::after {
+    border-color: rgba(255, 255, 255, 0.72);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18), 0 12px 30px rgba(230, 240, 255, 0.14);
+}
+
+.main-page-container.edit-mode .post-card.post-card-resizing::after {
+    border-color: rgba(255, 255, 255, 0.86);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.32), 0 14px 34px rgba(236, 244, 255, 0.22);
+}
+
+.post-edit-chrome {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 6;
+}
+
+.post-edit-top-actions {
+    position: absolute;
+    top: calc(var(--edit-post-outline-pad) * -1 - 12px);
+    right: calc(var(--edit-post-outline-pad) * -1 - 12px);
+    display: flex;
+    gap: 6px;
+    pointer-events: auto;
+}
+
+.post-edit-button {
+    width: 30px;
+    height: 30px;
+    border: 1px solid rgba(255, 255, 255, 0.58);
+    background: linear-gradient(170deg, rgba(255, 255, 255, 0.28), rgba(225, 236, 248, 0.18));
+    color: rgba(248, 251, 255, 0.98);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Segoe UI Symbol', 'Segoe UI', sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1;
+    cursor: pointer;
+    pointer-events: auto;
+    transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+    box-shadow: 0 10px 20px rgba(214, 230, 247, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.46);
+    backdrop-filter: blur(8px) saturate(122%);
+    -webkit-backdrop-filter: blur(8px) saturate(122%);
+    text-shadow: 0 0 8px rgba(255, 255, 255, 0.28);
+}
+
+.post-edit-button:hover {
+    background: linear-gradient(170deg, rgba(255, 255, 255, 0.38), rgba(228, 239, 251, 0.28));
+    border-color: rgba(255, 255, 255, 0.84);
+    transform: translateY(-1px);
+    box-shadow: 0 12px 22px rgba(214, 230, 247, 0.26), inset 0 1px 0 rgba(255, 255, 255, 0.64);
+}
+
+.post-edit-button:active {
+    transform: translateY(0) scale(0.98);
+}
+
+.post-edit-button:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.96);
+    outline-offset: 2px;
+}
+
+.post-edit-button.active {
+    background: linear-gradient(170deg, rgba(255, 255, 255, 0.96), rgba(236, 245, 255, 0.9));
+    color: rgba(20, 26, 34, 0.95);
+    border-color: rgba(255, 255, 255, 0.98);
+    text-shadow: none;
+}
+
+.post-edit-button-delete {
+    position: absolute;
+    left: calc(var(--edit-post-outline-pad) * -1 - 12px);
+    bottom: calc(var(--edit-post-outline-pad) * -1 - 12px);
+}
+
+.post-edit-button-delete:hover {
+    background: linear-gradient(170deg, rgba(255, 220, 228, 0.82), rgba(255, 206, 216, 0.74));
+    border-color: rgba(255, 228, 234, 0.96);
+    color: rgba(106, 18, 40, 0.95);
+}
+
+/* === 13.1 EDIT/DELETE FOOTER ACTIONS === */
+.post-footer-action {
+    font-size: var(--post-footer-size);
+    color: rgba(255, 0, 0, 0.5);
+    font-family: inherit;
+    cursor: pointer;
+    transition: color 0.2s ease;
+}
+
+.post-footer-action:hover {
+    color: rgba(255, 255, 255, 0.9);
+}
+
+.post-footer-thread.active {
+    color: rgba(255, 255, 255, 0.95);
+    text-shadow: 0 0 8px rgba(255, 255, 255, 0.35);
+}
+
+.post-card.post-card-thread-source {
+    outline: 2px solid rgba(244, 249, 255, 0.78);
+    outline-offset: 3px;
+    box-shadow: 0 0 0 2px rgba(224, 236, 252, 0.34);
+}
+
+.post-card.post-card-thread-linked {
+    outline: 1px dashed rgba(238, 246, 255, 0.66);
+    outline-offset: 2px;
+}
+
+.post-footer-delete:hover {
+    color: rgba(255, 100, 100, 0.9);
+}
+
+/* ============================================ */
+/* 14.0 LOG OUT BUTTON                         */
+/* ============================================ */
+
+.logout-btn {
+    position: fixed;
+    right: 2%;
+    bottom: 4%;
+    z-index: 50;
+    display: none;
+}
+
+.main-page-container.edit-mode .logout-btn {
+    display: inline-block;
+}
+
+
+/* ============================================ */
+/* 15.0 FOOTER FILTER BUTTONS                  */
+/* ============================================ */ 
+
+/* Clickable footer filters (normal mode) */
+.post-footer-filter-btn {
+    cursor: pointer;
+}
+
+.post-footer-filter-btn:hover {
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 0px;
+}
+
+/* for category specifically, underline the inner track span */
+.post-footer-category.post-footer-filter-btn:hover .post-footer-category-track {
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 0px;
+}
+
+/* and remove it from the outer element to avoid double */
+.post-footer-category.post-footer-filter-btn:hover {
+    text-decoration: none;
+}
+
