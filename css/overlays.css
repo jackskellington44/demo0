@@ -1289,6 +1289,20 @@
 .profile-post-item:hover { opacity: 0.55; }
 .profile-post-item:last-child { border-bottom: none; }
 
+.profile-posts-section-label {
+  flex: 0 0 auto;
+  padding: 12px 0 6px;
+  color: rgba(255,255,255,0.48);
+  font-size: 0.64rem;
+  letter-spacing: 0.08em;
+  text-transform: lowercase;
+}
+
+.profile-world-item {
+  font-weight: 700;
+  color: rgba(245, 252, 255, 0.9);
+}
+
 .profile-save-btn {
   margin: 0 20px 24px;
   align-self: flex-start;
@@ -2392,22 +2406,24 @@ body.profile-open.notif-open .world-mode-chrome {
   left: 24px;
   bottom: 20px;
   width: min(380px, calc(100% - 48px));
-  padding: 14px 16px;
-  background: rgba(0, 0, 0, 0.24);
-  backdrop-filter: blur(11px);
+  padding: 8px 10px;
+  background: transparent;
+  border: 1.5px solid rgba(0, 0, 0, 0.82);
+  box-shadow: 1.5px 1.5px 0 rgba(0, 0, 0, 0.72);
   pointer-events: auto;
 }
 
 .world-mode-name {
-  margin-bottom: 8px;
+  margin-bottom: 4px;
   color: inherit;
-  font-size: 1.08rem;
+  font-size: 0.78rem;
+  line-height: 1.2;
 }
 
 .world-mode-description {
   color: color-mix(in srgb, var(--world-mode-font-color, rgba(255,255,255,0.9)) 72%, transparent);
-  line-height: 1.5;
-  font-size: 0.9rem;
+  line-height: 1.35;
+  font-size: 0.72rem;
 }
 
 .world-mode-frame {

@@ -54,7 +54,7 @@
   <div class="post-form-overlay" id="postFormOverlay" style="display: none;">
         <div class="post-form" id="postForm">
 
-            <input type="text" class="post-form-title" id="postTitle" placeholder="title" maxlength="75" autocomplete="off">
+            <input type="text" class="post-form-title" id="postTitle" placeholder="title" maxlength="75" autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="off">
 
             <div class="post-form-category-row">
               <input type="hidden" id="postCategory" value="">
@@ -70,7 +70,7 @@
 
             <div class="post-form-category-panel" id="postCategoryPanel" style="display:none;">
               <div class="post-form-category-create-row">
-                <input type="text" class="post-form-category-input" id="postCategoryInput" placeholder="new category" autocomplete="off">
+                <input type="text" class="post-form-category-input" id="postCategoryInput" placeholder="new category" autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="off">
                 <button type="button" class="post-form-category-create-btn" id="postCategoryCreateBtn">add</button>
               </div>
               <div class="post-form-category-list" id="postCategoryList"></div>
@@ -172,6 +172,12 @@
     <button id="pdCtxDownloadAll" type="button" class="pd-ctx-item">download all files</button>
   </div>
 
+  <div id="postSpellContextMenu" aria-hidden="true">
+    <button id="postSpellReplaceBtn" type="button" class="post-file-preview-download-btn post-spell-menu-btn"></button>
+    <button id="postSpellIgnoreBtn" type="button" class="post-file-preview-download-btn post-spell-menu-btn">ignore</button>
+    <button id="postSpellIgnoreAllBtn" type="button" class="post-file-preview-download-btn post-spell-menu-btn">ignore all</button>
+  </div>
+
   <!-- ================================================ -->
   <!-- 5. NOTIFICATION PANEL                            -->
   <!-- ================================================ -->
@@ -207,7 +213,7 @@
                 </div>
             </div>
             <span id="profileUsername" class="profile-username"></span>
-            <input id="profileUsernameInput" class="profile-username-input" maxlength="12" style="display:none;" autocomplete="off">
+            <input id="profileUsernameInput" class="profile-username-input" maxlength="12" style="display:none;" autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="off">
             </div>
 
             <button id="profileSaveBtn" class="profile-save-btn" style="display:none;">save</button>

@@ -55,7 +55,7 @@ const MUSIC_DEFAULT_VOLUME = 0.8;
 // 2. AUDIO INSTANCE
 // ============================================
 const audio = new Audio();
-audio.preload = 'none';
+audio.preload = 'metadata';
 
 // ============================================
 // 3. DOM REFERENCES
@@ -208,6 +208,13 @@ function setPlaybackVolume(volume, { persist = true } = {}) {
   updateVolumeUi();
 }
 
+function syncCurrentVolumeToPlayers() {
+  audio.volume = currentVolume;
+  if (scWidget) {
+    scWidget.setVolume(Math.round(currentVolume * 100));
+  }
+}
+
 function restartCurrentTrack() {
   if (currentIndex < 0 || currentIndex >= tracks.length) return;
 
@@ -348,6 +355,8 @@ async function ensureSoundCloudWidget() {
       }
     });
     scWidget.bind(window.SC.Widget.Events.PLAY, () => {
+      // SoundCloud can reset widget volume when a new track loads.
+      syncCurrentVolumeToPlayers();
       isPlaying = true;
       isUsingSoundCloudWidget = true;
       scWidget.getDuration((ms) => {
@@ -392,6 +401,7 @@ async function playSoundCloudTrack(soundcloudUrl) {
     show_user: false,
     visual: false
   });
+  syncCurrentVolumeToPlayers();
 }
 
 function stopAllPlayback() {
@@ -544,6 +554,7 @@ async function playTrack(idx) {
   } else if (track.stream_url || track.file_url) {
     isUsingSoundCloudWidget = false;
     audio.src = getTrackAudioUrl(track);
+    audio.preload = 'auto';
     setPlaybackVolume(currentVolume, { persist: false });
     try {
       await audio.play();
@@ -859,7 +870,11 @@ export async function initMusic(user, userData) {
     if (isUsingSoundCloudWidget) return;
     advanceToNextTrack({ fromEnded: true });
   });
-  audio.addEventListener('play',  () => { isPlaying = true;  updateBarDisplay(); });
+  audio.addEventListener('play',  () => {
+    syncCurrentVolumeToPlayers();
+    isPlaying = true;
+    updateBarDisplay();
+  });
   audio.addEventListener('pause', () => { isPlaying = false; updateBarDisplay(); });
 
   // ── Controls ──

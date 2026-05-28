@@ -8,6 +8,7 @@
     "@supabase/supabase-js": "^2.99.1",
     "heic2any": "^0.0.4",
     "jszip": "^3.10.1",
+    "nspell": "^2.1.5",
     "pdfjs-dist": "^5.7.284"
   },
   "devDependencies": {

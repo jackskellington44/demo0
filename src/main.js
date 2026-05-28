@@ -42,6 +42,9 @@ import { initMusic } from './music.js';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import JSZip from 'jszip';
+import nspell from 'nspell';
+import enAff from './spell/en.aff?raw';
+import enDic from './spell/en.dic?raw';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -115,10 +118,25 @@ let mentionUserMapCache = null;
 let mentionUserMapPromise = null;
 let mentionAliasMapCache = null;
 let postTextMentionRefreshRaf = 0;
+let postSpellChecker = null;
+const postSpellIgnoreAll = new Set();
+const postSpellIgnoreOne = new Set();
+const postSpellFieldIgnoreMap = new WeakMap();
+const postSpellFieldRangesMap = new WeakMap();
+let postSpellMenuState = {
+  tokenEl: null,
+  key: '',
+  normalizedWord: '',
+  suggestion: '',
+  fieldEl: null,
+  rangeStart: -1,
+  rangeEnd: -1
+};
 
 // Link creation state: if you right-click a post, new post links to it
 let pendingLinkPostId = null;
 let activeThreadSourcePostId = null; // edit-mode source post for multi-thread linking
+const selectedEditPostIds = new Set();
 
 const POST_SCALE_STORAGE_KEY = 'demo4-post-scales-v1';
 const POST_SCALE_MIN = 0.6;
@@ -633,6 +651,62 @@ async function toggleThreadLinkBetweenPosts(sourcePostId, targetPostId) {
   await loadPosts();
 }
 
+async function toggleThreadLinksFromSource(sourcePostId, targetPostIds = []) {
+  const sourceId = String(sourcePostId || '');
+  if (!sourceId) return;
+
+  const normalizedTargets = [...new Set(
+    (targetPostIds || []).map((id) => String(id)).filter((id) => id && id !== sourceId)
+  )];
+  if (normalizedTargets.length === 0) return;
+
+  const deleteIds = [];
+  const insertRows = [];
+
+  for (const targetId of normalizedTargets) {
+    const { a_post_id, b_post_id } = normalizeLinkPair(sourceId, targetId);
+    const existing = findExistingLinkRecord(a_post_id, b_post_id, lastLoadedLinks);
+    if (existing?.id) {
+      deleteIds.push(existing.id);
+    } else {
+      insertRows.push({
+        group_id: 'group0',
+        a_post_id,
+        b_post_id,
+        created_by: currentUser.id
+      });
+    }
+  }
+
+  if (deleteIds.length > 0) {
+    const { error } = await supabase
+      .from('post_links')
+      .delete()
+      .in('id', deleteIds);
+
+    if (error) {
+      console.error('Failed to remove thread links:', error);
+      alert(`Failed to remove thread link(s): ${error.message}`);
+      return;
+    }
+  }
+
+  if (insertRows.length > 0) {
+    const { error } = await supabase
+      .from('post_links')
+      .insert(insertRows);
+
+    if (error) {
+      console.error('Failed to add thread links:', error);
+      alert(`Failed to add thread link(s): ${error.message}`);
+      return;
+    }
+  }
+
+  await loadLinks();
+  await loadPosts();
+}
+
 
 
 // ============================================
@@ -667,6 +741,8 @@ let placingPost = null;      // the post row (must include id)
 let placingCardEl = null;    // DOM element for the card being placed
 let placeMouseOffsetX = 0;   // center-of-card offset (canvas units)
 let placeMouseOffsetY = 0;
+let isBulkPlacing = false;
+let bulkPlacementItems = [];
 let resizingPostState = null;
 
 const CARD_GAP = 10; // minimum gap between cards (px in canvas units)
@@ -712,15 +788,20 @@ function rectIntersects(a, b) {
   );
 }
 
-function syncCardEnergyState(card, lod) {
+const MAX_ACTIVE_PREVIEW_VIDEOS = 1;
+
+function syncCardEnergyState(card, lod, { allowPreviewVideoPlayback = true } = {}) {
   if (!card) return;
-  if (card.dataset.lod === lod) return;
+
+  const nextVideoState = allowPreviewVideoPlayback ? 'play' : 'pause';
+  if (card.dataset.lod === lod && card.dataset.previewVideoState === nextVideoState) return;
 
   card.dataset.lod = lod;
+  card.dataset.previewVideoState = nextVideoState;
 
   const previewVideo = card.querySelector('.post-preview-video');
   if (previewVideo) {
-    if (lod === 'near' && !editMode && animationMode !== 'off') {
+    if (lod === 'near' && allowPreviewVideoPlayback && !editMode && animationMode !== 'off') {
       previewVideo.play().catch(() => {});
     } else {
       previewVideo.pause();
@@ -740,13 +821,37 @@ function refreshCardLodStates() {
 
   const nearRect = getViewportScreenRect(VIEWPORT_NEAR_MARGIN_PX);
   const farRect = getViewportScreenRect(VIEWPORT_FAR_MARGIN_PX);
-  const cards = postCanvas.querySelectorAll('.post-card');
+  const cards = Array.from(postCanvas.querySelectorAll('.post-card'));
+  const nearVideoCards = [];
+  const viewportCenterX = (nearRect.left + nearRect.right) / 2;
+  const viewportCenterY = (nearRect.top + nearRect.bottom) / 2;
 
   cards.forEach((card) => {
     const rect = card.getBoundingClientRect();
+    card.__lodRect = rect;
+
+    if (rectIntersects(rect, nearRect) && card.querySelector('.post-preview-video')) {
+      const centerX = (rect.left + rect.right) / 2;
+      const centerY = (rect.top + rect.bottom) / 2;
+      const dx = centerX - viewportCenterX;
+      const dy = centerY - viewportCenterY;
+      nearVideoCards.push({ card, distance: (dx * dx) + (dy * dy) });
+    }
+  });
+
+  nearVideoCards.sort((a, b) => a.distance - b.distance);
+  const activeVideoCards = new Set(
+    nearVideoCards.slice(0, MAX_ACTIVE_PREVIEW_VIDEOS).map((entry) => entry.card)
+  );
+
+  cards.forEach((card) => {
+    const rect = card.__lodRect;
+    delete card.__lodRect;
 
     if (rectIntersects(rect, nearRect)) {
-      syncCardEnergyState(card, 'near');
+      syncCardEnergyState(card, 'near', {
+        allowPreviewVideoPlayback: !card.querySelector('.post-preview-video') || activeVideoCards.has(card)
+      });
       return;
     }
 
@@ -786,18 +891,8 @@ function applyAnimationMode(mode) {
     btn.classList.toggle('active', mode !== 'full');
   }
 
-  // Sync video play/pause states now that mode changed
-  postCanvas?.querySelectorAll('.post-card').forEach((card) => {
-    const lod = card.dataset.lod || 'near';
-    const vid = card.querySelector('.post-preview-video');
-    if (vid) {
-      if (lod === 'near' && !editMode && animationMode !== 'off') {
-        vid.play().catch(() => {});
-      } else {
-        vid.pause();
-      }
-    }
-  });
+  // Sync preview playback states now that mode changed.
+  refreshCardLodStates();
 
   // Refresh link-flow animations
   renderLinks(lastLoadedPosts, lastLoadedLinks);
@@ -1082,6 +1177,7 @@ function waitForLayoutStability() {
 }
 
 function startPlacement(post, cardEl, mouseEvent) {
+  stopBulkPlacement();
   isPlacing = true;
   placingPost = post;
   placingCardEl = cardEl;
@@ -1113,6 +1209,169 @@ function stopPlacement() {
   isPlacing = false;
   placingPost = null;
   placingCardEl = null;
+}
+
+function stopBulkPlacement() {
+  if (bulkPlacementItems.length > 0) {
+    bulkPlacementItems.forEach((item) => {
+      if (!item?.cardEl) return;
+      item.cardEl.style.zIndex = '';
+      item.cardEl.style.outline = '';
+      item.cardEl.style.opacity = '';
+      item.cardEl.querySelectorAll(
+        '.post-file-preview-play, .post-file-preview-download-btn, .post-preview-mute-btn, .post-file-preview-youtube-activate'
+      ).forEach((btn) => { btn.style.pointerEvents = ''; });
+    });
+  }
+
+  isBulkPlacing = false;
+  bulkPlacementItems = [];
+}
+
+function startBulkPlacement(posts, mouseEvent) {
+  if (!Array.isArray(posts) || posts.length < 2) return false;
+
+  stopPlacement();
+  stopBulkPlacement();
+
+  const pointer = viewportPointToCanvasPoint(mouseEvent.clientX, mouseEvent.clientY);
+  bulkPlacementItems = posts
+    .map((post) => {
+      const postId = String(post?.id || '');
+      const cardEl = postCanvas?.querySelector(`.post-card[data-post-id="${postId}"]`);
+      if (!cardEl) return null;
+
+      const startX = parseFloat(cardEl.style.left || '0');
+      const startY = parseFloat(cardEl.style.top || '0');
+      return {
+        post,
+        cardEl,
+        offsetX: startX - pointer.x,
+        offsetY: startY - pointer.y
+      };
+    })
+    .filter(Boolean);
+
+  if (bulkPlacementItems.length < 2) {
+    bulkPlacementItems = [];
+    return false;
+  }
+
+  bulkPlacementItems.forEach((item) => {
+    item.cardEl.style.zIndex = '20';
+    item.cardEl.querySelectorAll(
+      '.post-file-preview-play, .post-file-preview-download-btn, .post-preview-mute-btn, .post-file-preview-youtube-activate'
+    ).forEach((btn) => { btn.style.pointerEvents = 'none'; });
+  });
+
+  isBulkPlacing = true;
+  updateBulkPlacementPosition(mouseEvent);
+  return true;
+}
+
+function updateBulkPlacementPosition(e) {
+  if (!isBulkPlacing || bulkPlacementItems.length === 0) return;
+
+  const pointer = viewportPointToCanvasPoint(e.clientX, e.clientY);
+  for (const item of bulkPlacementItems) {
+    const x = pointer.x + item.offsetX;
+    const y = pointer.y + item.offsetY;
+    item.cardEl.style.left = `${x}px`;
+    item.cardEl.style.top = `${y}px`;
+    item.cardEl.style.outline = '2px solid rgba(172, 214, 255, 0.68)';
+    item.cardEl.style.opacity = '1';
+  }
+
+  renderLinks(lastLoadedPosts, lastLoadedLinks);
+}
+
+async function tryDropBulkPlacement() {
+  if (!isBulkPlacing || bulkPlacementItems.length === 0) return;
+
+  const updates = bulkPlacementItems.map((item) => {
+    const x = parseFloat(item.cardEl.style.left || '0');
+    const y = parseFloat(item.cardEl.style.top || '0');
+    item.post.x = x;
+    item.post.y = y;
+
+    let query = supabase
+      .from('posts')
+      .update({ x, y })
+      .eq('id', item.post.id);
+
+    if (!currentUserData?.is_admin) {
+      query = query.eq('user_id', currentUser.id);
+    }
+
+    return query;
+  });
+
+  const results = await Promise.all(updates);
+  const failed = results.find((result) => result?.error);
+  if (failed?.error) {
+    console.error('Bulk move failed:', failed.error.message);
+    alert(`Bulk move failed: ${failed.error.message}`);
+    return;
+  }
+
+  stopBulkPlacement();
+  renderLinks(lastLoadedPosts, lastLoadedLinks);
+}
+
+function clearEditSelection({ keepThreadSource = false } = {}) {
+  selectedEditPostIds.clear();
+  if (!keepThreadSource) {
+    activeThreadSourcePostId = null;
+  }
+}
+
+function isEditPostSelected(postId) {
+  return selectedEditPostIds.has(String(postId));
+}
+
+function toggleEditPostSelection(postId) {
+  const id = String(postId || '');
+  if (!id) return false;
+
+  if (selectedEditPostIds.has(id)) {
+    selectedEditPostIds.delete(id);
+    return false;
+  }
+
+  selectedEditPostIds.add(id);
+  return true;
+}
+
+function getSelectableEditPosts() {
+  return (lastLoadedPosts || []).filter((post) => canCurrentUserEditPost(post));
+}
+
+function getSelectedEditablePostIds() {
+  const allowedIds = new Set(getSelectableEditPosts().map((post) => String(post.id)));
+  return [...selectedEditPostIds].filter((id) => allowedIds.has(String(id)));
+}
+
+function getSelectedEditablePosts() {
+  const selectedIds = new Set(getSelectedEditablePostIds());
+  return getSelectableEditPosts().filter((post) => selectedIds.has(String(post.id)));
+}
+
+function reconcileEditSelectionForVisiblePosts() {
+  if (!editMode) {
+    clearEditSelection();
+    return;
+  }
+
+  const visibleEditableIds = new Set(getSelectableEditPosts().map((post) => String(post.id)));
+  for (const id of [...selectedEditPostIds]) {
+    if (!visibleEditableIds.has(String(id))) {
+      selectedEditPostIds.delete(String(id));
+    }
+  }
+
+  if (activeThreadSourcePostId && !visibleEditableIds.has(String(activeThreadSourcePostId))) {
+    activeThreadSourcePostId = null;
+  }
 }
 
 function updatePlacementPosition(e) {
@@ -1179,7 +1438,7 @@ function updatePlacementPosition(e) {
 }
 
 function beginPostResize(e, cardEl, postId) {
-  if (isPlacing) return;
+  if (isPlacing || isBulkPlacing) return;
 
   e.preventDefault();
   e.stopPropagation();
@@ -1387,6 +1646,45 @@ function applyWorldModeVisuals(worldModeConfig = null) {
   applyBackgroundImage(worldModeConfig.backgroundUrl || DEFAULT_BG_URL);
 }
 
+function centerCanvasOnPost(postId) {
+  if (!postCanvas) return false;
+
+  const targetId = String(postId || '');
+  if (!targetId) return false;
+
+  const viewport = document.getElementById('canvasViewport');
+  const viewportRect = viewport?.getBoundingClientRect?.();
+  if (!viewportRect) return false;
+
+  const viewportCenterX = (viewportRect.left + viewportRect.right) / 2;
+  const viewportCenterY = (viewportRect.top + viewportRect.bottom) / 2;
+
+  const cardEl = postCanvas.querySelector(`.post-card[data-post-id="${targetId}"]`);
+
+  let centerCanvasX = null;
+  let centerCanvasY = null;
+
+  if (cardEl) {
+    const cardX = parseFloat(cardEl.style.left || '0');
+    const cardY = parseFloat(cardEl.style.top || '0');
+    const cardScale = getCardScale(cardEl);
+    const cardW = (cardEl.offsetWidth || 0) * cardScale;
+    const cardH = (cardEl.offsetHeight || 0) * cardScale;
+    centerCanvasX = cardX + (cardW / 2);
+    centerCanvasY = cardY + (cardH / 2);
+  } else {
+    const post = (lastLoadedPosts || []).find((row) => String(row?.id) === targetId);
+    if (!post) return false;
+    centerCanvasX = Number(post.x || 0) + 160;
+    centerCanvasY = Number(post.y || 0) + 110;
+  }
+
+  canvasOffsetX = viewportCenterX - (centerCanvasX * canvasScale);
+  canvasOffsetY = viewportCenterY - (centerCanvasY * canvasScale);
+  applyCanvasTransform();
+  return true;
+}
+
 function applyWorldFormCategoryLock() {
   const inWorldMode = Boolean(activeWorldContext?.world?.category);
 
@@ -1443,6 +1741,10 @@ function openPostForm() {
   }
   postFileInput.multiple = true;
   postFormOverlay.style.display = 'flex';
+  schedulePostTextMentionRefresh();
+  renderPlainFieldSpellDecoration(postTitle);
+  renderPlainFieldSpellDecoration(postCategoryInput);
+  renderPlainFieldSpellDecoration(postYoutubeInput);
   scheduleUiStatePersist();
 }
 
@@ -1499,6 +1801,9 @@ function closePostForm() {
   editingPost   = null;
   postDeleteBtn.style.display = 'none'; // hide when form closes
   postYoutubeInput.value = '';
+  clearFieldSpellDecoration(postTitle);
+  clearFieldSpellDecoration(postCategoryInput);
+  clearFieldSpellDecoration(postYoutubeInput);
 
   // clear pending link target
   pendingLinkPostId = null;
@@ -1634,9 +1939,10 @@ function getYouTubePosterUrl(youtubeId) {
   return `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg`;
 }
 
-function getYouTubeEmbedSrc(youtubeId, { autoplay = false } = {}) {
+function getYouTubeEmbedSrc(youtubeId, { autoplay = false, muted = true } = {}) {
   const autoplayFlag = autoplay ? '1' : '0';
-  return `https://www.youtube-nocookie.com/embed/${youtubeId}?autoplay=${autoplayFlag}&rel=0&playsinline=1&modestbranding=1&iv_load_policy=3&color=white`;
+  const muteFlag = muted ? '1' : '0';
+  return `https://www.youtube-nocookie.com/embed/${youtubeId}?autoplay=${autoplayFlag}&mute=${muteFlag}&rel=0&playsinline=1&modestbranding=1&iv_load_policy=3&color=white`;
 }
 
 function createYouTubePosterShellMarkup(youtubeId, shellClass, buttonClass, iconClass) {
@@ -1676,6 +1982,60 @@ function escapeHtml(text = '') {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function createTaskLineElement(text) {
+  const match = String(text || '').match(/^\s*\[([ xX])\]\s*(.*)$/);
+  if (!match) return null;
+
+  const checked = match[1].toLowerCase() === 'x';
+  const content = match[2] || '';
+  const line = document.createElement('div');
+  line.className = 'post-task-line';
+
+  const box = document.createElement('span');
+  box.className = 'post-task-box';
+  box.setAttribute('aria-hidden', 'true');
+  box.textContent = checked ? '☑' : '☐';
+
+  const label = document.createElement('span');
+  label.className = 'post-task-text';
+  label.textContent = content;
+
+  line.appendChild(box);
+  line.appendChild(label);
+  return line;
+}
+
+function formatTaskListMarkup(html) {
+  if (!html) return '';
+
+  const template = document.createElement('template');
+  template.innerHTML = String(html);
+
+  const replaceWithTaskLine = (node) => {
+    const taskLine = createTaskLineElement(node.textContent || '');
+    if (!taskLine || !node.parentNode) return false;
+    node.parentNode.replaceChild(taskLine, node);
+    return true;
+  };
+
+  [...template.content.childNodes].forEach((node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      replaceWithTaskLine(node);
+      return;
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+
+    const tag = node.tagName.toLowerCase();
+    const hasNestedBlocks = node.querySelector('ul, ol, li, p, div, br');
+    if ((tag === 'div' || tag === 'p') && !hasNestedBlocks) {
+      replaceWithTaskLine(node);
+    }
+  });
+
+  return template.innerHTML;
 }
 
 function normalizeLinkUrl(value) {
@@ -2015,13 +2375,424 @@ function restoreEditableSelectionOffsets(root, startOffset, endOffset) {
   }
 }
 
+function normalizeSpellWord(word = '') {
+  return String(word || '').replace(/^'+|'+$/g, '').toLowerCase();
+}
+
+function canSpellcheckToken(word, beforeChar = '', afterChar = '') {
+  if (!word) return false;
+  if (word.length < 3) return false;
+  if (/\d/.test(word)) return false;
+  if (/^[A-Z]{2,}$/.test(word)) return false;
+  if (/[.@/_-]/.test(beforeChar) || /[.@/_-]/.test(afterChar)) return false;
+  return true;
+}
+
+function isMisspelledWord(word) {
+  if (!postSpellChecker) return false;
+
+  const normalized = normalizeSpellWord(word);
+  if (!normalized || postSpellIgnoreAll.has(normalized)) return false;
+
+  return !postSpellChecker.correct(word) && !postSpellChecker.correct(normalized);
+}
+
+function getWordSuggestion(word) {
+  if (!postSpellChecker) return '';
+  const suggestions = postSpellChecker.suggest(word) || [];
+  return String(suggestions[0] || '').trim();
+}
+
+function getPostSpellFieldIgnoreSet(fieldEl) {
+  if (!fieldEl) return new Set();
+  let ignoreSet = postSpellFieldIgnoreMap.get(fieldEl);
+  if (!ignoreSet) {
+    ignoreSet = new Set();
+    postSpellFieldIgnoreMap.set(fieldEl, ignoreSet);
+  }
+  return ignoreSet;
+}
+
+function findMisspelledWordRanges(text, { ignoreSet = null } = {}) {
+  const ranges = [];
+  if (!postSpellChecker || !text) return ranges;
+
+  const wordRegex = /[A-Za-z][A-Za-z']*/g;
+  wordRegex.lastIndex = 0;
+
+  let match = wordRegex.exec(text);
+  while (match) {
+    const rawWord = match[0];
+    const start = match.index;
+    const end = start + rawWord.length;
+    const beforeChar = start > 0 ? text[start - 1] : '';
+    const afterChar = end < text.length ? text[end] : '';
+
+    if (canSpellcheckToken(rawWord, beforeChar, afterChar)) {
+      const normalizedWord = normalizeSpellWord(rawWord);
+      const wordKey = `${normalizedWord}:${start}`;
+      const isIgnoredOne = ignoreSet?.has(wordKey);
+      if (!isIgnoredOne && isMisspelledWord(rawWord)) {
+        ranges.push({ start, end, word: rawWord, normalizedWord, key: wordKey });
+      }
+    }
+
+    match = wordRegex.exec(text);
+  }
+
+  return ranges;
+}
+
+function getSpellWordAtCaret(value, caretIndex) {
+  const text = String(value || '');
+  if (!text) return null;
+
+  let idx = Math.max(0, Math.min(Number(caretIndex) || 0, text.length));
+  const isWordChar = (ch) => /[A-Za-z']/.test(ch || '');
+
+  if (!isWordChar(text[idx]) && idx > 0 && isWordChar(text[idx - 1])) {
+    idx -= 1;
+  }
+
+  if (!isWordChar(text[idx])) return null;
+
+  let start = idx;
+  let end = idx + 1;
+
+  while (start > 0 && isWordChar(text[start - 1])) start -= 1;
+  while (end < text.length && isWordChar(text[end])) end += 1;
+
+  const word = text.slice(start, end);
+  if (!word) return null;
+
+  const beforeChar = start > 0 ? text[start - 1] : '';
+  const afterChar = end < text.length ? text[end] : '';
+  if (!canSpellcheckToken(word, beforeChar, afterChar)) return null;
+
+  const normalizedWord = normalizeSpellWord(word);
+  const key = `${normalizedWord}:${start}`;
+  return { start, end, word, normalizedWord, key };
+}
+
+function clearFieldSpellDecoration(fieldEl) {
+  if (!fieldEl) return;
+  fieldEl.style.removeProperty('background-image');
+  fieldEl.style.removeProperty('background-repeat');
+  fieldEl.style.removeProperty('background-size');
+  fieldEl.style.removeProperty('background-position');
+  postSpellFieldRangesMap.set(fieldEl, []);
+}
+
+function renderPlainFieldSpellDecoration(fieldEl) {
+  if (!fieldEl || !postSpellChecker) {
+    clearFieldSpellDecoration(fieldEl);
+    return;
+  }
+
+  const fieldValue = String(fieldEl.value || '');
+  if (!fieldValue) {
+    clearFieldSpellDecoration(fieldEl);
+    return;
+  }
+
+  const ignoreSet = getPostSpellFieldIgnoreSet(fieldEl);
+  const ranges = findMisspelledWordRanges(fieldValue, { ignoreSet });
+  postSpellFieldRangesMap.set(fieldEl, ranges);
+
+  if (!ranges.length) {
+    clearFieldSpellDecoration(fieldEl);
+    return;
+  }
+
+  const style = window.getComputedStyle(fieldEl);
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    clearFieldSpellDecoration(fieldEl);
+    return;
+  }
+
+  ctx.font = `${style.fontStyle} ${style.fontVariant} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+
+  const padLeft = parseFloat(style.paddingLeft) || 0;
+  const underlineY = Math.max(2, fieldEl.clientHeight - 4);
+  const images = [];
+  const sizes = [];
+  const positions = [];
+  const repeats = [];
+
+  ranges.forEach((range) => {
+    const prefix = fieldValue.slice(0, range.start);
+    const token = fieldValue.slice(range.start, range.end);
+    const x = Math.max(0, padLeft + ctx.measureText(prefix).width - fieldEl.scrollLeft);
+    const w = Math.max(2, ctx.measureText(token).width);
+
+    images.push('repeating-linear-gradient(to right, currentColor 0 4px, transparent 4px 7px)');
+    sizes.push(`${Math.round(w)}px 1px`);
+    positions.push(`${Math.round(x)}px ${underlineY}px`);
+    repeats.push('no-repeat');
+  });
+
+  fieldEl.style.backgroundImage = images.join(', ');
+  fieldEl.style.backgroundSize = sizes.join(', ');
+  fieldEl.style.backgroundPosition = positions.join(', ');
+  fieldEl.style.backgroundRepeat = repeats.join(', ');
+}
+
+function isSpellEnabledPlainField(fieldEl) {
+  if (!fieldEl) return false;
+  if (fieldEl.disabled || fieldEl.readOnly) return false;
+  const tag = fieldEl.tagName?.toLowerCase();
+  if (tag === 'textarea') return true;
+  if (tag !== 'input') return false;
+
+  const type = String(fieldEl.type || 'text').toLowerCase();
+  return type === 'text' || type === 'search';
+}
+
+function wirePlainFieldSpellcheck(fieldEl) {
+  if (!isSpellEnabledPlainField(fieldEl)) return;
+
+  fieldEl.spellcheck = false;
+
+  const repaint = () => {
+    renderPlainFieldSpellDecoration(fieldEl);
+  };
+
+  fieldEl.addEventListener('input', repaint);
+  fieldEl.addEventListener('scroll', repaint, { passive: true });
+  fieldEl.addEventListener('focus', repaint);
+  fieldEl.addEventListener('blur', () => {
+    hidePostSpellMenu();
+  });
+
+  const openFieldSpellMenu = (e) => {
+    const text = String(fieldEl.value || '');
+    if (!text) {
+      hidePostSpellMenu();
+      return;
+    }
+
+    const caret = Number(fieldEl.selectionStart ?? 0);
+    const wordInfo = getSpellWordAtCaret(text, caret);
+    if (!wordInfo || !isMisspelledWord(wordInfo.word)) {
+      hidePostSpellMenu();
+      return;
+    }
+
+    const ignoreSet = getPostSpellFieldIgnoreSet(fieldEl);
+    if (ignoreSet.has(wordInfo.key)) {
+      hidePostSpellMenu();
+      return;
+    }
+
+    const menu = document.getElementById('postSpellContextMenu');
+    const replaceBtn = document.getElementById('postSpellReplaceBtn');
+    if (!menu || !replaceBtn) return;
+
+    const suggestion = getWordSuggestion(wordInfo.word);
+    replaceBtn.textContent = suggestion || 'no suggestion';
+    replaceBtn.disabled = !suggestion;
+    postSpellMenuState = {
+      tokenEl: null,
+      key: wordInfo.key,
+      normalizedWord: wordInfo.normalizedWord,
+      suggestion,
+      fieldEl,
+      rangeStart: wordInfo.start,
+      rangeEnd: wordInfo.end
+    };
+
+    const menuWidth = 220;
+    const menuHeight = 126;
+    const left = Math.max(10, Math.min(e.clientX + 8, window.innerWidth - menuWidth - 10));
+    const top = Math.max(10, Math.min(e.clientY + 8, window.innerHeight - menuHeight - 10));
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+    menu.classList.add('show');
+    menu.setAttribute('aria-hidden', 'false');
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  fieldEl.addEventListener('click', openFieldSpellMenu);
+  fieldEl.addEventListener('contextmenu', openFieldSpellMenu);
+
+  repaint();
+}
+
+function applyPostTextSpellcheckMarkup(html) {
+  if (!postSpellChecker || !html) return html;
+
+  const template = document.createElement('template');
+  template.innerHTML = html;
+
+  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  let node = walker.nextNode();
+  while (node) {
+    nodes.push(node);
+    node = walker.nextNode();
+  }
+
+  let absoluteOffset = 0;
+  const wordRegex = /[A-Za-z][A-Za-z']*/g;
+
+  nodes.forEach((textNode) => {
+    const parentNode = textNode.parentNode;
+    const parentEl = parentNode instanceof Element ? parentNode : null;
+    const text = textNode.nodeValue || '';
+    const nodeStartOffset = absoluteOffset;
+    absoluteOffset += text.length;
+
+    if (!text.trim()) return;
+    if (parentEl && parentEl.closest('.mention-token, .spellcheck-token, a')) return;
+
+    wordRegex.lastIndex = 0;
+    let lastIndex = 0;
+    let hasChanges = false;
+    const fragment = document.createDocumentFragment();
+    let match = wordRegex.exec(text);
+
+    while (match) {
+      const rawWord = match[0];
+      const start = match.index;
+      const end = start + rawWord.length;
+      const beforeChar = start > 0 ? text[start - 1] : '';
+      const afterChar = end < text.length ? text[end] : '';
+
+      if (!canSpellcheckToken(rawWord, beforeChar, afterChar)) {
+        match = wordRegex.exec(text);
+        continue;
+      }
+
+      const normalizedWord = normalizeSpellWord(rawWord);
+      const wordKey = `${normalizedWord}:${nodeStartOffset + start}`;
+      const shouldMark = isMisspelledWord(rawWord) && !postSpellIgnoreOne.has(wordKey);
+
+      if (shouldMark) {
+        if (start > lastIndex) {
+          fragment.appendChild(document.createTextNode(text.slice(lastIndex, start)));
+        }
+
+        const misspelled = document.createElement('span');
+        misspelled.className = 'spellcheck-token';
+        misspelled.textContent = rawWord;
+        misspelled.dataset.spellWord = rawWord;
+        misspelled.dataset.spellNorm = normalizedWord;
+        misspelled.dataset.spellKey = wordKey;
+        fragment.appendChild(misspelled);
+
+        lastIndex = end;
+        hasChanges = true;
+      }
+
+      match = wordRegex.exec(text);
+    }
+
+    if (!hasChanges) return;
+
+    if (lastIndex < text.length) {
+      fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
+    }
+
+    parentNode.replaceChild(fragment, textNode);
+  });
+
+  return template.innerHTML;
+}
+
+function hidePostSpellMenu() {
+  const menu = document.getElementById('postSpellContextMenu');
+  if (!menu) return;
+  menu.classList.remove('show');
+  menu.setAttribute('aria-hidden', 'true');
+  postSpellMenuState = {
+    tokenEl: null,
+    key: '',
+    normalizedWord: '',
+    suggestion: '',
+    fieldEl: null,
+    rangeStart: -1,
+    rangeEnd: -1
+  };
+}
+
+function showPostSpellMenu(clientX, clientY, tokenEl) {
+  const menu = document.getElementById('postSpellContextMenu');
+  const replaceBtn = document.getElementById('postSpellReplaceBtn');
+  if (!menu || !replaceBtn || !tokenEl) return;
+
+  const word = tokenEl.dataset.spellWord || tokenEl.textContent || '';
+  const normalizedWord = normalizeSpellWord(word);
+  const key = tokenEl.dataset.spellKey || '';
+  const suggestion = getWordSuggestion(word);
+
+  replaceBtn.textContent = suggestion || 'no suggestion';
+  replaceBtn.disabled = !suggestion;
+
+  postSpellMenuState = { tokenEl, key, normalizedWord, suggestion };
+
+  const menuWidth = 220;
+  const menuHeight = 126;
+  const left = Math.max(10, Math.min(clientX, window.innerWidth - menuWidth - 10));
+  const top = Math.max(10, Math.min(clientY, window.innerHeight - menuHeight - 10));
+
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+  menu.classList.add('show');
+  menu.setAttribute('aria-hidden', 'false');
+}
+
+function initializePostTextSpellcheck() {
+  try {
+    postSpellChecker = nspell(enAff, enDic);
+  } catch (error) {
+    postSpellChecker = null;
+    console.warn('Custom spellchecker failed to initialize:', error);
+  }
+
+  const spellFields = Array.from(document.querySelectorAll('input[type="text"], textarea, [contenteditable="true"]'));
+  spellFields.forEach((field) => {
+    if (!field) return;
+    field.spellcheck = false;
+  });
+
+  if (postText) {
+    schedulePostTextMentionRefresh();
+  }
+
+  spellFields
+    .filter((field) => field !== postText)
+    .forEach((field) => {
+      wirePlainFieldSpellcheck(field);
+    });
+}
+
+function replaceSpellTokenText(tokenEl, nextWord) {
+  if (!tokenEl || !nextWord) return;
+
+  const textNode = document.createTextNode(nextWord);
+  tokenEl.replaceWith(textNode);
+
+  const selection = window.getSelection?.();
+  if (!selection) return;
+
+  const range = document.createRange();
+  range.setStart(textNode, textNode.nodeValue.length);
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
 function refreshPostTextMentions() {
   if (!postText) return;
 
   const wasFocused = document.activeElement === postText;
   const selectionOffsets = wasFocused ? getEditableSelectionOffsets(postText) : null;
 
-  postText.innerHTML = formatBodyTextWithMentions(postText.innerHTML || '');
+  const withMentions = formatBodyTextWithMentions(postText.innerHTML || '');
+  postText.innerHTML = applyPostTextSpellcheckMarkup(withMentions);
 
   if (wasFocused && selectionOffsets) {
     restoreEditableSelectionOffsets(postText, selectionOffsets.start, selectionOffsets.end);
@@ -2040,7 +2811,7 @@ function schedulePostTextMentionRefresh() {
 }
 
 function formatBodyTextWithMentions(text, options = {}) {
-  return highlightMentionsInHtml(formatBodyText(text), options);
+  return formatTaskListMarkup(highlightMentionsInHtml(formatBodyText(text), options));
 }
 
 async function queueMentionNotifications({ notificationType, sourcePostId, sourceText, actorUserId }) {
@@ -2119,11 +2890,20 @@ function hasRenderableBodyContent(el) {
   return Boolean((el.textContent || '').trim() || el.querySelector('br, ul, ol, li, p, div'));
 }
 
+function hasRenderableBodyMarkup(value) {
+  const bodyMarkup = formatBodyText(value);
+  if (!bodyMarkup) return false;
+
+  const container = document.createElement('div');
+  container.innerHTML = bodyMarkup;
+  return hasRenderableBodyContent(container);
+}
+
 function sanitizeBodyHtml(value) {
   if (!value) return '';
 
   if (!hasRichTextMarkup(value)) {
-    return escapeHtml(value).replace(/\n/g, '<br>');
+    return escapeHtml(getPlainTextFromHtml(value)).replace(/\n/g, '<br>');
   }
 
   const template = document.createElement('template');
@@ -2217,7 +2997,7 @@ function sanitizeBodyHtml(value) {
   }
 
   [...template.content.childNodes].forEach(node => sanitizeNode(node, container, false));
-  return container.innerHTML.trim();
+  return container.innerHTML;
 }
 
 function formatBodyText(text) {
@@ -2243,8 +3023,9 @@ function renderPostBodyMarkup(
   { externalUrl = null, clickableExternalUrl = false, clickableMentions = false } = {}
 ) {
   const bodyText = getBodyPlainText(text);
+  const hasBodyContent = hasRenderableBodyMarkup(text);
   const bodyExternalUrl = bodyText ? getPostExternalUrl(bodyText) : null;
-  const shouldRenderBodyText = bodyText && bodyExternalUrl !== externalUrl;
+  const shouldRenderBodyText = hasBodyContent && bodyExternalUrl !== externalUrl;
   const bodyMarkup = shouldRenderBodyText
     ? `<div class="post-body">${formatBodyTextWithMentions(text, { clickable: clickableMentions })}</div>`
     : '';
@@ -2288,7 +3069,9 @@ function getPostPreviewLabel(post, { maxLength = 60, fallback = 'untitled' } = {
 }
 
 function setPostTextBody(text) {
+  postSpellIgnoreOne.clear();
   postText.innerHTML = formatBodyTextWithMentions(text || '');
+  schedulePostTextMentionRefresh();
 }
 
 function getPostTextBody() {
@@ -2328,6 +3111,14 @@ function handlePostTextPaste(e) {
 
   e.preventDefault();
   insertHtmlAtCursor(sanitized || escapeHtml(text));
+}
+
+function handlePostTextKeydown(e) {
+  if (e.key !== 'Enter' || e.shiftKey) return;
+
+  e.preventDefault();
+  insertHtmlAtCursor('<br>');
+  schedulePostTextMentionRefresh();
 }
 
 function createPdAudioPlayer(audioFiles, { onTrackChange } = {}) {
@@ -2671,6 +3462,8 @@ function wireAudioPreviewControls(content) {
     e.stopPropagation();
 
     try {
+      audioPreview.preload = 'auto';
+
       if (!audioPreview.src && audioPreview.dataset.src) {
         audioPreview.src = audioPreview.dataset.src;
       }
@@ -2792,7 +3585,7 @@ function wireYouTubePreviewControls(content, { disableInteraction = false } = {}
       // On touch, let the card's tap handler open the post detail instead
       if (_lastPointerType !== 'mouse') return;
 
-      if (disableInteraction || isPlacing || editMode) return;
+      if (disableInteraction || isPlacing || isBulkPlacing || editMode) return;
 
       const shell = btn.closest('.post-file-preview-youtube-shell');
       activateYouTubeEmbed(shell, 'post-file-preview-youtube-player');
@@ -3256,7 +4049,7 @@ async function openPostDetailModal(post, user) {
   }
 
   const hasVisual = visualFiles.length > 0;
-  const hasText   = !!getBodyPlainText(post.body) || !!getPostExternalUrl(post.youtube_url || '');
+  const hasText   = hasRenderableBodyMarkup(post.body) || !!getPostExternalUrl(post.youtube_url || '');
 
   // ── Visual column ──
   const visualInner = document.getElementById('pdVisualInner');
@@ -3475,7 +4268,9 @@ function closePostDetailModal() {
 
 function toggleEditMode() {
   editMode = !editMode;
-  activeThreadSourcePostId = null;
+  clearEditSelection();
+  stopBulkPlacement();
+  stopPlacement();
   activeUserFilter = null;
   activeCategoryFilter = null;
   if (editMode) {
@@ -3521,27 +4316,49 @@ if (hasNonVisualFile || post.cover_image_url) {
 }
 
 async function handleDeletePost(postId) {
+  return handleDeletePosts([postId]);
+}
+
+async function handleDeletePosts(postIds = []) {
   try {
+    const ids = [...new Set((postIds || []).map((id) => String(id)).filter(Boolean))];
+    if (ids.length === 0) return;
+
+    const isBulk = ids.length > 1;
+    const confirmMessage = isBulk
+      ? `Are you sure you want to delete ${ids.length} posts?`
+      : 'Are you sure you want to delete this post?';
+
     const confirmed = typeof window.__prettyConfirm === 'function'
       ? await window.__prettyConfirm({
-          title: 'delete post?',
-          message: 'Are you sure you want to delete this post?',
+          title: isBulk ? 'delete posts?' : 'delete post?',
+          message: confirmMessage,
           confirmLabel: 'delete',
           cancelLabel: 'cancel',
           danger: true
         })
-      : window.confirm('Are you sure you want to delete this post?');
+      : window.confirm(confirmMessage);
     if (!confirmed) return;
 
-    const { error } = await supabase
+    let deleteQuery = supabase
       .from('posts')
       .delete()
-      .eq('id', postId)
-      .eq('user_id', currentUser.id);
+      .in('id', ids);
+
+    if (!currentUserData?.is_admin) {
+      deleteQuery = deleteQuery.eq('user_id', currentUser.id);
+    }
+
+    const { error } = await deleteQuery;
 
     if (error) throw error;
 
-    console.log('Post deleted:', postId);
+    ids.forEach((id) => selectedEditPostIds.delete(String(id)));
+    if (activeThreadSourcePostId && ids.includes(String(activeThreadSourcePostId))) {
+      activeThreadSourcePostId = null;
+    }
+
+    console.log(isBulk ? 'Posts deleted:' : 'Post deleted:', isBulk ? ids : ids[0]);
     await loadPosts();
     await loadLinks();
     renderLinks(lastLoadedPosts, lastLoadedLinks);
@@ -3907,7 +4724,7 @@ function scheduleCategoryNetworkRender(posts, options = {}) {
   const { force = false } = options;
   pendingCategoryNetworkPosts = posts || [];
 
-  if (!force && (isPlacing || resizingPostState)) return;
+  if (!force && (isPlacing || isBulkPlacing || resizingPostState)) return;
   if (categoryNetworkRafId) return;
 
   categoryNetworkRafId = window.requestAnimationFrame(() => {
@@ -4409,14 +5226,62 @@ async function openProfileModal(userId) {
   const postsList = document.getElementById('profilePostsList');
   postsList.innerHTML = '';
 
-  const { data: posts } = await supabase
-    .from('posts')
-    .select('id, title, body, file_name')
+  const { data: worlds } = await supabase
+    .from('worlds')
+    .select('id, user_id, name, description, category, background_url, font_family, font_color, ui_color, is_public_view, is_public_edit')
     .eq('user_id', userId)
     .eq('group_id', 'group0')
     .order('created_at', { ascending: false });
 
+  const { data: posts } = await supabase
+    .from('posts')
+    .select('id, title, body, file_name, user_id, world_id')
+    .eq('user_id', userId)
+    .eq('group_id', 'group0')
+    .order('created_at', { ascending: false });
+
+  if (worlds && worlds.length > 0) {
+    const worldsLabel = document.createElement('div');
+    worldsLabel.className = 'profile-posts-section-label';
+    worldsLabel.textContent = 'worlds';
+    postsList.appendChild(worldsLabel);
+
+    worlds.forEach((world) => {
+      const label = world.name || world.description?.slice(0, 60) || world.category || 'untitled world';
+      const item = document.createElement('div');
+      item.className = 'profile-post-item profile-world-item';
+      item.textContent = label;
+
+      item.addEventListener('click', async () => {
+        if (editMode || !world?.id) return;
+
+        const isPrivateView = world.is_public_view === false;
+        if (isPrivateView && String(currentUser?.id || '') !== String(world.user_id || '')) {
+          alert('This world is private.');
+          return;
+        }
+
+        closeProfileModal();
+        await enterWorldMode({
+          world,
+          creator: user,
+          backgroundUrl: world.background_url || DEFAULT_BG_URL,
+          fontFamily: world.font_family || '',
+          fontColor: world.font_color || '',
+          uiColor: world.ui_color || 'rgba(255,255,255,0.7)'
+        });
+      });
+
+      postsList.appendChild(item);
+    });
+  }
+
   if (posts && posts.length > 0) {
+    const postsLabel = document.createElement('div');
+    postsLabel.className = 'profile-posts-section-label';
+    postsLabel.textContent = 'posts';
+    postsList.appendChild(postsLabel);
+
     posts.forEach(p => {
       const label = p.title || p.body?.slice(0, 60) || p.file_name || 'untitled';
       const item = document.createElement('div');
@@ -4426,12 +5291,53 @@ async function openProfileModal(userId) {
       item.addEventListener('click', async () => {
         const { data: fullPost } = await supabase
           .from('posts').select('*').eq('id', p.id).single();
-        if (fullPost) openPostDetailModal(fullPost, user);
+        if (!fullPost) return;
+
+        activeUserFilter = null;
+        activeCategoryFilter = null;
+        activeLinkTreeRootPostId = null;
+
+        if (fullPost.world_id) {
+          const sameWorld = String(activeWorldContext?.world?.id || '') === String(fullPost.world_id);
+          if (!sameWorld) {
+            const { data: worldRow, error: worldError } = await supabase
+              .from('worlds')
+              .select('id, user_id, name, description, category, background_url, custom_code_url, font_family, font_color, ui_color, is_public_view, is_public_edit')
+              .eq('id', fullPost.world_id)
+              .maybeSingle();
+
+            if (worldError || !worldRow) {
+              alert('Could not open world for this post.');
+              return;
+            }
+
+            const isPrivateView = worldRow.is_public_view === false;
+            if (isPrivateView && String(currentUser?.id || '') !== String(worldRow.user_id || '')) {
+              alert('This world is private.');
+              return;
+            }
+
+            await enterWorldMode({
+              world: worldRow,
+              creator: user,
+              backgroundUrl: worldRow.background_url || DEFAULT_BG_URL,
+              fontFamily: worldRow.font_family || '',
+              fontColor: worldRow.font_color || '',
+              uiColor: worldRow.ui_color || 'rgba(255,255,255,0.7)'
+            });
+          }
+        } else if (activeWorldContext?.world?.id) {
+          await exitWorldMode();
+        }
+
+        centerCanvasOnPost(fullPost.id);
+        closeProfileModal();
+        openPostDetailModal(fullPost, user);
       });
 
       postsList.appendChild(item);
     });
-  } else {
+  } else if (!worlds || worlds.length === 0) {
     postsList.innerHTML = '<div style="color:rgba(255,255,255,0.2);font-size:0.8rem;padding:10px 0;">no posts yet</div>';
   }
 
@@ -5134,6 +6040,8 @@ async function loadPosts() {
       lastLoadedPosts = lastLoadedPosts.filter(p => allowed.has(String(p.id)));
     }
 
+    reconcileEditSelectionForVisiblePosts();
+
     // Build user map based on *visible* posts (so you don't fetch unused users)
     const userIds = [...new Set([
       ...(lastLoadedPosts || []).map(p => p.user_id),
@@ -5212,7 +6120,7 @@ function trapScrollInside(el) {
   if (!el) return;
 
   el.addEventListener('wheel', (e) => {
-    if (isPlacing) return; // let canvas zoom handle it during placement
+    if (isPlacing || isBulkPlacing) return; // let canvas zoom handle it during placement
     const canScroll = el.scrollHeight > el.clientHeight;
     if (!canScroll) return;
 
@@ -5789,7 +6697,7 @@ function getPostCardMediaState(post) {
 
 function getPostCardContentConfig(post, mediaState) {
   const hasTitle = !!(post.title && post.title.trim());
-  const hasText = !!getBodyPlainText(post.body) || !!getPostExternalUrl(post.youtube_url || '');
+  const hasText = hasRenderableBodyMarkup(post.body) || !!getPostExternalUrl(post.youtube_url || '');
   const disableCardInteractions = !!editMode;
   const {
     isImageFile,
@@ -6397,6 +7305,7 @@ function buildPostCard(post, user) {
   card.className = 'post-card';
   card.dataset.postId = post.id;
   const canEditThisPost = canCurrentUserEditPost(post);
+  const isSelected = isEditPostSelected(post.id);
 
   const idx = (buildPostCard._indexCounter || 0);
   buildPostCard._indexCounter = idx + 1;
@@ -6499,6 +7408,14 @@ function buildPostCard(post, user) {
       if (e.button !== 0) return;
       e.stopPropagation();
       e.preventDefault();
+
+      const selectedPosts = getSelectedEditablePosts();
+      const canUseBulkMove = isEditPostSelected(post.id) && selectedPosts.length > 1;
+      if (canUseBulkMove) {
+        startBulkPlacement(selectedPosts, e);
+        return;
+      }
+
       startPlacement(post, card, e);
     });
 
@@ -6512,6 +7429,15 @@ function buildPostCard(post, user) {
       if (e.detail !== 0) return;
       e.stopPropagation();
       e.preventDefault();
+
+      const syntheticEvent = window.__lastMouseEventForPlacement || { clientX: 200, clientY: 200 };
+      const selectedPosts = getSelectedEditablePosts();
+      const canUseBulkMove = isEditPostSelected(post.id) && selectedPosts.length > 1;
+      if (canUseBulkMove) {
+        startBulkPlacement(selectedPosts, syntheticEvent);
+        return;
+      }
+
       startPlacement(post, card, window.__lastMouseEventForPlacement || { clientX: 200, clientY: 200 });
     });
 
@@ -6522,6 +7448,16 @@ function buildPostCard(post, user) {
 
     threadBtn?.addEventListener('click', async (e) => {
       e.stopPropagation();
+
+      const selectedIds = getSelectedEditablePostIds();
+      const canUseBulkThread = isEditPostSelected(post.id) && selectedIds.length > 1;
+      if (canUseBulkThread) {
+        const targetIds = selectedIds.filter((id) => String(id) !== String(post.id));
+        await toggleThreadLinksFromSource(post.id, targetIds);
+        activeThreadSourcePostId = null;
+        return;
+      }
+
       activeThreadSourcePostId = String(activeThreadSourcePostId) === String(post.id)
         ? null
         : String(post.id);
@@ -6530,6 +7466,14 @@ function buildPostCard(post, user) {
 
     deleteBtn?.addEventListener('click', async (e) => {
       e.stopPropagation();
+
+      const selectedIds = getSelectedEditablePostIds();
+      const canUseBulkDelete = isEditPostSelected(post.id) && selectedIds.length > 1;
+      if (canUseBulkDelete) {
+        await handleDeletePosts(selectedIds);
+        return;
+      }
+
       await handleDeletePost(post.id);
     });
 
@@ -6596,6 +7540,10 @@ function buildPostCard(post, user) {
     }
   }
 
+  if (editMode && isSelected) {
+    card.classList.add('post-card-selected');
+  }
+
   if (!editMode) {
     const categoryEl = card.querySelector('.post-footer-category');
     const categoryTrackEl = card.querySelector('.post-footer-category-track');
@@ -6607,7 +7555,7 @@ function buildPostCard(post, user) {
   }
 
   card.addEventListener('click', async (e) => {
-    if (!editMode || !activeThreadSourcePostId) return;
+    if (!editMode) return;
 
     if (
       e.target.closest('.post-footer-action') ||
@@ -6623,6 +7571,16 @@ function buildPostCard(post, user) {
     ) {
       return;
     }
+
+    if (canEditThisPost && e.ctrlKey) {
+      e.stopPropagation();
+      e.preventDefault();
+      toggleEditPostSelection(post.id);
+      await loadPosts();
+      return;
+    }
+
+    if (!activeThreadSourcePostId) return;
 
     e.stopPropagation();
 
@@ -6647,7 +7605,7 @@ function buildPostCard(post, user) {
       e.target.closest('.post-file-preview-download-btn')
     ),
     shouldIgnoreMouseDown: (e) => {
-      if (isPlacing) return true;
+      if (isPlacing || isBulkPlacing) return true;
       return Boolean(
         e.target.closest('.post-edit-button') ||
         e.target.closest('.post-footer-pfp') ||
@@ -6671,6 +7629,13 @@ function buildPostCard(post, user) {
 // ============================================
 
 function initializeEventListeners() {
+  const closestFromEventTarget = (target, selector) => {
+    if (!target) return null;
+    if (target instanceof Element) return target.closest(selector);
+    if (target.nodeType === Node.TEXT_NODE) return target.parentElement?.closest(selector) || null;
+    return null;
+  };
+
   const recordPlacementPointer = (e) => {
     window.__lastMouseEventForPlacement = e;
   };
@@ -6689,7 +7654,7 @@ function initializeEventListeners() {
   let panStartPointerOffsetY = 0;
 
   const beginPointerPan = (e) => {
-    if (isPlacing) return;
+    if (isPlacing || isBulkPlacing) return;
     if (e.target.closest('.post-card')) return;
     if (e.target.closest('#linkLayer')) return;
 
@@ -6749,7 +7714,7 @@ function initializeEventListeners() {
   // Background drag pan in view mode
   canvasViewport.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
-    if (isPlacing) return;
+    if (isPlacing || isBulkPlacing) return;
     if (e.target.closest('.post-card')) return;
     if (e.target.closest('#linkLayer')) return;
 
@@ -6804,17 +7769,27 @@ function initializeEventListeners() {
   }); 
 
   window.addEventListener('mousemove', (e) => {
+    if (isBulkPlacing) {
+      updateBulkPlacementPosition(e);
+      return;
+    }
     if (isPlacing) updatePlacementPosition(e);
   });
 
   window.addEventListener('mousedown', async (e) => {
+    if (isBulkPlacing) {
+      if (e.button !== 0) return;
+      await tryDropBulkPlacement();
+      return;
+    }
+
     if (!isPlacing) return;
     if (e.button !== 0) return;
     await tryDropPlacement(e);
   });
 
   document.addEventListener('click', async (e) => {
-    const mentionEl = e.target.closest?.('.mention-token-link');
+    const mentionEl = closestFromEventTarget(e.target, '.mention-token-link');
     if (!mentionEl) return;
 
     const userId = mentionEl.dataset.userId;
@@ -6832,7 +7807,7 @@ function initializeEventListeners() {
   // Canvas context menu gestures
     (canvasViewport || mainPageContainer).addEventListener('contextmenu', (e) => {
     e.preventDefault();
-    if (isPlacing) return;
+    if (isPlacing || isBulkPlacing) return;
 
     const now = Date.now();
     const timeSince = now - lastRightClick;
@@ -6876,6 +7851,10 @@ function initializeEventListeners() {
   const pdCtxDownloadFile = document.getElementById('pdCtxDownloadFile');
   const pdCtxDownloadAll = document.getElementById('pdCtxDownloadAll');
   const pdFileContextMenu = document.getElementById('pdFileContextMenu');
+  const postSpellContextMenu = document.getElementById('postSpellContextMenu');
+  const postSpellReplaceBtn = document.getElementById('postSpellReplaceBtn');
+  const postSpellIgnoreBtn = document.getElementById('postSpellIgnoreBtn');
+  const postSpellIgnoreAllBtn = document.getElementById('postSpellIgnoreAllBtn');
 
   if (pdVisualFullscreenBtn) {
     pdVisualFullscreenBtn.addEventListener('click', () => {
@@ -6918,9 +7897,88 @@ function initializeEventListeners() {
     pdFileContextMenu.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
+  if (postSpellReplaceBtn) {
+    postSpellReplaceBtn.addEventListener('click', () => {
+      if (!postSpellMenuState.suggestion) {
+        hidePostSpellMenu();
+        return;
+      }
+
+      if (postSpellMenuState.tokenEl) {
+        replaceSpellTokenText(postSpellMenuState.tokenEl, postSpellMenuState.suggestion);
+        schedulePostTextMentionRefresh();
+      } else if (
+        postSpellMenuState.fieldEl
+        && postSpellMenuState.rangeStart >= 0
+        && postSpellMenuState.rangeEnd > postSpellMenuState.rangeStart
+      ) {
+        const field = postSpellMenuState.fieldEl;
+        const currentValue = String(field.value || '');
+        const nextValue =
+          currentValue.slice(0, postSpellMenuState.rangeStart)
+          + postSpellMenuState.suggestion
+          + currentValue.slice(postSpellMenuState.rangeEnd);
+        field.value = nextValue;
+        const caret = postSpellMenuState.rangeStart + postSpellMenuState.suggestion.length;
+        field.setSelectionRange?.(caret, caret);
+        renderPlainFieldSpellDecoration(field);
+      }
+
+      hidePostSpellMenu();
+    });
+  }
+
+  if (postSpellIgnoreBtn) {
+    postSpellIgnoreBtn.addEventListener('click', () => {
+      if (!postSpellMenuState.key) {
+        hidePostSpellMenu();
+        return;
+      }
+
+      if (postSpellMenuState.tokenEl) {
+        postSpellIgnoreOne.add(postSpellMenuState.key);
+        replaceSpellTokenText(postSpellMenuState.tokenEl, postSpellMenuState.tokenEl.textContent || '');
+      } else if (postSpellMenuState.fieldEl) {
+        const ignoreSet = getPostSpellFieldIgnoreSet(postSpellMenuState.fieldEl);
+        ignoreSet.add(postSpellMenuState.key);
+        renderPlainFieldSpellDecoration(postSpellMenuState.fieldEl);
+      }
+
+      hidePostSpellMenu();
+    });
+  }
+
+  if (postSpellIgnoreAllBtn) {
+    postSpellIgnoreAllBtn.addEventListener('click', () => {
+      if (!postSpellMenuState.normalizedWord) {
+        hidePostSpellMenu();
+        return;
+      }
+
+      const activeField = postSpellMenuState.fieldEl;
+      postSpellIgnoreAll.add(postSpellMenuState.normalizedWord);
+      hidePostSpellMenu();
+      schedulePostTextMentionRefresh();
+      if (activeField) {
+        renderPlainFieldSpellDecoration(activeField);
+      }
+    });
+  }
+
+  postSpellContextMenu?.addEventListener('click', (e) => {
+    e.stopPropagation();
+  });
+
+  postSpellContextMenu?.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+  });
+
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && pdFileContextMenu?.classList.contains('show')) {
       hidePdFileContextMenu();
+    }
+    if (e.key === 'Escape') {
+      hidePostSpellMenu();
     }
   });
 
@@ -6973,12 +8031,37 @@ function initializeEventListeners() {
 
   postCancelBtn.addEventListener('click', maybeClosePostForm);
 
+  postText?.addEventListener('keydown', handlePostTextKeydown);
   postText?.addEventListener('paste', handlePostTextPaste);
   postText?.addEventListener('input', schedulePostTextMentionRefresh);
   postText?.addEventListener('compositionend', schedulePostTextMentionRefresh);
+  const openPostTextSpellMenu = (e) => {
+    const misspelled = closestFromEventTarget(e.target, '.spellcheck-token');
+    if (!misspelled) {
+      hidePostSpellMenu();
+      return;
+    }
+
+    e.preventDefault();
+    e.stopPropagation();
+    showPostSpellMenu(e.clientX + 8, e.clientY + 8, misspelled);
+  };
+
+  postText?.addEventListener('click', openPostTextSpellMenu);
+  postText?.addEventListener('contextmenu', openPostTextSpellMenu);
   postText?.addEventListener('blur', () => {
+    hidePostSpellMenu();
     refreshPostTextMentions();
   });
+
+  document.addEventListener('click', (e) => {
+    if (!postSpellContextMenu?.classList.contains('show')) return;
+    if (e.target.closest('#postSpellContextMenu')) return;
+    if (e.target.closest('.spellcheck-token')) return;
+    hidePostSpellMenu();
+  });
+
+  window.addEventListener('resize', hidePostSpellMenu);
 
    postCoverImageInput.addEventListener('change', () => {
     const file = postCoverImageInput.files[0];
@@ -7196,6 +8279,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   console.log('Main page loaded');
 
   installPrettyAlerts({ baseUrl: import.meta.env.BASE_URL });
+  initializePostTextSpellcheck();
 
   const canvasViewport = document.getElementById('canvasViewport');
   if (canvasViewport) {
