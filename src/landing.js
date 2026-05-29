@@ -42,6 +42,34 @@ function hashStringDjb2(input) {
   return (hash >>> 0).toString(36);
 }
 
+function getLandingWorldId() {
+  try {
+    return new URLSearchParams(window.location.search).get('world');
+  } catch {
+    return null;
+  }
+}
+
+async function applyLandingWorldTheme(worldId) {
+  if (!worldId) return;
+
+  const { data: world } = await supabase
+    .from('worlds')
+    .select('id, background_url, font_family, font_color, ui_color')
+    .eq('id', worldId)
+    .maybeSingle();
+
+  if (!world) return;
+
+  const defaultBackground = `url(${import.meta.env.BASE_URL}images/background.jpg)`;
+  document.documentElement.style.setProperty('--bg-url', world.background_url ? `url(${world.background_url})` : defaultBackground);
+  document.documentElement.style.setProperty('--font-family', world.font_family || 'Arial, Helvetica, sans-serif');
+  document.body.style.color = world.font_color || '';
+  if (world.ui_color) {
+    document.documentElement.style.setProperty('--ui-tint-bg', world.ui_color);
+  }
+}
+
 function toUsernameKey(username) {
   return String(username || '').trim().toLowerCase();
 }
@@ -292,7 +320,7 @@ async function handleLogin() {
     });
     if (error) throw error;
 
-    window.location.href = './main.html';
+    window.location.href = `./main.html${window.location.search}`;
   } catch (error) {
     console.error('Login error:', error.message);
     alert(`Login failed: ${error.message}`);
@@ -432,7 +460,7 @@ async function handleSignup() {
 
     // Prior successful completion for this account: treat as idempotent success.
     if (existingUserRow) {
-      window.location.href = './main.html';
+      window.location.href = `./main.html${window.location.search}`;
       return;
     }
 
@@ -474,7 +502,7 @@ async function handleSignup() {
     }
     insertedUserRow = true;
 
-    window.location.href = './main.html';
+    window.location.href = `./main.html${window.location.search}`;
   } catch (error) {
     await rollbackSignupArtifacts();
     console.error('Signup error:', error.message);
@@ -519,4 +547,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initializePFPSelection();
   initializePFPUpload();
   initializeFormSubmission();
+  applyLandingWorldTheme(getLandingWorldId()).catch((error) => {
+    console.warn('Failed to apply landing world theme:', error);
+  });
 });

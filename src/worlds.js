@@ -119,6 +119,17 @@ function createWorldsDom(baseUrl) {
                   <option value="false">private — only me</option>
                 </select>
               </label>
+              <label class="world-maker-field">
+                <span>world password</span>
+                <input type="password" id="worldPlugPassword" autocomplete="new-password" placeholder="optional">
+              </label>
+              <label class="world-maker-field">
+                <span>update preference</span>
+                <select id="worldPlugUpdateMode">
+                  <option value="auto">auto-update</option>
+                  <option value="manual">manual update</option>
+                </select>
+              </label>
             </div>
             <div class="world-maker-actions">
               <button type="button" class="world-maker-secondary" id="worldPlugBack">back</button>
@@ -175,6 +186,10 @@ function createWorldsDom(baseUrl) {
                   <option value="false">private — only me</option>
                 </select>
               </label>
+              <label class="world-maker-field">
+                <span>world password</span>
+                <input type="password" id="worldCodePassword" autocomplete="new-password" placeholder="optional">
+              </label>
             </div>
             <div class="world-maker-actions">
               <button type="button" class="world-maker-secondary" id="worldCodeBack">back</button>
@@ -200,6 +215,23 @@ function createWorldsDom(baseUrl) {
       </div>
       <iframe id="worldModeFrame" class="world-mode-frame" sandbox="allow-scripts allow-same-origin" referrerpolicy="no-referrer" style="display:none;"></iframe>
     </div>
+
+    <div class="world-password-overlay" id="worldPasswordOverlay" style="display:none;">
+      <div class="world-password-modal" id="worldPasswordModal">
+        <div class="world-password-kicker">password required</div>
+        <h2 class="world-password-title" id="worldPasswordTitle">unlock this world</h2>
+        <p class="world-password-copy" id="worldPasswordCopy">Enter the world password to continue.</p>
+        <label class="world-password-field">
+          <span>Password</span>
+          <input type="password" id="worldPasswordInput" autocomplete="current-password" spellcheck="false">
+        </label>
+        <div class="world-password-error" id="worldPasswordError" aria-live="polite"></div>
+        <div class="world-password-actions">
+          <button type="button" class="world-password-secondary" id="worldPasswordCancel">cancel</button>
+          <button type="button" class="world-password-primary" id="worldPasswordSubmit">unlock</button>
+        </div>
+      </div>
+    </div>
   `;
 
   document.body.appendChild(host);
@@ -216,6 +248,8 @@ function createWorldsDom(baseUrl) {
     plugBackgroundLabel: host.querySelector('#worldPlugBackgroundLabel'),
     plugVisibility: host.querySelector('#worldPlugVisibility'),
     plugEditing: host.querySelector('#worldPlugEditing'),
+    plugPassword: host.querySelector('#worldPlugPassword'),
+    plugUpdateMode: host.querySelector('#worldPlugUpdateMode'),
     plugBack: host.querySelector('#worldPlugBack'),
     plugPublish: host.querySelector('#worldPlugPublish'),
     codeHtml: host.querySelector('#worldCodeHtml'),
@@ -227,6 +261,7 @@ function createWorldsDom(baseUrl) {
     codeCategory: host.querySelector('#worldCodeCategory'),
     codeVisibility: host.querySelector('#worldCodeVisibility'),
     codeEditing: host.querySelector('#worldCodeEditing'),
+    codePassword: host.querySelector('#worldCodePassword'),
     codeBack: host.querySelector('#worldCodeBack'),
     codePublish: host.querySelector('#worldCodePublish'),
     codeDownload: host.querySelector('#worldCodeDownload'),
@@ -240,7 +275,15 @@ function createWorldsDom(baseUrl) {
     modePfp: host.querySelector('#worldModePfp'),
     modeName: host.querySelector('#worldModeName'),
     modeDescription: host.querySelector('#worldModeDescription'),
-    modeFrame: host.querySelector('#worldModeFrame')
+    modeFrame: host.querySelector('#worldModeFrame'),
+    passwordOverlay: host.querySelector('#worldPasswordOverlay'),
+    passwordModal: host.querySelector('#worldPasswordModal'),
+    passwordTitle: host.querySelector('#worldPasswordTitle'),
+    passwordCopy: host.querySelector('#worldPasswordCopy'),
+    passwordInput: host.querySelector('#worldPasswordInput'),
+    passwordError: host.querySelector('#worldPasswordError'),
+    passwordCancel: host.querySelector('#worldPasswordCancel'),
+    passwordSubmit: host.querySelector('#worldPasswordSubmit')
   };
 }
 
@@ -347,6 +390,21 @@ export function initWorldsFeature(options) {
   let publishInFlight = false;
   let activeWorld = null;
   let activeWorldCreator = null;
+  let worldNavRefreshToken = 0;
+  let passwordPromptState = null;
+  let makerMode = 'create';
+  let makerEditingWorld = null;
+  let makerEditingType = 'plug';
+  let latestUpdateInfo = null;
+  let parentTabAction = async () => {
+    await exitWorldMode();
+  };
+
+  function canUseCustomWorldFrame(world) {
+    const customUrl = String(world?.custom_code_url || '').trim();
+    if (!customUrl) return false;
+    return /\/storage\/v1\/object\/public\/worlds\//i.test(customUrl);
+  }
 
   function fillCategorySelect(selectEl) {
     if (!selectEl) return;
@@ -375,27 +433,80 @@ export function initWorldsFeature(options) {
   }
 
   function resetMaker() {
+    makerMode = 'create';
+    makerEditingWorld = null;
+    makerEditingType = 'plug';
     dom.plugName.value = '';
     dom.plugDescription.value = '';
     dom.plugFont.value = '';
     dom.plugFontColor.value = '#f5f5f5';
     dom.plugBackground.value = '';
     dom.plugBackgroundLabel.textContent = 'use site background';
+    dom.plugPassword.value = '';
+    dom.plugUpdateMode.value = 'auto';
     dom.codeHtml.value = '';
     dom.codeCss.value = '';
     dom.codeHtmlLabel.textContent = 'choose html';
     dom.codeCssLabel.textContent = 'choose css';
     dom.codeName.value = '';
     dom.codeDescription.value = '';
+    dom.codePassword.value = '';
+    dom.plugPublish.textContent = 'publish world';
+    dom.codePublish.textContent = 'publish world';
     syncCategories();
     showStep('mode');
   }
 
   function openMaker() {
+    makerMode = 'create';
+    makerEditingWorld = null;
+    makerEditingType = 'plug';
     syncCategories();
     fillFontSelect();
     dom.makerOverlay.style.display = 'flex';
+    dom.plugPublish.textContent = 'publish world';
+    dom.codePublish.textContent = 'publish world';
     showStep('mode');
+  }
+
+  function openMakerForEdit(world) {
+    if (!world?.id) return;
+
+    makerMode = 'edit';
+    makerEditingWorld = world;
+    makerEditingType = canUseCustomWorldFrame(world) ? 'code' : 'plug';
+
+    syncCategories();
+    fillFontSelect();
+
+    dom.plugName.value = world.name || '';
+    dom.plugDescription.value = world.description || '';
+    dom.plugCategory.value = world.category || dom.plugCategory.value;
+    dom.plugFont.value = world.font_family || '';
+    dom.plugFontColor.value = world.font_color || '#f5f5f5';
+    dom.plugBackground.value = '';
+    dom.plugBackgroundLabel.textContent = world.background_url ? 'keep current background (choose file to replace)' : 'use site background';
+    dom.plugVisibility.value = world.is_public_view === false ? 'false' : 'true';
+    dom.plugEditing.value = world.is_public_edit === false ? 'false' : 'true';
+    dom.plugPassword.value = '';
+    dom.plugUpdateMode.value = world.update_mode === 'manual' ? 'manual' : 'auto';
+
+    dom.codeName.value = world.name || '';
+    dom.codeDescription.value = world.description || '';
+    dom.codeCategory.value = world.category || dom.codeCategory.value;
+    dom.codeVisibility.value = world.is_public_view === false ? 'false' : 'true';
+    dom.codeEditing.value = world.is_public_edit === false ? 'false' : 'true';
+    dom.codePassword.value = '';
+    dom.codeHtml.value = '';
+    dom.codeCss.value = '';
+    dom.codeHtmlLabel.textContent = 'keep current html (choose file to replace)';
+    dom.codeCssLabel.textContent = 'keep current css (choose file to replace)';
+
+    dom.plugPublish.textContent = 'update world';
+    dom.codePublish.textContent = 'update world';
+
+    dom.makerOverlay.style.display = 'flex';
+    showStep(makerEditingType);
   }
 
   function closeMaker() {
@@ -417,7 +528,8 @@ export function initWorldsFeature(options) {
     const inEditMode = Boolean(getIsEditMode?.());
     const canDelete = currentUserId && currentUserId === world.user_id && inEditMode;
     const worldFont = world.font_family || 'inherit';
-    const worldColor = world.font_color || 'rgba(255,255,255,0.96)';
+    const worldColor = world.font_color || 'inherit';
+    const useCustomFrame = canUseCustomWorldFrame(world);
 
     dom.modeName.textContent = world.name || DEFAULT_WORLD_TITLE;
     dom.modeDescription.textContent = world.description || DEFAULT_WORLD_DESCRIPTION;
@@ -429,8 +541,167 @@ export function initWorldsFeature(options) {
     dom.modePfp.style.cursor = creator?.id ? 'pointer' : '';
     dom.modeTabs.style.display = inEditMode ? 'none' : 'inline-flex';
     dom.modeDelete.style.display = canDelete ? 'inline-flex' : 'none';
-    dom.modeFrame.style.display = world.custom_code_url ? 'block' : 'none';
-    dom.modeFrame.src = world.custom_code_url || 'about:blank';
+    dom.modeFrame.style.display = useCustomFrame ? 'block' : 'none';
+    dom.modeFrame.src = useCustomFrame ? world.custom_code_url : 'about:blank';
+  }
+
+  function clearWorldTabs() {
+    Array.from(dom.modeTabs.querySelectorAll('[data-world-nav]')).forEach((button) => button.remove());
+  }
+
+  function setPasswordPromptVisible(visible) {
+    if (!dom.passwordOverlay) return;
+    dom.passwordOverlay.style.display = visible ? 'flex' : 'none';
+    if (!visible) {
+      if (dom.passwordInput) dom.passwordInput.value = '';
+      if (dom.passwordError) dom.passwordError.textContent = '';
+    }
+  }
+
+  function showPasswordPrompt(world) {
+    return new Promise((resolve) => {
+      passwordPromptState = { resolve, worldId: world?.id || null };
+      if (dom.passwordTitle) {
+        dom.passwordTitle.textContent = `unlock ${world?.name || DEFAULT_WORLD_TITLE}`;
+      }
+      if (dom.passwordCopy) {
+        dom.passwordCopy.textContent = 'Enter the password for this world.';
+      }
+      if (dom.passwordError) dom.passwordError.textContent = '';
+      setPasswordPromptVisible(true);
+      dom.passwordInput?.focus();
+      dom.passwordInput?.select();
+    });
+  }
+
+  function closePasswordPrompt(result = null) {
+    const state = passwordPromptState;
+    passwordPromptState = null;
+    setPasswordPromptVisible(false);
+    state?.resolve?.(result);
+  }
+
+  async function verifyWorldAccess(worldId, userId) {
+    if (!worldId || !userId) return false;
+
+    const { data, error } = await supabase
+      .from('world_access')
+      .select('id')
+      .eq('world_id', worldId)
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (error) {
+      console.error('Failed to load world access:', error);
+      return false;
+    }
+
+    return Boolean(data?.id);
+  }
+
+  async function unlockWorldAccess(worldId, password) {
+    const { data, error } = await supabase.rpc('grant_world_access', {
+      p_world_id: worldId,
+      p_password: password
+    });
+
+    if (error) throw error;
+    return Boolean(data);
+  }
+
+  async function loadWorldById(worldId) {
+    if (!worldId) return null;
+
+    const { data, error } = await supabase
+      .from('worlds')
+      .select('id, user_id, parent_world_id, name, description, category, background_url, custom_code_url, font_family, font_color, ui_color, is_public_view, is_public_edit, password_hash, update_mode, last_updated_at, created_at')
+      .eq('id', worldId)
+      .maybeSingle();
+
+    if (error) {
+      console.error('Failed to load world:', error);
+      return null;
+    }
+
+    return data || null;
+  }
+
+  async function loadWorldNavigation(world) {
+    const navToken = ++worldNavRefreshToken;
+    const currentWorldId = world?.id || null;
+    const parentWorldId = world?.parent_world_id || null;
+
+    const parentPromise = parentWorldId ? loadWorldById(parentWorldId) : Promise.resolve(null);
+    const childrenPromise = currentWorldId
+      ? supabase
+          .from('worlds')
+          .select('id, user_id, parent_world_id, name, description, category, background_url, custom_code_url, font_family, font_color, ui_color, is_public_view, is_public_edit, password_hash, update_mode, last_updated_at, created_at')
+          .eq('parent_world_id', currentWorldId)
+          .order('created_at', { ascending: true })
+      : Promise.resolve({ data: [], error: null });
+
+    const [parentWorld, childrenResult] = await Promise.all([parentPromise, childrenPromise]);
+    if (navToken !== worldNavRefreshToken) return null;
+
+    if (childrenResult?.error) {
+      console.error('Failed to load child worlds:', childrenResult.error);
+      return { parentWorld, childWorlds: [] };
+    }
+
+    return {
+      parentWorld,
+      childWorlds: childrenResult?.data || []
+    };
+  }
+
+  async function openWorldById(worldId) {
+    const nextWorld = await loadWorldById(worldId);
+    if (!nextWorld) {
+      alert('Could not load that world.');
+      return;
+    }
+
+    const nextCreator = await resolveWorldCreator(nextWorld);
+    await openWorldMode(nextWorld, nextCreator);
+  }
+
+  async function renderWorldNavigation(world) {
+    clearWorldTabs();
+
+    if (!world || !dom.modeTabs) return;
+
+    const nav = await loadWorldNavigation(world);
+    if (!nav) return;
+
+    const parentWorld = nav.parentWorld;
+    const childWorlds = nav.childWorlds || [];
+
+    dom.modeClose.textContent = parentWorld?.name || 'main';
+    dom.modeClose.dataset.worldNav = 'parent';
+    dom.modeClose.dataset.worldId = parentWorld?.id || '';
+    parentTabAction = async () => {
+      if (parentWorld?.id) {
+        await openWorldById(parentWorld.id);
+      } else {
+        await exitWorldMode();
+      }
+    };
+
+    childWorlds.forEach((childWorld) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'world-mode-tab world-mode-tab-child';
+      button.setAttribute('role', 'tab');
+      button.setAttribute('aria-selected', 'false');
+      button.dataset.worldNav = 'child';
+      button.dataset.worldId = childWorld.id;
+      button.textContent = childWorld.name || DEFAULT_WORLD_TITLE;
+      button.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        await openWorldById(childWorld.id);
+      });
+      dom.modeTabs.appendChild(button);
+    });
   }
 
   function clearWorldModeChrome() {
@@ -445,9 +716,11 @@ export function initWorldsFeature(options) {
   }
 
   async function loadWorlds(filters = {}) {
+    await ensureLatestUpdateInfo();
+
     let query = supabase
       .from('worlds')
-      .select('id, user_id, name, description, category, background_url, custom_code_url, font_family, font_color, ui_color, is_public_view, is_public_edit, created_at')
+      .select('id, user_id, parent_world_id, name, description, category, background_url, custom_code_url, font_family, font_color, ui_color, is_public_view, is_public_edit, password_hash, update_mode, last_updated_at, created_at')
       .order('created_at', { ascending: false });
 
     if (filters.userId) {
@@ -465,6 +738,57 @@ export function initWorldsFeature(options) {
     }
 
     return data || [];
+  }
+
+  async function ensureLatestUpdateInfo(force = false) {
+    if (latestUpdateInfo && !force) return latestUpdateInfo;
+
+    const { data, error } = await supabase
+      .from('updates')
+      .select('id, version, description, released_at')
+      .order('released_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      console.warn('Failed to load update metadata:', error);
+      latestUpdateInfo = null;
+      return null;
+    }
+
+    latestUpdateInfo = data || null;
+    return latestUpdateInfo;
+  }
+
+  function worldNeedsManualUpdate(world, currentUserId) {
+    if (!world || !currentUserId) return false;
+    if (String(world.user_id || '') !== String(currentUserId)) return false;
+    if (String(world.update_mode || 'auto') !== 'manual') return false;
+    if (!latestUpdateInfo?.released_at) return false;
+
+    const worldUpdatedAt = world.last_updated_at ? new Date(world.last_updated_at).getTime() : 0;
+    const latestReleasedAt = new Date(latestUpdateInfo.released_at).getTime();
+    if (!Number.isFinite(latestReleasedAt) || latestReleasedAt <= 0) return false;
+
+    return worldUpdatedAt < latestReleasedAt;
+  }
+
+  async function applyWorldUpdate(world) {
+    const currentUserId = getCurrentUser?.()?.id || null;
+    if (!currentUserId || !world?.id) return;
+
+    const { error } = await supabase
+      .from('worlds')
+      .update({ last_updated_at: new Date().toISOString() })
+      .eq('id', world.id)
+      .eq('user_id', currentUserId);
+
+    if (error) {
+      alert(`Update apply failed: ${error.message}`);
+      return;
+    }
+
+    await onWorldCreated?.({ ...world, last_updated_at: new Date().toISOString() });
   }
 
   async function resolveWorldCreator(world, preferredUser = null) {
@@ -492,11 +816,40 @@ export function initWorldsFeature(options) {
       alert('This world is private.');
       return;
     }
+
+    if (world.password_hash && !currentUserId) {
+      alert('Sign in to unlock this world.');
+      return;
+    }
+
+    if (world.password_hash && currentUserId) {
+      const hasAccess = await verifyWorldAccess(world.id, currentUserId);
+      if (!hasAccess) {
+        const password = await showPasswordPrompt(world);
+        if (!password) return;
+
+        try {
+          const unlocked = await unlockWorldAccess(world.id, password);
+          if (!unlocked) {
+            if (dom.passwordError) dom.passwordError.textContent = 'Incorrect password.';
+            setPasswordPromptVisible(true);
+            return;
+          }
+        } catch (error) {
+          console.error('Failed to unlock world:', error);
+          if (dom.passwordError) dom.passwordError.textContent = error?.message || 'Could not unlock world.';
+          setPasswordPromptVisible(true);
+          return;
+        }
+      }
+    }
+
     activeWorld = world;
     activeWorldCreator = await resolveWorldCreator(world, creator);
 
     renderWorldModeChrome(world, activeWorldCreator);
     dom.modeChrome.style.display = 'block';
+    await renderWorldNavigation(world);
 
     await onEnterWorld?.({
       world,
@@ -511,6 +864,10 @@ export function initWorldsFeature(options) {
   async function exitWorldMode() {
     activeWorld = null;
     activeWorldCreator = null;
+    parentTabAction = async () => {
+      await exitWorldMode();
+    };
+    clearWorldTabs();
     clearWorldModeChrome();
     await onExitWorld?.();
   }
@@ -573,6 +930,39 @@ export function initWorldsFeature(options) {
     return data.publicUrl;
   }
 
+  async function setWorldPassword(worldId, plainPassword) {
+    const trimmed = String(plainPassword || '').trim();
+    if (!trimmed) return;
+
+    const payloadCandidates = [
+      { p_world_id: worldId, p_password: trimmed },
+      { p_password: trimmed, p_world_id: worldId },
+      { world_id: worldId, password: trimmed }
+    ];
+
+    let lastError = null;
+
+    for (const payload of payloadCandidates) {
+      const { data, error } = await supabase.rpc('set_world_password', payload);
+      if (!error) {
+        if (!data) throw new Error('Failed to update world password.');
+        return;
+      }
+
+      lastError = error;
+
+      // PGRST202 = function signature not found in schema cache.
+      // Try the next payload shape before surfacing the error.
+      if (error.code === 'PGRST202') {
+        continue;
+      }
+
+      throw error;
+    }
+
+    throw lastError || new Error('Failed to update world password.');
+  }
+
   async function publishPlugWorld() {
     if (publishInFlight) return;
 
@@ -587,40 +977,60 @@ export function initWorldsFeature(options) {
 
     const currentUser = getCurrentUser?.();
     if (!currentUser?.id) return;
+    const isEdit = makerMode === 'edit' && Boolean(makerEditingWorld?.id);
+    const editingWorldId = makerEditingWorld?.id || null;
+    const passwordInput = dom.plugPassword.value;
 
     publishInFlight = true;
     dom.plugPublish.disabled = true;
-    dom.plugPublish.textContent = 'publishing...';
+    dom.plugPublish.textContent = isEdit ? 'updating...' : 'publishing...';
 
     try {
       const uiColor = dom.plugFontColor.value || DEFAULT_UI_COLOR;
       const draft = {
-        user_id: currentUser.id,
         name,
         description,
         category,
-        background_url: null,
-        custom_code_url: null,
         font_family: dom.plugFont.value || null,
         font_color: dom.plugFontColor.value || null,
         ui_color: uiColor,
         is_public_view: dom.plugVisibility.value !== 'false',
-        is_public_edit: dom.plugEditing.value !== 'false'
+        is_public_edit: dom.plugEditing.value !== 'false',
+        update_mode: dom.plugUpdateMode.value === 'manual' ? 'manual' : 'auto'
       };
 
-      const { data: inserted, error: insertError } = await supabase
-        .from('worlds')
-        .insert([draft])
-        .select('*')
-        .single();
+      let nextWorld = null;
 
-      if (insertError) throw insertError;
+      if (isEdit) {
+        const { data: updated, error: updateError } = await supabase
+          .from('worlds')
+          .update(draft)
+          .eq('id', editingWorldId)
+          .eq('user_id', currentUser.id)
+          .select('*')
+          .single();
 
-      let nextWorld = inserted;
+        if (updateError) throw updateError;
+        nextWorld = updated;
+      } else {
+        const { data: inserted, error: insertError } = await supabase
+          .from('worlds')
+          .insert([{
+            ...draft,
+            user_id: currentUser.id,
+            background_url: null,
+            custom_code_url: null
+          }])
+          .select('*')
+          .single();
+
+        if (insertError) throw insertError;
+        nextWorld = inserted;
+      }
       const bgFile = dom.plugBackground.files?.[0] || null;
       if (bgFile) {
         const backgroundUrl = await uploadWorldFile(
-          inserted.id,
+          nextWorld.id,
           `background-${Date.now()}-${normalizeStorageName(bgFile.name)}`,
           bgFile
         );
@@ -628,7 +1038,7 @@ export function initWorldsFeature(options) {
         const { data: updated, error: updateError } = await supabase
           .from('worlds')
           .update({ background_url: backgroundUrl })
-          .eq('id', inserted.id)
+          .eq('id', nextWorld.id)
           .select('*')
           .single();
 
@@ -636,14 +1046,22 @@ export function initWorldsFeature(options) {
         nextWorld = updated;
       }
 
+      if (passwordInput?.trim()) {
+        await setWorldPassword(nextWorld.id, passwordInput);
+      }
+
+      if (activeWorld?.id === nextWorld.id) {
+        activeWorld = nextWorld;
+      }
+
       closeMaker();
       await onWorldCreated?.(nextWorld);
     } catch (error) {
-      alert(`World publish failed: ${error.message}`);
+      alert(`World save failed: ${error.message}`);
     } finally {
       publishInFlight = false;
       dom.plugPublish.disabled = false;
-      dom.plugPublish.textContent = 'publish world';
+      dom.plugPublish.textContent = makerMode === 'edit' ? 'update world' : 'publish world';
     }
   }
 
@@ -655,8 +1073,11 @@ export function initWorldsFeature(options) {
     const category = dom.codeCategory.value.trim();
     const htmlFile = dom.codeHtml.files?.[0] || null;
     const cssFile = dom.codeCss.files?.[0] || null;
+    const isEdit = makerMode === 'edit' && Boolean(makerEditingWorld?.id);
+    const editingWorldId = makerEditingWorld?.id || null;
+    const passwordInput = dom.codePassword.value;
 
-    if (!name || !description || !category || !htmlFile || !cssFile) {
+    if (!name || !description || !category || (!isEdit && (!htmlFile || !cssFile))) {
       alert('Upload world.html and world.css, then fill in name, description, and category.');
       return;
     }
@@ -666,49 +1087,88 @@ export function initWorldsFeature(options) {
 
     publishInFlight = true;
     dom.codePublish.disabled = true;
-    dom.codePublish.textContent = 'publishing...';
+    dom.codePublish.textContent = isEdit ? 'updating...' : 'publishing...';
 
     try {
-      const { data: inserted, error: insertError } = await supabase
-        .from('worlds')
-        .insert([{
-          user_id: currentUser.id,
-          name,
-          description,
-          category,
-          background_url: null,
-          custom_code_url: null,
-          font_family: null,
-          font_color: null,
-          ui_color: DEFAULT_UI_COLOR,
-          is_public_view: dom.codeVisibility.value !== 'false',
-          is_public_edit: dom.codeEditing.value !== 'false'
-        }])
-        .select('*')
-        .single();
+      const draft = {
+        name,
+        description,
+        category,
+        is_public_view: dom.codeVisibility.value !== 'false',
+        is_public_edit: dom.codeEditing.value !== 'false'
+      };
 
-      if (insertError) throw insertError;
+      let nextWorld = null;
 
-      const htmlUrl = await uploadWorldFile(inserted.id, 'world.html', htmlFile);
-      await uploadWorldFile(inserted.id, 'world.css', cssFile);
+      if (isEdit) {
+        const { data: updatedBase, error: updateBaseError } = await supabase
+          .from('worlds')
+          .update(draft)
+          .eq('id', editingWorldId)
+          .eq('user_id', currentUser.id)
+          .select('*')
+          .single();
 
-      const { data: updated, error: updateError } = await supabase
-        .from('worlds')
-        .update({ custom_code_url: htmlUrl })
-        .eq('id', inserted.id)
-        .select('*')
-        .single();
+        if (updateBaseError) throw updateBaseError;
+        nextWorld = updatedBase;
+      } else {
+        const { data: inserted, error: insertError } = await supabase
+          .from('worlds')
+          .insert([{
+            ...draft,
+            user_id: currentUser.id,
+            background_url: null,
+            custom_code_url: null,
+            font_family: null,
+            font_color: null,
+            ui_color: DEFAULT_UI_COLOR,
+            update_mode: 'auto'
+          }])
+          .select('*')
+          .single();
 
-      if (updateError) throw updateError;
+        if (insertError) throw insertError;
+        nextWorld = inserted;
+      }
+
+      let customCodeUrl = nextWorld.custom_code_url || null;
+
+      if (htmlFile) {
+        customCodeUrl = await uploadWorldFile(nextWorld.id, 'world.html', htmlFile);
+      }
+
+      if (cssFile) {
+        await uploadWorldFile(nextWorld.id, 'world.css', cssFile);
+      }
+
+      if (customCodeUrl !== nextWorld.custom_code_url) {
+        const { data: updatedCode, error: updateCodeError } = await supabase
+          .from('worlds')
+          .update({ custom_code_url: customCodeUrl })
+          .eq('id', nextWorld.id)
+          .select('*')
+          .single();
+
+        if (updateCodeError) throw updateCodeError;
+        nextWorld = updatedCode;
+      }
+
+      if (passwordInput?.trim()) {
+        await setWorldPassword(nextWorld.id, passwordInput);
+      }
+
+      if (activeWorld?.id === nextWorld.id) {
+        activeWorld = nextWorld;
+      }
 
       closeMaker();
-      await onWorldCreated?.(updated);
+      await onWorldCreated?.(nextWorld);
     } catch (error) {
-      alert(`World publish failed: ${error.message}`);
+      alert(`World save failed: ${error.message}`);
     } finally {
       publishInFlight = false;
       dom.codePublish.disabled = false;
-      dom.codePublish.textContent = 'publish world';
+      dom.codePublish.textContent = makerMode === 'edit' ? 'update world' : 'publish world';
     }
   }
 
@@ -739,9 +1199,11 @@ export function initWorldsFeature(options) {
     const creatorName = creator?.username || 'unknown';
     const coverUrl = String(world.background_url || '').trim() || getDefaultBackgroundUrl(baseUrl);
     const currentUserId = getCurrentUser?.()?.id || null;
+    const canEdit = currentUserId && currentUserId === world.user_id;
     const canDelete = currentUserId && currentUserId === world.user_id;
     const isPrivateView = world.is_public_view === false;
     const isPrivateEdit = world.is_public_edit === false;
+    const hasUpdate = worldNeedsManualUpdate(world, currentUserId);
 
     card.innerHTML = `
       <div class="post-card-content world-card-content">
@@ -749,6 +1211,7 @@ export function initWorldsFeature(options) {
           <div class="world-card-title">${escapeHtml(world.name || DEFAULT_WORLD_TITLE)}</div>
           ${isPrivateView ? '<span class="world-card-badge world-card-badge--private">private</span>' : ''}
           ${isPrivateEdit ? '<span class="world-card-badge world-card-badge--locked">creator posts only</span>' : ''}
+          ${hasUpdate ? '<button type="button" class="world-card-badge world-card-badge--update">update available</button>' : ''}
         </div>
       </div>
       <div class="post-footer world-card-footer">
@@ -756,6 +1219,8 @@ export function initWorldsFeature(options) {
         <span class="post-footer-username post-footer-filter-btn"><span class="post-footer-username-track">${escapeHtml(creatorName)}</span></span>
         <span class="post-footer-category post-footer-filter-btn"><span class="post-footer-category-track">${escapeHtml(world.category || 'none')}</span></span>
       </div>
+      ${hasUpdate ? '<button type="button" class="world-card-update-action">apply update</button>' : ''}
+      ${canEdit ? '<button type="button" class="world-card-edit">edit</button>' : ''}
       ${options.editMode && canDelete ? '<button type="button" class="world-card-delete">x</button>' : ''}
     `;
 
@@ -781,6 +1246,25 @@ export function initWorldsFeature(options) {
     card.querySelector('.world-card-delete')?.addEventListener('click', async (event) => {
       event.stopPropagation();
       await deleteWorld(world);
+    });
+
+    card.querySelector('.world-card-edit')?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      openMakerForEdit(world);
+    });
+
+    card.querySelector('.world-card-badge--update')?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const release = latestUpdateInfo;
+      const releaseMessage = release
+        ? `${release.version || 'latest'}\n\n${release.description || 'No details were provided.'}`
+        : 'No release metadata is available yet.';
+      alert(releaseMessage);
+    });
+
+    card.querySelector('.world-card-update-action')?.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      await applyWorldUpdate(world);
     });
 
     card.addEventListener('click', async () => {
@@ -830,12 +1314,48 @@ export function initWorldsFeature(options) {
   dom.plugPublish.addEventListener('click', publishPlugWorld);
   dom.codePublish.addEventListener('click', publishCodeWorld);
   dom.codeDownload.addEventListener('click', downloadTemplateZip);
-  dom.modeClose.addEventListener('click', () => {
-    exitWorldMode();
+  dom.modeClose.addEventListener('click', async () => {
+    await parentTabAction();
   });
   dom.modeDelete.addEventListener('click', async () => {
     if (activeWorld) {
       await deleteWorld(activeWorld);
+    }
+  });
+
+  dom.passwordCancel?.addEventListener('click', () => {
+    closePasswordPrompt(null);
+  });
+
+  dom.passwordSubmit?.addEventListener('click', () => {
+    if (!passwordPromptState?.worldId) {
+      closePasswordPrompt(null);
+      return;
+    }
+
+    if (!dom.passwordInput) {
+      closePasswordPrompt(null);
+      return;
+    }
+
+    const nextPassword = dom.passwordInput.value.trim();
+    if (!nextPassword) {
+      if (dom.passwordError) dom.passwordError.textContent = 'Enter a password.';
+      return;
+    }
+
+    closePasswordPrompt(nextPassword);
+  });
+
+  dom.passwordInput?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      dom.passwordSubmit?.click();
+    }
+
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closePasswordPrompt(null);
     }
   });
 
@@ -866,6 +1386,7 @@ export function initWorldsFeature(options) {
     closeActiveUi,
     isMakerOpen,
     isInWorldMode,
+    openWorldById,
     refreshActiveWorldChrome: async (nextWorld = null) => {
       if (nextWorld && activeWorld && nextWorld.id === activeWorld.id) {
         activeWorld = nextWorld;

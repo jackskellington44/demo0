@@ -2153,6 +2153,7 @@ body.profile-open.notif-open .world-maker-overlay { left: var(--profile-w); righ
 }
 
 .world-maker-field input[type="text"],
+.world-maker-field input[type="password"],
 .world-maker-field textarea,
 .world-maker-field select,
 .world-maker-upload,
@@ -2184,6 +2185,7 @@ body.profile-open.notif-open .world-maker-overlay { left: var(--profile-w); righ
 }
 
 .world-maker-field input[type="text"]:focus,
+.world-maker-field input[type="password"]:focus,
 .world-maker-field textarea:focus,
 .world-maker-field select:focus {
   border-bottom-color: rgba(255, 255, 255, 0.5);
@@ -2310,6 +2312,15 @@ body.profile-open.notif-open .world-maker-overlay { left: var(--profile-w); righ
   top: 34px;
 }
 
+.world-card-badge--update {
+  background: rgba(0, 0, 0, 0.62);
+  color: #ffdf4d;
+  border: 1px solid rgba(255, 223, 77, 0.42);
+  top: 58px;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
 .world-card-footer {
   width: 320px;
 }
@@ -2323,13 +2334,41 @@ body.profile-open.notif-open .world-maker-overlay { left: var(--profile-w); righ
   border-radius: 999px;
 }
 
+.world-card-edit {
+  position: absolute;
+  top: -10px;
+  left: -10px;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid rgba(0, 0, 0, 0.82);
+  background: rgba(255, 255, 255, 0.9);
+  color: rgba(0, 0, 0, 0.84);
+  font-size: 0.7rem;
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
+.world-card-update-action {
+  position: absolute;
+  bottom: -14px;
+  right: 10px;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid rgba(0, 0, 0, 0.82);
+  background: rgba(255, 223, 77, 0.92);
+  color: rgba(0, 0, 0, 0.84);
+  font-size: 0.68rem;
+  text-transform: lowercase;
+  cursor: pointer;
+}
+
 .world-mode-chrome {
   position: fixed;
   inset: 0 var(--notif-bar-w) 44px 0;
   z-index: 92;
   pointer-events: none;
   font-family: var(--world-mode-font-family, inherit);
-  color: var(--world-mode-font-color, rgba(255,255,255,0.92));
+  color: var(--world-mode-font-color, inherit);
 }
 
 body.notif-open .world-mode-chrome {
@@ -2421,7 +2460,7 @@ body.profile-open.notif-open .world-mode-chrome {
 }
 
 .world-mode-description {
-  color: color-mix(in srgb, var(--world-mode-font-color, rgba(255,255,255,0.9)) 72%, transparent);
+  color: color-mix(in srgb, var(--world-mode-font-color, currentColor) 72%, transparent);
   line-height: 1.35;
   font-size: 0.72rem;
 }

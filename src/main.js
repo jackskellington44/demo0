@@ -1641,7 +1641,7 @@ function applyWorldModeVisuals(worldModeConfig = null) {
 
   mainPageContainer?.classList.add('world-mode-active');
   mainPageContainer?.style.setProperty('--world-mode-font-family', worldModeConfig.fontFamily || 'inherit');
-  mainPageContainer?.style.setProperty('--world-mode-font-color', worldModeConfig.fontColor || 'rgba(255,255,255,0.92)');
+  mainPageContainer?.style.setProperty('--world-mode-font-color', worldModeConfig.fontColor || 'inherit');
   mainPageContainer?.style.setProperty('--world-mode-ui-color', worldModeConfig.uiColor || 'rgba(255,255,255,0.7)');
   applyBackgroundImage(worldModeConfig.backgroundUrl || DEFAULT_BG_URL);
 }
@@ -5230,7 +5230,6 @@ async function openProfileModal(userId) {
     .from('worlds')
     .select('id, user_id, name, description, category, background_url, font_family, font_color, ui_color, is_public_view, is_public_edit')
     .eq('user_id', userId)
-    .eq('group_id', 'group0')
     .order('created_at', { ascending: false });
 
   const { data: posts } = await supabase
@@ -5262,14 +5261,18 @@ async function openProfileModal(userId) {
         }
 
         closeProfileModal();
-        await enterWorldMode({
-          world,
-          creator: user,
-          backgroundUrl: world.background_url || DEFAULT_BG_URL,
-          fontFamily: world.font_family || '',
-          fontColor: world.font_color || '',
-          uiColor: world.ui_color || 'rgba(255,255,255,0.7)'
-        });
+        if (worldsFeature?.openWorldById) {
+          await worldsFeature.openWorldById(world.id);
+        } else {
+          await enterWorldMode({
+            world,
+            creator: user,
+            backgroundUrl: world.background_url || DEFAULT_BG_URL,
+            fontFamily: world.font_family || '',
+            fontColor: world.font_color || '',
+            uiColor: world.ui_color || 'rgba(255,255,255,0.7)'
+          });
+        }
       });
 
       postsList.appendChild(item);
@@ -5317,14 +5320,18 @@ async function openProfileModal(userId) {
               return;
             }
 
-            await enterWorldMode({
-              world: worldRow,
-              creator: user,
-              backgroundUrl: worldRow.background_url || DEFAULT_BG_URL,
-              fontFamily: worldRow.font_family || '',
-              fontColor: worldRow.font_color || '',
-              uiColor: worldRow.ui_color || 'rgba(255,255,255,0.7)'
-            });
+            if (worldsFeature?.openWorldById) {
+              await worldsFeature.openWorldById(worldRow.id);
+            } else {
+              await enterWorldMode({
+                world: worldRow,
+                creator: user,
+                backgroundUrl: worldRow.background_url || DEFAULT_BG_URL,
+                fontFamily: worldRow.font_family || '',
+                fontColor: worldRow.font_color || '',
+                uiColor: worldRow.ui_color || 'rgba(255,255,255,0.7)'
+              });
+            }
           }
         } else if (activeWorldContext?.world?.id) {
           await exitWorldMode();
@@ -8338,6 +8345,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       await openProfileModal(userId);
     }
   });
+  const bootWorldId = new URLSearchParams(window.location.search).get('world');
   await loadPosts();
   await loadLinks();
   await loadNotifications();
@@ -8351,6 +8359,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   restoreInFlight = true;
   await restoreUiPanelsAndModals(restoredUiState);
   restoreInFlight = false;
+
+  if (bootWorldId && worldsFeature?.openWorldById && !activeWorldContext?.world?.id) {
+    await worldsFeature.openWorldById(bootWorldId);
+  }
 
   initializeRealtimeRefresh();
   persistUiStateNow();
