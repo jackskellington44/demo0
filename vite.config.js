@@ -2,7 +2,8 @@ import { defineConfig } from "vite";
 import { resolve } from "path";
 
 export default defineConfig({
-  base: "/demo0/",
+  // Use root base path for custom-domain GitHub Pages hosting.
+  base: "/",
   build: {
     rollupOptions: {
       input: {

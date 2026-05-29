@@ -2312,11 +2312,18 @@ body.profile-open.notif-open .world-maker-overlay { left: var(--profile-w); righ
   top: 34px;
 }
 
+.world-card-badge--password {
+  background: rgba(0,0,0,0.58);
+  color: #8ec6ff;
+  border: 1px solid rgba(142, 198, 255, 0.4);
+  top: 58px;
+}
+
 .world-card-badge--update {
   background: rgba(0, 0, 0, 0.62);
   color: #ffdf4d;
   border: 1px solid rgba(255, 223, 77, 0.42);
-  top: 58px;
+  top: 82px;
   cursor: pointer;
   pointer-events: auto;
 }
@@ -2346,6 +2353,20 @@ body.profile-open.notif-open .world-maker-overlay { left: var(--profile-w); righ
   font-size: 0.7rem;
   text-transform: lowercase;
   cursor: pointer;
+}
+
+.world-card-move {
+  position: absolute;
+  top: 22px;
+  left: -10px;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid rgba(0, 0, 0, 0.82);
+  background: rgba(255, 255, 255, 0.9);
+  color: rgba(0, 0, 0, 0.84);
+  font-size: 0.7rem;
+  text-transform: lowercase;
+  cursor: move;
 }
 
 .world-card-update-action {
@@ -2392,6 +2413,49 @@ body.profile-open.notif-open .world-mode-chrome {
   gap: 8px;
 }
 
+.world-mode-myworlds-menu {
+  position: absolute;
+  top: 50px;
+  right: 16px;
+  z-index: 3;
+  width: min(280px, calc(100vw - 40px));
+  max-height: min(52vh, 380px);
+  overflow-y: auto;
+  border: 1px solid rgba(0, 0, 0, 0.82);
+  background: rgba(0, 0, 0, 0.78);
+  box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.72);
+  pointer-events: auto;
+}
+
+.world-mode-myworlds-item {
+  width: 100%;
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.75rem;
+  line-height: 1.25;
+  text-align: left;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.world-mode-myworlds-item:first-child {
+  border-top: none;
+}
+
+.world-mode-myworlds-item:hover,
+.world-mode-myworlds-item.is-active {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.world-mode-myworlds-empty {
+  padding: 10px;
+  font-size: 0.74rem;
+  color: color-mix(in srgb, var(--world-mode-font-color, currentColor) 70%, transparent);
+}
+
 .world-mode-tab,
 .world-mode-delete {
   border-radius: 0;
@@ -2406,6 +2470,10 @@ body.profile-open.notif-open .world-mode-chrome {
   cursor: pointer;
   min-height: 0;
   box-shadow: 1.5px 1.5px 0 rgba(0, 0, 0, 0.72);
+}
+
+.world-mode-tab-myworlds.is-open {
+  background: rgba(255, 255, 255, 0.08);
 }
 
 
@@ -2475,6 +2543,138 @@ body.profile-open.notif-open .world-mode-chrome {
   pointer-events: none;
 }
 
+.world-password-overlay {
+  position: fixed;
+  inset: 0 var(--notif-bar-w) 44px 0;
+  z-index: 141;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.56);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  padding: 20px;
+  transition: left 0.2s ease, right 0.2s ease;
+}
+
+body.notif-open .world-password-overlay {
+  right: var(--notif-panel-w);
+}
+
+body.profile-open .world-password-overlay {
+  left: var(--profile-w);
+}
+
+body.profile-open.notif-open .world-password-overlay {
+  left: var(--profile-w);
+  right: var(--notif-panel-w);
+}
+
+.world-password-modal {
+  width: min(440px, 100%);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(0, 0, 0, 0.74);
+  box-shadow: 0 18px 54px rgba(0, 0, 0, 0.52);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.world-password-kicker {
+  color: rgba(255, 255, 255, 0.42);
+  font-size: 0.72rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.world-password-title {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.94);
+  font-size: 1.36rem;
+  font-weight: 400;
+}
+
+.world-password-copy {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.66);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.world-password-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.world-password-field > span {
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 0.74rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.world-password-field input {
+  width: 100%;
+  border: none;
+  border-bottom: 2px solid rgba(255, 255, 255, 0.22);
+  background: transparent;
+  color: rgba(255, 255, 255, 0.9);
+  font-family: inherit;
+  font-size: 0.96rem;
+  padding: 8px 0;
+  outline: none;
+  transition: border-bottom-color 0.15s ease;
+}
+
+.world-password-field input:focus {
+  border-bottom-color: rgba(255, 255, 255, 0.5);
+}
+
+.world-password-error {
+  min-height: 1.2em;
+  color: rgba(255, 163, 163, 0.95);
+  font-size: 0.8rem;
+}
+
+.world-password-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.world-password-secondary,
+.world-password-primary {
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: transparent;
+  color: rgba(255, 255, 255, 0.76);
+  font-family: inherit;
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+  text-transform: lowercase;
+  min-height: 36px;
+  padding: 0 14px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.world-password-secondary:hover,
+.world-password-primary:hover {
+  color: rgba(255, 255, 255, 0.95);
+  border-color: rgba(255, 255, 255, 0.44);
+}
+
+.world-password-primary {
+  color: rgba(142, 198, 255, 0.96);
+  border-color: rgba(142, 198, 255, 0.48);
+}
+
+.world-password-primary:hover {
+  color: rgba(188, 223, 255, 0.98);
+  border-color: rgba(188, 223, 255, 0.72);
+}
+
 .post-form-category-display.is-disabled,
 .post-form-category-menu-btn.is-disabled {
   opacity: 0.42;
@@ -2510,5 +2710,9 @@ body.profile-open.notif-open .world-mode-chrome {
     right: 12px;
     width: auto;
     bottom: 12px;
+  }
+
+  .world-password-modal {
+    padding: 18px;
   }
 }

@@ -1490,16 +1490,36 @@ async function tryDropPlacement(e) {
     return; // keep sticky until a valid spot
   }
 
-  let placementQuery = supabase
-  .from('posts')
-  .update({ x, y })
-  .eq('id', placingPost.id);
+  const worldId = String(placingCardEl.dataset.worldId || '').trim();
+  const postId = String(placingPost?.id || '').trim();
 
-if (!currentUserData?.is_admin) {
-  placementQuery = placementQuery.eq('user_id', currentUser.id);
-}
+  let placementQuery = null;
+  if (worldId) {
+    placementQuery = supabase
+      .from('worlds')
+      .update({ x, y })
+      .eq('id', worldId);
 
-const { error } = await placementQuery;
+    if (!currentUserData?.is_admin) {
+      placementQuery = placementQuery.eq('user_id', currentUser.id);
+    }
+  } else {
+    placementQuery = supabase
+      .from('posts')
+      .update({ x, y })
+      .eq('id', postId);
+
+    if (!currentUserData?.is_admin) {
+      placementQuery = placementQuery.eq('user_id', currentUser.id);
+    }
+  }
+
+  const { error } = await placementQuery;
+  if (error) {
+    console.error('Placement save failed:', error);
+    alert(`Placement save failed: ${error.message}`);
+    return;
+  }
 
   placingPost.x = x;
   placingPost.y = y;
@@ -1685,6 +1705,98 @@ function centerCanvasOnPost(postId) {
   return true;
 }
 
+function getPostCanvasCenterPoint(post) {
+  const targetId = String(post?.id || '');
+  const cardEl = targetId
+    ? postCanvas?.querySelector(`.post-card[data-post-id="${targetId}"]`)
+    : null;
+
+  if (cardEl) {
+    const cardX = parseFloat(cardEl.style.left || '0');
+    const cardY = parseFloat(cardEl.style.top || '0');
+    const cardScale = getCardScale(cardEl);
+    const cardW = (cardEl.offsetWidth || 0) * cardScale;
+    const cardH = (cardEl.offsetHeight || 0) * cardScale;
+    return {
+      x: cardX + (cardW / 2),
+      y: cardY + (cardH / 2)
+    };
+  }
+
+  return {
+    x: Number(post?.x || 0) + 160,
+    y: Number(post?.y || 0) + 110
+  };
+}
+
+function frameWorldViewportOnDensePosts(posts = lastLoadedPosts) {
+  if (!postCanvas || !activeWorldContext?.world?.id) return false;
+
+  const worldPosts = (posts || []).filter(Boolean);
+  if (!worldPosts.length) return false;
+
+  const points = worldPosts.map((post) => {
+    const center = getPostCanvasCenterPoint(post);
+    return {
+      id: String(post.id || ''),
+      x: center.x,
+      y: center.y
+    };
+  });
+
+  if (!points.length) return false;
+
+  const radius = 760;
+  const radiusSq = radius * radius;
+  let densestMembers = points;
+
+  points.forEach((anchor) => {
+    const members = points.filter((point) => {
+      const dx = point.x - anchor.x;
+      const dy = point.y - anchor.y;
+      return (dx * dx) + (dy * dy) <= radiusSq;
+    });
+
+    if (members.length > densestMembers.length) {
+      densestMembers = members;
+    }
+  });
+
+  const cluster = densestMembers.length ? densestMembers : points;
+  const centroid = cluster.reduce((acc, point) => {
+    acc.x += point.x;
+    acc.y += point.y;
+    return acc;
+  }, { x: 0, y: 0 });
+  centroid.x /= cluster.length;
+  centroid.y /= cluster.length;
+
+  const minX = Math.min(...cluster.map((point) => point.x));
+  const maxX = Math.max(...cluster.map((point) => point.x));
+  const minY = Math.min(...cluster.map((point) => point.y));
+  const maxY = Math.max(...cluster.map((point) => point.y));
+
+  const viewport = document.getElementById('canvasViewport');
+  const viewportRect = viewport?.getBoundingClientRect?.();
+  if (!viewportRect) return false;
+
+  const viewportW = Math.max(1, viewportRect.width);
+  const viewportH = Math.max(1, viewportRect.height);
+  const clusterW = Math.max(360, (maxX - minX) + 320);
+  const clusterH = Math.max(240, (maxY - minY) + 220);
+
+  const fittedScale = Math.min((viewportW * 0.82) / clusterW, (viewportH * 0.82) / clusterH, 0.2);
+  const targetScale = clampNumber(fittedScale, 0.08, 0.2);
+  canvasScale = targetScale;
+
+  const viewportCenterX = (viewportRect.left + viewportRect.right) / 2;
+  const viewportCenterY = (viewportRect.top + viewportRect.bottom) / 2;
+  canvasOffsetX = viewportCenterX - (centroid.x * canvasScale);
+  canvasOffsetY = viewportCenterY - (centroid.y * canvasScale);
+  applyCanvasTransform();
+  return true;
+}
+
 function applyWorldFormCategoryLock() {
   const inWorldMode = Boolean(activeWorldContext?.world?.category);
 
@@ -1715,6 +1827,8 @@ async function enterWorldMode(worldPayload) {
   applyWorldModeVisuals(worldPayload);
 
   await loadPosts();
+  await waitForLayoutStability();
+  frameWorldViewportOnDensePosts(lastLoadedPosts);
   await loadLinks();
   renderLinks(lastLoadedPosts, lastLoadedLinks);
 }
@@ -5292,6 +5406,8 @@ async function openProfileModal(userId) {
       item.textContent  = label;
 
       item.addEventListener('click', async () => {
+        const wasPostModalOpen = postDetailOverlay?.style.display === 'flex';
+
         const { data: fullPost } = await supabase
           .from('posts').select('*').eq('id', p.id).single();
         if (!fullPost) return;
@@ -5338,6 +5454,11 @@ async function openProfileModal(userId) {
         }
 
         centerCanvasOnPost(fullPost.id);
+
+        if (!wasPostModalOpen) {
+          return;
+        }
+
         closeProfileModal();
         openPostDetailModal(fullPost, user);
       });
@@ -6012,10 +6133,13 @@ async function loadPosts() {
     const worldCategoryFilter = activeCategoryFilter && activeCategoryFilter !== NONE_CATEGORY_FILTER
       ? activeCategoryFilter
       : null;
-    const worldsPromise = (!activeWorldContext && worldsFeature)
+    const activeParentWorldId = activeWorldContext?.world?.id || null;
+    const worldsPromise = worldsFeature
       ? worldsFeature.loadWorlds({
-          userId: !editMode ? activeUserFilter : null,
-          category: !editMode ? worldCategoryFilter : null
+          userId: (!editMode && !activeWorldContext) ? activeUserFilter : null,
+          category: (!editMode && !activeWorldContext) ? worldCategoryFilter : null,
+          parentWorldId: activeParentWorldId,
+          rootOnly: !activeWorldContext
         })
       : Promise.resolve([]);
 
@@ -6087,25 +6211,29 @@ async function loadPosts() {
       postCanvas.appendChild(card);
     });
 
-    if (!activeWorldContext) {
-      (lastLoadedWorlds || []).forEach((world, index) => {
-        const user = userMap[world.user_id] || {};
-        const card = worldsFeature.buildWorldCard(world, user, {
-          index: (lastLoadedPosts?.length || 0) + index,
-          editMode,
-          onFilterUser: (userId) => {
-            activeUserFilter = activeUserFilter === userId ? null : userId;
-            loadPosts();
-          },
-          onFilterCategory: (category) => {
-            const nextFilter = category || NONE_CATEGORY_FILTER;
-            activeCategoryFilter = activeCategoryFilter === nextFilter ? null : nextFilter;
-            loadPosts();
-          }
-        });
-        postCanvas.appendChild(card);
+    (lastLoadedWorlds || []).forEach((world, index) => {
+      const user = userMap[world.user_id] || {};
+      const card = worldsFeature.buildWorldCard(world, user, {
+        x: world.x,
+        y: world.y,
+        index: (lastLoadedPosts?.length || 0) + index,
+        editMode,
+        onBeginMove: (worldRow, cardEl, pointerEvent) => {
+          if (!editMode) return;
+          startPlacement(worldRow, cardEl, pointerEvent);
+        },
+        onFilterUser: (userId) => {
+          activeUserFilter = activeUserFilter === userId ? null : userId;
+          loadPosts();
+        },
+        onFilterCategory: (category) => {
+          const nextFilter = category || NONE_CATEGORY_FILTER;
+          activeCategoryFilter = activeCategoryFilter === nextFilter ? null : nextFilter;
+          loadPosts();
+        }
       });
-    }
+      postCanvas.appendChild(card);
+    });
 
     console.log(`Loaded ${lastLoadedPosts?.length || 0} posts and ${lastLoadedWorlds?.length || 0} worlds`);
 
@@ -8329,8 +8457,27 @@ document.addEventListener('DOMContentLoaded', async () => {
     getCurrentUser: () => currentUser,
     getIsEditMode: () => editMode,
     getCategories: () => categoryRecords,
-    onWorldCreated: async () => {
+    onWorldCreated: async (world, options = {}) => {
       await loadPosts();
+      await loadLinks();
+      renderLinks(lastLoadedPosts, lastLoadedLinks);
+
+      if (!options?.startPlacement || !world?.id) {
+        return;
+      }
+
+      const worldCardEl = postCanvas?.querySelector(`.world-card[data-world-id="${world.id}"]`);
+      if (!worldCardEl) {
+        return;
+      }
+
+      await waitForCardMedia(worldCardEl);
+      await waitForLayoutStability();
+      startPlacement(
+        world,
+        worldCardEl,
+        window.__lastMouseEventForPlacement || { clientX: 200, clientY: 200 }
+      );
     },
     onWorldDeleted: async () => {
       await loadPosts();
