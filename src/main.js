@@ -2155,6 +2155,7 @@ function formatTaskListMarkup(html) {
 function normalizeLinkUrl(value) {
   const trimmed = String(value || '').trim();
   if (!trimmed) return null;
+  if (/\s/.test(trimmed)) return null;
 
   const candidate = /^[a-z]+:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
 
@@ -2905,8 +2906,13 @@ function refreshPostTextMentions() {
   const wasFocused = document.activeElement === postText;
   const selectionOffsets = wasFocused ? getEditableSelectionOffsets(postText) : null;
 
-  const withMentions = formatBodyTextWithMentions(postText.innerHTML || '');
-  postText.innerHTML = applyPostTextSpellcheckMarkup(withMentions);
+  const sourceHtml = postText.innerHTML || '';
+  const normalizedHtml = formatBodyText(sourceHtml);
+  const nextHtml = applyPostTextSpellcheckMarkup(normalizedHtml);
+
+  if (postText.innerHTML !== nextHtml) {
+    postText.innerHTML = nextHtml;
+  }
 
   if (wasFocused && selectionOffsets) {
     restoreEditableSelectionOffsets(postText, selectionOffsets.start, selectionOffsets.end);
@@ -2915,17 +2921,17 @@ function refreshPostTextMentions() {
 
 function schedulePostTextMentionRefresh() {
   if (postTextMentionRefreshRaf) {
-    window.cancelAnimationFrame(postTextMentionRefreshRaf);
+    window.clearTimeout(postTextMentionRefreshRaf);
   }
 
-  postTextMentionRefreshRaf = window.requestAnimationFrame(() => {
+  postTextMentionRefreshRaf = window.setTimeout(() => {
     postTextMentionRefreshRaf = 0;
     refreshPostTextMentions();
-  });
+  }, 80);
 }
 
 function formatBodyTextWithMentions(text, options = {}) {
-  return formatTaskListMarkup(highlightMentionsInHtml(formatBodyText(text), options));
+  return formatBodyText(text, options);
 }
 
 async function queueMentionNotifications({ notificationType, sourcePostId, sourceText, actorUserId }) {
@@ -3024,6 +3030,12 @@ function sanitizeBodyHtml(value) {
   template.innerHTML = value;
   const container = document.createElement('div');
 
+  const appendBlockSeparator = (targetParent) => {
+    if (!targetParent.lastChild) return;
+    if (targetParent.lastChild.nodeType === Node.ELEMENT_NODE && targetParent.lastChild.tagName === 'BR') return;
+    targetParent.appendChild(document.createElement('br'));
+  };
+
   function sanitizeNode(node, targetParent, inList = false) {
     if (node.nodeType === Node.TEXT_NODE) {
       if (node.textContent) {
@@ -3055,31 +3067,15 @@ function sanitizeBodyHtml(value) {
       return;
     }
 
-    if (tag === 'ul' || tag === 'ol') {
-      const list = document.createElement(tag);
-      [...node.childNodes].forEach(child => sanitizeNode(child, list, true));
-      if (hasRenderableBodyContent(list)) targetParent.appendChild(list);
-      return;
-    }
-
-    if (tag === 'li') {
-      const listItem = document.createElement('li');
-      [...node.childNodes].forEach(child => sanitizeNode(child, listItem, true));
-      if (!hasRenderableBodyContent(listItem)) return;
-      if (inList) {
-        targetParent.appendChild(listItem);
-      } else {
-        const fallbackList = document.createElement('ul');
-        fallbackList.appendChild(listItem);
-        targetParent.appendChild(fallbackList);
-      }
-      return;
-    }
-
     if (tag === 'p' || tag === 'div') {
-      const block = document.createElement(tag);
-      [...node.childNodes].forEach(child => sanitizeNode(child, block, false));
-      if (hasRenderableBodyContent(block)) targetParent.appendChild(block);
+      appendBlockSeparator(targetParent);
+      [...node.childNodes].forEach(child => sanitizeNode(child, targetParent, false));
+      return;
+    }
+
+    if (tag === 'ul' || tag === 'ol' || tag === 'li') {
+      appendBlockSeparator(targetParent);
+      [...node.childNodes].forEach(child => sanitizeNode(child, targetParent, false));
       return;
     }
 
@@ -3139,9 +3135,13 @@ function renderPostBodyMarkup(
   const bodyText = getBodyPlainText(text);
   const hasBodyContent = hasRenderableBodyMarkup(text);
   const bodyExternalUrl = bodyText ? getPostExternalUrl(bodyText) : null;
-  const shouldRenderBodyText = hasBodyContent && bodyExternalUrl !== externalUrl;
+  const normalizedExternalUrl = getPostExternalUrl(externalUrl);
+  const bodyIsDuplicateExternalLink = Boolean(
+    bodyExternalUrl && normalizedExternalUrl && bodyExternalUrl === normalizedExternalUrl
+  );
+  const shouldRenderBodyText = hasBodyContent && !bodyIsDuplicateExternalLink;
   const bodyMarkup = shouldRenderBodyText
-    ? `<div class="post-body">${formatBodyTextWithMentions(text, { clickable: clickableMentions })}</div>`
+    ? `<div class="post-body">${formatBodyText(text)}</div>`
     : '';
   const externalLinkMarkup = renderPostExternalLinkMarkup(externalUrl, {
     clickable: clickableExternalUrl
@@ -3184,7 +3184,7 @@ function getPostPreviewLabel(post, { maxLength = 60, fallback = 'untitled' } = {
 
 function setPostTextBody(text) {
   postSpellIgnoreOne.clear();
-  postText.innerHTML = formatBodyTextWithMentions(text || '');
+  postText.innerHTML = formatBodyText(text || '');
   schedulePostTextMentionRefresh();
 }
 
@@ -3220,14 +3220,26 @@ function handlePostTextPaste(e) {
   const html = e.clipboardData?.getData('text/html');
   const text = e.clipboardData?.getData('text/plain') || '';
   const sanitized = html
-    ? formatBodyTextWithMentions(html)
-    : formatBodyTextWithMentions(text);
+    ? formatBodyText(html)
+    : formatBodyText(text);
 
   e.preventDefault();
   insertHtmlAtCursor(sanitized || escapeHtml(text));
 }
 
 function handlePostTextKeydown(e) {
+  const isShortcut = (e.ctrlKey || e.metaKey) && !e.altKey;
+
+  if (isShortcut && !e.shiftKey) {
+    const key = String(e.key || '').toLowerCase();
+    if (key === 'b' || key === 'i') {
+      e.preventDefault();
+      document.execCommand(key === 'b' ? 'bold' : 'italic', false);
+      schedulePostTextMentionRefresh();
+      return;
+    }
+  }
+
   if (e.key !== 'Enter' || e.shiftKey) return;
 
   e.preventDefault();
@@ -8041,6 +8053,7 @@ function initializeEventListeners() {
 
       if (postSpellMenuState.tokenEl) {
         replaceSpellTokenText(postSpellMenuState.tokenEl, postSpellMenuState.suggestion);
+        postText?.focus();
         schedulePostTextMentionRefresh();
       } else if (
         postSpellMenuState.fieldEl
@@ -8073,6 +8086,7 @@ function initializeEventListeners() {
       if (postSpellMenuState.tokenEl) {
         postSpellIgnoreOne.add(postSpellMenuState.key);
         replaceSpellTokenText(postSpellMenuState.tokenEl, postSpellMenuState.tokenEl.textContent || '');
+        postText?.focus();
       } else if (postSpellMenuState.fieldEl) {
         const ignoreSet = getPostSpellFieldIgnoreSet(postSpellMenuState.fieldEl);
         ignoreSet.add(postSpellMenuState.key);
@@ -8185,8 +8199,11 @@ function initializeEventListeners() {
   postText?.addEventListener('click', openPostTextSpellMenu);
   postText?.addEventListener('contextmenu', openPostTextSpellMenu);
   postText?.addEventListener('blur', () => {
+    const activeEl = document.activeElement;
+    if (activeEl && activeEl.closest && activeEl.closest('#postSpellContextMenu')) {
+      return;
+    }
     hidePostSpellMenu();
-    refreshPostTextMentions();
   });
 
   document.addEventListener('click', (e) => {
