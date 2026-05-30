@@ -22,7 +22,7 @@
      *   e.g. url("./images/my-bg.jpg") or linear-gradient(135deg, #0f0c29, #302b63).
      * ============================================= */
     --font-family:    Arial, Helvetica, sans-serif;
-    --bg-url:         url("./images/background.jpg");
+    --bg-url:         url("/images/background.jpg");
 
     /* Font scale */
     --font-size-base: 0.875rem;
