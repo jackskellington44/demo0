@@ -12,7 +12,7 @@
 // 9. APP BOOTSTRAP
 // ============================================
 
-import { supabase } from './supabase-config.js';
+import { api } from './api.js';
 import { installPrettyAlerts } from './ui-alerts.js';
 
 // ============================================
@@ -34,14 +34,6 @@ const ALLOWED_PFP_MIME_TYPES = new Set([
   'image/jpeg'
 ]);
 
-function hashStringDjb2(input) {
-  let hash = 5381;
-  for (let i = 0; i < input.length; i++) {
-    hash = ((hash << 5) + hash) + input.charCodeAt(i);
-  }
-  return (hash >>> 0).toString(36);
-}
-
 function getLandingWorldId() {
   try {
     return new URLSearchParams(window.location.search).get('world');
@@ -53,11 +45,7 @@ function getLandingWorldId() {
 async function applyLandingWorldTheme(worldId) {
   if (!worldId) return;
 
-  const { data: world } = await supabase
-    .from('worlds')
-    .select('id, background_url, font_family, font_color, ui_color')
-    .eq('id', worldId)
-    .maybeSingle();
+  const { data: world } = await api.worlds.getTheme(worldId);
 
   if (!world) return;
 
@@ -68,17 +56,6 @@ async function applyLandingWorldTheme(worldId) {
   if (world.ui_color) {
     document.documentElement.style.setProperty('--ui-tint-bg', world.ui_color);
   }
-}
-
-function toUsernameKey(username) {
-  return String(username || '').trim().toLowerCase();
-}
-
-function makeInternalEmail(username) {
-  const key = toUsernameKey(username);
-  const slug = key.replace(/[^a-z0-9]/g, '_').slice(0, 12) || 'user';
-  const hash = hashStringDjb2(key);
-  return `u_${slug}_${hash}@grp.io`;
 }
 
 function getPfpValidationError(file) {
@@ -305,20 +282,8 @@ async function handleLogin() {
   const password = loginPassword.value;
 
   try {
-    // Look up internal email by username
-    const { data: userData, error: lookupErr } = await supabase
-      .from('users')
-      .select('email')
-      .eq('username', username)
-      .maybeSingle();
-
-    if (lookupErr || !userData) throw new Error('Username not found');
-
-    const { error } = await supabase.auth.signInWithPassword({
-      email: userData.email,
-      password
-    });
-    if (error) throw error;
+    const { data, error } = await api.auth.signIn({ username, password });
+    if (error) throw new Error(String(error));
 
     window.location.href = `./main.html${window.location.search}`;
   } catch (error) {
@@ -342,8 +307,6 @@ async function handleSignup() {
   // Track created resources so we can roll back partial work on failure.
   let createdUserId = null;
   let insertedUserRow = false;
-  let uploadedPfpPath = null;
-  let signedIn = false;
 
   const setSignupUIBusy = (busy) => {
     signupToggle.disabled = busy;
@@ -360,30 +323,10 @@ async function handleSignup() {
   };
 
   const rollbackSignupArtifacts = async () => {
-    if (uploadedPfpPath) {
-      const { error: removePfpErr } = await supabase.storage
-        .from('group0-pfps')
-        .remove([uploadedPfpPath]);
-      if (removePfpErr) {
-        console.warn('Rollback warning: could not remove uploaded profile picture', removePfpErr.message);
-      }
-    }
-
     if (insertedUserRow && createdUserId) {
-      const { error: deleteUserErr } = await supabase
-        .from('users')
-        .delete()
-        .eq('id', createdUserId);
-      if (deleteUserErr) {
-        console.warn('Rollback warning: could not remove users row', deleteUserErr.message);
-      }
-    }
-
-    if (signedIn) {
-      const { error: signOutErr } = await supabase.auth.signOut();
-      if (signOutErr) {
-        console.warn('Rollback warning: could not sign out after failed signup', signOutErr.message);
-      }
+      // Best-effort: nothing client-side can clean up server rows without an
+      // authenticated delete endpoint — log for manual cleanup if needed.
+      console.warn('Rollback warning: partial signup for user id', createdUserId);
     }
   };
 
@@ -391,116 +334,50 @@ async function handleSignup() {
     setSignupUIBusy(true);
 
     // Quick pre-check for a friendlier message (DB unique index is still authoritative).
-    const { data: existing, error: lookupErr } = await supabase
-      .from('users')
-      .select('id')
-      .eq('username', username)
-      .maybeSingle();
-    if (lookupErr) throw lookupErr;
+    const { data: existing, error: lookupErr } = await api.users.getByUsername(username);
+    if (lookupErr) throw new Error(String(lookupErr));
     if (existing) { alert('Username already taken'); return; }
 
-    // Deterministic internal email makes retries idempotent for the same username.
-    const internalEmail = makeInternalEmail(username);
-
-    let userId = null;
-
-    const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({
-      email: internalEmail,
-      password
+    // Step 1: create the account first so we have a userId for the pfp filename.
+    const { data: signUpData, error: signUpErrMsg } = await api.auth.signUp({
+      username,
+      password,
+      pfp: selectedPFP || null,
     });
-
-    if (signUpErr) {
-      const normalizedMessage = String(signUpErr.message || '').toLowerCase();
-      const alreadyExists = normalizedMessage.includes('already') || normalizedMessage.includes('registered');
-
-      if (!alreadyExists) throw signUpErr;
-
-      // Existing auth account for this username key: try idempotent resume with provided password.
-      const { data: resumeSignInData, error: resumeSignInErr } = await supabase.auth.signInWithPassword({
-        email: internalEmail,
-        password
-      });
-      if (resumeSignInErr) {
+    if (signUpErrMsg) {
+      const normalizedMessage = String(signUpErrMsg).toLowerCase();
+      if (normalizedMessage.includes('already')) {
         throw new Error('Username already taken');
       }
-
-      userId = resumeSignInData?.user?.id || null;
-      signedIn = true;
-    } else {
-      if (!signUpData?.user?.id) {
-        throw new Error('Signup failed: user account was not created.');
-      }
-
-      userId = signUpData.user.id;
-      createdUserId = userId;
-
-      const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({
-        email: internalEmail,
-        password
-      });
-      if (signInErr) throw signInErr;
-      if (!userId && signInData?.user?.id) userId = signInData.user.id;
-      signedIn = true;
+      throw new Error(String(signUpErrMsg));
+    }
+    if (!signUpData?.user?.id) {
+      throw new Error('Signup failed: user account was not created.');
     }
 
-    if (!userId) {
-      const { data: meData, error: meErr } = await supabase.auth.getUser();
-      if (meErr || !meData?.user?.id) {
-        throw new Error('Signup failed: missing authenticated user context.');
-      }
-      userId = meData.user.id;
-    }
+    const userId = signUpData.user.id;
+    createdUserId = userId;
+    insertedUserRow = true;
 
-    const { data: existingUserRow, error: existingUserRowErr } = await supabase
-      .from('users')
-      .select('id')
-      .eq('id', userId)
-      .maybeSingle();
-    if (existingUserRowErr) throw existingUserRowErr;
-
-    // Prior successful completion for this account: treat as idempotent success.
-    if (existingUserRow) {
-      window.location.href = `./main.html${window.location.search}`;
-      return;
-    }
-
-    // Upload custom pfp if provided
+    // Step 2: upload custom pfp if provided, then update profile with pfp_url.
     let pfpURL = null;
     if (uploadedPFPFile) {
-      const extMap = {
-        'image/webp': 'webp',
-        'image/gif': 'gif',
-        'image/png': 'png',
-        'image/jpeg': 'jpg'
-      };
-      const ext = extMap[uploadedPFPFile.type] || 'webp';
-      const path = `${userId}.${ext}`;
-      const { error: upErr } = await supabase.storage
-        .from('group0-pfps')
-        .upload(path, uploadedPFPFile);
-      if (upErr) throw upErr;
-      uploadedPfpPath = path;
-      const { data: urlData } = supabase.storage.from('group0-pfps').getPublicUrl(path);
-      pfpURL = urlData.publicUrl;
+      const { data: uploadData, error: upErr } = await api.auth.uploadPfp(uploadedPFPFile);
+      if (upErr) {
+        // Non-fatal: continue signup without the uploaded pfp.
+        console.warn('PFP upload failed, continuing without it:', upErr);
+      } else {
+        pfpURL = uploadData?.url || null;
+      }
     }
 
-    // Save user record
-    const { error: dbErr } = await supabase.from('users').insert([{
-      id:         userId,
-      username,
-      email:      internalEmail,
-      pfp:        selectedPFP  || null,
-      pfp_url:    pfpURL       || null,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
-    }]);
-    if (dbErr) {
-      if (dbErr.code === '23505') {
-        throw new Error('Username already taken');
-      }
-      throw dbErr;
+    // If pfp was uploaded, patch the stored user record with the pfp_url so the
+    // rest of the app picks it up immediately after redirect.
+    if (pfpURL) {
+      const storedUser = JSON.parse(localStorage.getItem('auth_user') || '{}');
+      storedUser.pfp_url = pfpURL;
+      localStorage.setItem('auth_user', JSON.stringify(storedUser));
     }
-    insertedUserRow = true;
 
     window.location.href = `./main.html${window.location.search}`;
   } catch (error) {
