@@ -14,15 +14,48 @@ const multer       = require('multer');
 const rateLimit    = require('express-rate-limit');
 const Minio        = require('minio');
 const { v4: uuidv4 } = require('uuid');
-const path         = require('path');
 
 const pool           = require('./db');
 const authMiddleware = require('./middleware/auth');
 
-const app    = express();
-const upload = multer({ storage: multer.memoryStorage() });
+const app = express();
 
-// ─── Middleware ────────────────────────────────────────────────────────────────
+// ─── Constants ─────────────────────────────────────────────────────────────────
+
+const JWT_SECRET     = process.env.JWT_SECRET;
+const BCRYPT_ROUNDS  = parseInt(process.env.BCRYPT_ROUNDS || '10', 10);
+const MINIO_USE_SSL  = process.env.MINIO_USE_SSL === 'true';
+const MINIO_ENDPOINT = process.env.MINIO_ENDPOINT || 'localhost';
+const MINIO_PORT     = process.env.MINIO_PORT     || '9000';
+const MINIO_BUCKET   = process.env.MINIO_BUCKET   || 'group0-pfps';
+const MINIO_PROTOCOL = MINIO_USE_SSL ? 'https' : 'http';
+
+const MAX_PFP_BYTES = 2 * 1024 * 1024; // 2 MB
+const ALLOWED_PFP_MIMETYPES = new Set(['image/webp', 'image/gif', 'image/png', 'image/jpeg']);
+const MIME_TO_EXT = { 'image/webp': 'webp', 'image/gif': 'gif', 'image/png': 'png', 'image/jpeg': 'jpg' };
+
+// Username: 1–30 chars, letters/digits/underscore/hyphen only
+const USERNAME_RE = /^[A-Za-z0-9_-]{1,30}$/;
+const MIN_PASSWORD_LENGTH = 6;
+
+// ─── MinIO client ──────────────────────────────────────────────────────────────
+
+const minioClient = new Minio.Client({
+  endPoint:  MINIO_ENDPOINT,
+  port:      parseInt(MINIO_PORT, 10),
+  useSSL:    MINIO_USE_SSL,
+  accessKey: process.env.MINIO_ACCESS_KEY || 'admin',
+  secretKey: process.env.MINIO_SECRET_KEY || 'changeme',
+});
+
+// ─── Multer (memory, with size limit) ─────────────────────────────────────────
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_PFP_BYTES },
+});
+
+// ─── App middleware ────────────────────────────────────────────────────────────
 
 app.use(cors());
 app.use(express.json());
@@ -30,7 +63,7 @@ app.use(express.json());
 // ─── Rate limiting ─────────────────────────────────────────────────────────────
 
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
+  windowMs: 15 * 60 * 1000,
   max: 20,
   standardHeaders: true,
   legacyHeaders: false,
@@ -52,26 +85,6 @@ const readLimiter = rateLimit({
   legacyHeaders: false,
   message: { data: null, error: 'Too many requests, please try again later.' },
 });
-
-// ─── MinIO client ──────────────────────────────────────────────────────────────
-
-const MINIO_USE_SSL  = process.env.MINIO_USE_SSL === 'true';
-const MINIO_ENDPOINT = process.env.MINIO_ENDPOINT  || 'localhost';
-const MINIO_PORT     = process.env.MINIO_PORT       || '9000';
-const MINIO_BUCKET   = process.env.MINIO_BUCKET     || 'group0-pfps';
-const PI_HOST        = process.env.PI_HOST           || 'localhost';
-const MINIO_PROTOCOL = MINIO_USE_SSL ? 'https' : 'http';
-
-const minioClient = new Minio.Client({
-  endPoint:  MINIO_ENDPOINT,
-  port:      parseInt(MINIO_PORT, 10),
-  useSSL:    MINIO_USE_SSL,
-  accessKey: process.env.MINIO_ACCESS_KEY || 'admin',
-  secretKey: process.env.MINIO_SECRET_KEY || 'changeme',
-});
-
-const JWT_SECRET    = process.env.JWT_SECRET;
-const BCRYPT_ROUNDS = parseInt(process.env.BCRYPT_ROUNDS || '10', 10);
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -95,9 +108,14 @@ app.post('/auth/signup', authLimiter, async (req, res) => {
   if (!username || !password) {
     return res.status(400).json({ data: null, error: 'username and password are required' });
   }
+  if (!USERNAME_RE.test(username)) {
+    return res.status(400).json({ data: null, error: 'Username must be 1–30 characters and may only contain letters, numbers, underscores, or hyphens' });
+  }
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    return res.status(400).json({ data: null, error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` });
+  }
 
   try {
-    // Check username availability
     const { rows: existing } = await pool.query(
       'SELECT id FROM public.users WHERE username = $1',
       [username]
@@ -107,7 +125,7 @@ app.post('/auth/signup', authLimiter, async (req, res) => {
     }
 
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
-    const id = uuidv4();
+    const id  = uuidv4();
     const now = new Date().toISOString();
 
     await pool.query(
@@ -188,13 +206,17 @@ app.post('/auth/upload-pfp', uploadLimiter, authMiddleware, upload.single('file'
     return res.status(400).json({ data: null, error: 'No file uploaded' });
   }
 
-  const extMap = {
-    'image/webp': 'webp',
-    'image/gif':  'gif',
-    'image/png':  'png',
-    'image/jpeg': 'jpg',
-  };
-  const ext       = extMap[req.file.mimetype] || path.extname(req.file.originalname).slice(1) || 'webp';
+  // Enforce allowed mimetypes explicitly — no fallback to originalname extension
+  if (!ALLOWED_PFP_MIMETYPES.has(req.file.mimetype)) {
+    return res.status(400).json({ data: null, error: 'Profile picture must be webp, gif, png, or jpeg' });
+  }
+
+  // Enforce file size (multer limit covers the stream, but re-check the buffer size)
+  if (req.file.size > MAX_PFP_BYTES) {
+    return res.status(400).json({ data: null, error: 'Profile picture must be 2 MB or smaller' });
+  }
+
+  const ext       = MIME_TO_EXT[req.file.mimetype];
   const objectKey = `${req.user.id}.${ext}`;
 
   try {
@@ -202,7 +224,14 @@ app.post('/auth/upload-pfp', uploadLimiter, authMiddleware, upload.single('file'
       'Content-Type': req.file.mimetype,
     });
 
-    const url = `${MINIO_PROTOCOL}://${PI_HOST}:${MINIO_PORT}/${MINIO_BUCKET}/${objectKey}`;
+    const url = `${MINIO_PROTOCOL}://${MINIO_ENDPOINT}:${MINIO_PORT}/${MINIO_BUCKET}/${objectKey}`;
+
+    // Persist the pfp_url to the database so it survives beyond localStorage
+    await pool.query(
+      'UPDATE public.users SET pfp_url = $1, updated_at = $2 WHERE id = $3',
+      [url, new Date().toISOString(), req.user.id]
+    );
+
     return res.json({ data: { url }, error: null });
   } catch (err) {
     console.error('Upload pfp error:', err);

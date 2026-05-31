@@ -20,8 +20,13 @@ function authHeaders() {
 
 async function apiFetch(path, options = {}) {
   try {
-    const res  = await fetch(`${API_BASE}${path}`, options);
-    const json = await res.json();
+    const res = await fetch(`${API_BASE}${path}`, options);
+    let json;
+    try {
+      json = await res.json();
+    } catch {
+      return { data: null, error: `Request failed with status ${res.status}` };
+    }
     if (!res.ok) {
       return { data: null, error: json.error || `Request failed with status ${res.status}` };
     }
@@ -35,11 +40,11 @@ async function apiFetch(path, options = {}) {
 
 export const api = {
   auth: {
-    signUp: async ({ username, password, pfp, pfp_url }) => {
+    signUp: async ({ username, password, pfp }) => {
       const result = await apiFetch('/auth/signup', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ username, password, pfp, pfp_url }),
+        body:    JSON.stringify({ username, password, pfp }),
       });
       if (result.data?.token) {
         setSession(result.data.token, result.data.user);
