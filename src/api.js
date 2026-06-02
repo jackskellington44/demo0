@@ -36,6 +36,49 @@ async function apiFetch(path, options = {}) {
   }
 }
 
+// ─── Shared helpers used by supabase-config.js ────────────────────────────────
+
+export async function apiRequest(path, { method = 'GET', token, body } = {}) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+    let json;
+    try { json = await res.json(); } catch { json = {}; }
+    if (!res.ok) return { data: null, error: json.error || `Request failed with status ${res.status}` };
+    return json;
+  } catch (err) {
+    return { data: null, error: err.message };
+  }
+}
+
+export async function apiUpload(path, { token, fields = {}, file } = {}) {
+  const formData = new FormData();
+  for (const [key, value] of Object.entries(fields)) {
+    formData.append(key, value);
+  }
+  if (file) formData.append('file', file);
+  const headers = {};
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  try {
+    const res = await fetch(`${API_BASE}${path}`, { method: 'POST', headers, body: formData });
+    let json;
+    try { json = await res.json(); } catch { json = {}; }
+    if (!res.ok) return { data: null, error: json.error || `Request failed with status ${res.status}` };
+    return json;
+  } catch (err) {
+    return { data: null, error: err.message };
+  }
+}
+
+export function getPublicObjectUrl(bucket, path) {
+  return `${API_BASE}/api/storage/public/${encodeURIComponent(bucket)}/${path}`;
+}
+
 // ─── API client ────────────────────────────────────────────────────────────────
 
 export const api = {
