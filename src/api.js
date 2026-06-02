@@ -1,124 +1,106 @@
-const API_BASE = (import.meta.env.VITE_API_BASE || '').replace(/\/$/, '');
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
-function buildApiUrl(path, params) {
-  const hasBase = API_BASE.length > 0;
-  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-  const url = hasBase
-    ? new URL(normalizedPath, `${API_BASE}/`)
-    : new URL(normalizedPath, window.location.origin);
+// ─── Token helpers ─────────────────────────────────────────────────────────────
 
-  if (params && typeof params === 'object') {
-    Object.entries(params).forEach(([key, value]) => {
-      if (value === undefined || value === null) return;
-      url.searchParams.set(key, String(value));
-    });
-  }
-
-  return hasBase ? url.toString() : `${url.pathname}${url.search}`;
+function getToken() {
+  return localStorage.getItem('auth_token');
 }
 
-function makeError(message, status, code, details) {
-  return {
-    message: message || 'Request failed',
-    status: status || 500,
-    code: code || null,
-    details: details || null
-  };
+function setSession(token, user) {
+  localStorage.setItem('auth_token', token);
+  localStorage.setItem('auth_user', JSON.stringify(user));
 }
 
-async function parseJsonResponse(response) {
-  let payload = null;
+function authHeaders() {
+  const token = getToken();
+  return token ? { Authorization: 'Bearer ' + token } : {};
+}
+
+// ─── Low-level fetch wrapper ───────────────────────────────────────────────────
+
+async function apiFetch(path, options = {}) {
   try {
-    payload = await response.json();
-  } catch {
-    payload = null;
-  }
-
-  if (!response.ok) {
-    const err = payload?.error || {};
-    return {
-      data: null,
-      error: makeError(err.message || response.statusText, response.status, err.code, err.details)
-    };
-  }
-
-  if (payload?.error) {
-    const err = payload.error;
-    return {
-      data: null,
-      error: makeError(err.message, response.status, err.code, err.details)
-    };
-  }
-
-  return {
-    data: payload?.data ?? payload ?? null,
-    error: null
-  };
-}
-
-export async function apiRequest(path, { method = 'GET', body, token, headers = {} } = {}) {
-  const finalHeaders = { ...headers };
-  const init = {
-    method,
-    headers: finalHeaders,
-    credentials: 'omit'
-  };
-
-  if (token) {
-    finalHeaders.Authorization = `Bearer ${token}`;
-  }
-
-  if (body !== undefined && body !== null) {
-    finalHeaders['Content-Type'] = 'application/json';
-    init.body = JSON.stringify(body);
-  }
-
-  try {
-    const response = await fetch(buildApiUrl(path), init);
-    return parseJsonResponse(response);
-  } catch (error) {
-    return {
-      data: null,
-      error: makeError(error?.message || 'Network error', 0, 'NETWORK_ERROR', error)
-    };
+    const res = await fetch(`${API_BASE}${path}`, options);
+    let json;
+    try {
+      json = await res.json();
+    } catch {
+      return { data: null, error: `Request failed with status ${res.status}` };
+    }
+    if (!res.ok) {
+      return { data: null, error: json.error || `Request failed with status ${res.status}` };
+    }
+    return json;
+  } catch (err) {
+    return { data: null, error: err.message };
   }
 }
 
-export async function apiUpload(path, { fields = {}, fileField = 'file', file, token } = {}) {
-  const formData = new FormData();
-  Object.entries(fields).forEach(([key, value]) => {
-    if (value === undefined || value === null) return;
-    formData.append(key, typeof value === 'string' ? value : JSON.stringify(value));
-  });
+// ─── API client ────────────────────────────────────────────────────────────────
 
-  if (file) {
-    formData.append(fileField, file);
-  }
+export const api = {
+  auth: {
+    signUp: async ({ username, password, pfp }) => {
+      const result = await apiFetch('/auth/signup', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ username, password, pfp }),
+      });
+      if (result.data?.token) {
+        setSession(result.data.token, result.data.user);
+      }
+      return result;
+    },
 
-  const headers = {};
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
+    signIn: async ({ username, password }) => {
+      const result = await apiFetch('/auth/login', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ username, password }),
+      });
+      if (result.data?.token) {
+        setSession(result.data.token, result.data.user);
+      }
+      return result;
+    },
 
-  try {
-    const response = await fetch(buildApiUrl(path), {
-      method: 'POST',
-      headers,
-      body: formData,
-      credentials: 'omit'
-    });
-    return parseJsonResponse(response);
-  } catch (error) {
-    return {
-      data: null,
-      error: makeError(error?.message || 'Network error', 0, 'NETWORK_ERROR', error)
-    };
-  }
-}
+    signOut: async () => {
+      localStorage.removeItem('auth_token');
+      localStorage.removeItem('auth_user');
+    },
 
-export function getPublicObjectUrl(bucket, objectPath) {
-  return buildApiUrl('/api/storage/object', {
-    bucket,
-    path: objectPath
-  });
-}
+    getUser: async () => {
+      const token = getToken();
+      if (!token) return { data: null, error: 'Not authenticated' };
+      return apiFetch('/auth/me', {
+        headers: { ...authHeaders() },
+      });
+    },
+
+    uploadPfp: async (file) => {
+      const formData = new FormData();
+      formData.append('file', file);
+      return apiFetch('/auth/upload-pfp', {
+        method:  'POST',
+        headers: { ...authHeaders() },
+        body:    formData,
+      });
+    },
+  },
+
+  worlds: {
+    getTheme: async (worldId) => {
+      return apiFetch(`/worlds/${encodeURIComponent(worldId)}/theme`);
+    },
+  },
+
+  users: {
+    getByUsername: async (username) => {
+      return apiFetch(`/users?username=${encodeURIComponent(username)}`);
+    },
+
+    getById: async (id) => {
+      return apiFetch(`/users/${encodeURIComponent(id)}`);
+    },
+  },
+};
