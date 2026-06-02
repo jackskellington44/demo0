@@ -312,7 +312,17 @@ async function handleLogin() {
       .eq('username', username)
       .maybeSingle();
 
-    if (lookupErr || !userData) throw new Error('Username not found');
+    if (lookupErr) {
+      throw new Error(`User lookup failed: ${lookupErr.message || 'database unavailable'}`);
+    }
+
+    if (!userData) {
+      throw new Error('Username not found');
+    }
+
+    if (!userData.email) {
+      throw new Error('This account is missing an email mapping. Please re-register this username or run account migration.');
+    }
 
     const { error } = await supabase.auth.signInWithPassword({
       email: userData.email,
