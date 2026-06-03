@@ -374,6 +374,10 @@ app.post('/api/db/query', readLimiter, authMiddleware, async (req, res) => {
       : '*';
 
     const { conditions, values } = buildWhereClause(filters);
+    const hasDeletedAtFilter = Array.isArray(filters) && filters.some(f => f?.column === 'deleted_at');
+    if (table === 'posts' && !hasDeletedAtFilter) {
+      conditions.push('"deleted_at" IS NULL');
+    }
 
     let sql = `SELECT ${cols} FROM public."${table}"`;
     if (conditions.length) sql += ` WHERE ${conditions.join(' AND ')}`;
@@ -446,14 +450,17 @@ app.post('/api/db/mutate', readLimiter, authMiddleware, async (req, res) => {
       if (whereConds.length) sql += ` WHERE ${whereConds.join(' AND ')}`;
 
     } else if (action === 'delete') {
-      sql = `DELETE FROM public."${table}"`;
-
       const { conditions: whereConds, values: whereVals } = buildWhereClause(filters);
       values = whereVals;
 
       if (whereConds.length === 0) {
         // Safety: never allow an unfiltered delete
         return res.status(400).json({ data: null, error: 'Delete requires at least one filter' });
+      }
+      if (table === 'posts') {
+        sql = 'UPDATE public."posts" SET "deleted_at" = NOW()';
+      } else {
+        sql = `DELETE FROM public."${table}"`;
       }
       sql += ` WHERE ${whereConds.join(' AND ')}`;
 
@@ -575,6 +582,32 @@ app.post('/api/rpc/:name', readLimiter, authMiddleware, async (req, res) => {
     return res.json({ data: result.rows[0] || null, error: null });
   } catch (err) {
     console.error(`RPC ${fnName} error:`, err);
+    return res.status(500).json({ data: null, error: err.message });
+  }
+});
+
+// ─── POST /api/admin/purge-deleted-posts ──────────────────────────────────────
+
+app.post('/api/admin/purge-deleted-posts', readLimiter, authMiddleware, async (req, res) => {
+  try {
+    const { rows: userRows } = await pool.query(
+      'SELECT is_admin FROM public.users WHERE id = $1',
+      [req.user.id]
+    );
+
+    if (userRows.length === 0 || userRows[0].is_admin !== true) {
+      return res.status(403).json({ data: null, error: 'Forbidden' });
+    }
+
+    const result = await pool.query(
+      `DELETE FROM public.posts
+       WHERE deleted_at IS NOT NULL
+         AND deleted_at < NOW() - INTERVAL '24 hours'`
+    );
+
+    return res.json({ data: { purged: result.rowCount || 0 }, error: null });
+  } catch (err) {
+    console.error('Purge deleted posts error:', err);
     return res.status(500).json({ data: null, error: err.message });
   }
 });
