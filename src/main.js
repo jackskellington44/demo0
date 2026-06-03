@@ -2056,7 +2056,7 @@ function getYouTubePosterUrl(youtubeId) {
 function getYouTubeEmbedSrc(youtubeId, { autoplay = false, muted = true } = {}) {
   const autoplayFlag = autoplay ? '1' : '0';
   const muteFlag = muted ? '1' : '0';
-  return `https://www.youtube-nocookie.com/embed/${youtubeId}?autoplay=${autoplayFlag}&mute=${muteFlag}&rel=0&playsinline=1&modestbranding=1&iv_load_policy=3&color=white`;
+  return `https://www.youtube-nocookie.com/embed/${youtubeId}?autoplay=${autoplayFlag}&mute=${muteFlag}&rel=0&playsinline=1&modestbranding=1&iv_load_policy=3&color=white&origin=${encodeURIComponent(window.location.origin)}`;
 }
 
 function createYouTubePosterShellMarkup(youtubeId, shellClass, buttonClass, iconClass) {

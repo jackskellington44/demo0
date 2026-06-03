@@ -375,6 +375,9 @@ app.post('/api/db/query', readLimiter, authMiddleware, async (req, res) => {
 
     const { conditions, values } = buildWhereClause(filters);
 
+    // Soft-delete: automatically exclude deleted posts
+    if (table === 'posts') conditions.push('"deleted_at" IS NULL');
+
     let sql = `SELECT ${cols} FROM public."${table}"`;
     if (conditions.length) sql += ` WHERE ${conditions.join(' AND ')}`;
 
@@ -446,8 +449,6 @@ app.post('/api/db/mutate', readLimiter, authMiddleware, async (req, res) => {
       if (whereConds.length) sql += ` WHERE ${whereConds.join(' AND ')}`;
 
     } else if (action === 'delete') {
-      sql = `DELETE FROM public."${table}"`;
-
       const { conditions: whereConds, values: whereVals } = buildWhereClause(filters);
       values = whereVals;
 
@@ -455,7 +456,13 @@ app.post('/api/db/mutate', readLimiter, authMiddleware, async (req, res) => {
         // Safety: never allow an unfiltered delete
         return res.status(400).json({ data: null, error: 'Delete requires at least one filter' });
       }
-      sql += ` WHERE ${whereConds.join(' AND ')}`;
+
+      if (table === 'posts') {
+        // Soft delete: set deleted_at instead of removing the row
+        sql = `UPDATE public."posts" SET "deleted_at" = NOW() WHERE ${whereConds.join(' AND ')} AND "deleted_at" IS NULL`;
+      } else {
+        sql = `DELETE FROM public."${table}" WHERE ${whereConds.join(' AND ')}`;
+      }
 
     } else {
       return res.status(400).json({ data: null, error: `Unknown action: ${action}` });
@@ -575,6 +582,34 @@ app.post('/api/rpc/:name', readLimiter, authMiddleware, async (req, res) => {
     return res.json({ data: result.rows[0] || null, error: null });
   } catch (err) {
     console.error(`RPC ${fnName} error:`, err);
+    return res.status(500).json({ data: null, error: err.message });
+  }
+});
+
+// ─── POST /api/admin/purge-deleted-posts ──────────────────────────────────────
+
+app.post('/api/admin/purge-deleted-posts', authLimiter, authMiddleware, async (req, res) => {
+  // Verify the caller is an admin by checking the DB
+  try {
+    const { rows: userRows } = await pool.query(
+      'SELECT is_admin FROM public.users WHERE id = $1',
+      [req.user.id]
+    );
+    if (!userRows[0]?.is_admin) {
+      return res.status(403).json({ data: null, error: 'Forbidden' });
+    }
+  } catch (err) {
+    console.error('Admin check error:', err);
+    return res.status(403).json({ data: null, error: 'Forbidden' });
+  }
+
+  try {
+    const result = await pool.query(
+      `DELETE FROM public."posts" WHERE "deleted_at" < NOW() - INTERVAL '24 hours'`
+    );
+    return res.json({ data: { deleted: result.rowCount }, error: null });
+  } catch (err) {
+    console.error('Purge deleted posts error:', err);
     return res.status(500).json({ data: null, error: err.message });
   }
 });

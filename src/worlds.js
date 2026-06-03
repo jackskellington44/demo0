@@ -1070,6 +1070,11 @@ export function initWorldsFeature(options) {
 
     if (!confirmed) return;
 
+    const isActive = activeWorld?.id === world.id;
+    if (isActive) {
+      await exitWorldMode();
+    }
+
     const { error } = await supabase
       .from('worlds')
       .delete()
@@ -1089,12 +1094,12 @@ export function initWorldsFeature(options) {
 
     pruneRememberedWorld(world.id);
 
-    if (activeWorld?.id === world.id) {
-      await exitWorldMode();
-    } else if (activeWorld?.id) {
-      await renderWorldNavigation(activeWorld);
-    } else {
-      await renderMainNavigationChrome();
+    if (!isActive) {
+      if (activeWorld?.id) {
+        await renderWorldNavigation(activeWorld);
+      } else {
+        await renderMainNavigationChrome();
+      }
     }
 
     await onWorldDeleted?.(world);
