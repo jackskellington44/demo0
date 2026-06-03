@@ -588,18 +588,9 @@ app.post('/api/rpc/:name', readLimiter, authMiddleware, async (req, res) => {
 
 // ─── POST /api/admin/purge-deleted-posts ──────────────────────────────────────
 
-app.post('/api/admin/purge-deleted-posts', authLimiter, authMiddleware, async (req, res) => {
-  // Verify the caller is an admin by checking the DB
-  try {
-    const { rows: userRows } = await pool.query(
-      'SELECT is_admin FROM public.users WHERE id = $1',
-      [req.user.id]
-    );
-    if (!userRows[0]?.is_admin) {
-      return res.status(403).json({ data: null, error: 'Forbidden' });
-    }
-  } catch (err) {
-    console.error('Admin check error:', err);
+app.post('/api/admin/purge-deleted-posts', authLimiter, async (req, res) => {
+  const purgeSecret = req.headers['x-purge-secret'];
+  if (!purgeSecret || purgeSecret !== process.env.PURGE_SECRET) {
     return res.status(403).json({ data: null, error: 'Forbidden' });
   }
 
