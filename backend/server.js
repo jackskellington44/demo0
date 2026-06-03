@@ -38,6 +38,19 @@ const MIME_TO_EXT = { 'image/webp': 'webp', 'image/gif': 'gif', 'image/png': 'pn
 const USERNAME_RE = /^[A-Za-z0-9_-]{1,30}$/;
 const MIN_PASSWORD_LENGTH = 6;
 
+// All tables the generic query/mutate endpoints are allowed to touch
+const ALLOWED_TABLES = new Set([
+  'users', 'posts', 'worlds', 'world_access', 'music_tracks', 'categories',
+  'comments', 'notifications', 'post_links'
+]);
+
+// MinIO buckets that should exist
+const REQUIRED_BUCKETS = [
+  MINIO_BUCKET,
+  'group0-posts',
+  'group0-worlds',
+];
+
 // ─── MinIO client ──────────────────────────────────────────────────────────────
 
 const minioClient = new Minio.Client({
@@ -47,6 +60,22 @@ const minioClient = new Minio.Client({
   accessKey: process.env.MINIO_ACCESS_KEY || 'admin',
   secretKey: process.env.MINIO_SECRET_KEY || 'changeme',
 });
+
+// Auto-create required MinIO buckets on startup (best-effort)
+async function ensureBuckets() {
+  for (const bucket of REQUIRED_BUCKETS) {
+    try {
+      const exists = await minioClient.bucketExists(bucket);
+      if (!exists) {
+        await minioClient.makeBucket(bucket);
+        console.log(`Created MinIO bucket: ${bucket}`);
+      }
+    } catch (err) {
+      console.warn(`Could not ensure MinIO bucket "${bucket}": ${err.message}`);
+    }
+  }
+}
+ensureBuckets();
 
 // ─── Multer (memory, with size limit) ─────────────────────────────────────────
 
@@ -100,6 +129,39 @@ function signToken(user) {
 
 function safeUser(row) {
   return { id: row.id, username: row.username, pfp: row.pfp, pfp_url: row.pfp_url };
+}
+
+// Build WHERE conditions + values array from a filters array.
+// Supports eq, in, is operators.
+function buildWhereClause(filters, startIdx = 1) {
+  const conditions = [];
+  const values = [];
+  let idx = startIdx;
+
+  for (const f of (filters || [])) {
+    if (f.operator === 'eq') {
+      conditions.push(`"${f.column}" = $${idx++}`);
+      values.push(f.value);
+    } else if (f.operator === 'in') {
+      if (!Array.isArray(f.value) || f.value.length === 0) {
+        // IN () is invalid SQL — produce a never-true condition
+        conditions.push('FALSE');
+      } else {
+        const placeholders = f.value.map(() => `$${idx++}`).join(', ');
+        conditions.push(`"${f.column}" IN (${placeholders})`);
+        values.push(...f.value);
+      }
+    } else if (f.operator === 'is') {
+      if (f.value === null) {
+        conditions.push(`"${f.column}" IS NULL`);
+      } else {
+        conditions.push(`"${f.column}" = $${idx++}`);
+        values.push(f.value);
+      }
+    }
+  }
+
+  return { conditions, values };
 }
 
 // ─── POST /auth/signup ─────────────────────────────────────────────────────────
@@ -208,12 +270,10 @@ app.post('/auth/upload-pfp', uploadLimiter, authMiddleware, upload.single('file'
     return res.status(400).json({ data: null, error: 'No file uploaded' });
   }
 
-  // Enforce allowed mimetypes explicitly — no fallback to originalname extension
   if (!ALLOWED_PFP_MIMETYPES.has(req.file.mimetype)) {
     return res.status(400).json({ data: null, error: 'Profile picture must be webp, gif, png, or jpeg' });
   }
 
-  // Enforce file size (multer limit covers the stream, but re-check the buffer size)
   if (req.file.size > MAX_PFP_BYTES) {
     return res.status(400).json({ data: null, error: 'Profile picture must be 2 MB or smaller' });
   }
@@ -228,7 +288,6 @@ app.post('/auth/upload-pfp', uploadLimiter, authMiddleware, upload.single('file'
 
     const url = `${MINIO_PROTOCOL}://${MINIO_ENDPOINT}:${MINIO_PORT}/${MINIO_BUCKET}/${objectKey}`;
 
-    // Persist the pfp_url to the database so it survives beyond localStorage
     await pool.query(
       'UPDATE public.users SET pfp_url = $1, updated_at = $2 WHERE id = $3',
       [url, new Date().toISOString(), req.user.id]
@@ -300,17 +359,11 @@ app.get('/users/:id', readLimiter, async (req, res) => {
 });
 
 // ─── POST /api/db/query ────────────────────────────────────────────────────────
-// Generic read handler used by supabase-config.js QueryBuilder
 
 app.post('/api/db/query', readLimiter, authMiddleware, async (req, res) => {
-  const { table, select, filters = [], or, order = [], limit, range, single, maybeSingle } = req.body || {};
+  const { table, select, filters, or, order = [], limit, range, single, maybeSingle } = req.body || {};
 
   if (!table) return res.status(400).json({ data: null, error: 'table is required' });
-
-  // Only allow known tables
-  const ALLOWED_TABLES = new Set([
-    'users', 'posts', 'worlds', 'world_access', 'music_tracks', 'categories'
-  ]);
   if (!ALLOWED_TABLES.has(table)) {
     return res.status(400).json({ data: null, error: `Unknown table: ${table}` });
   }
@@ -320,27 +373,7 @@ app.post('/api/db/query', readLimiter, authMiddleware, async (req, res) => {
       ? select.split(',').map(c => `"${c.trim()}"`).join(', ')
       : '*';
 
-    const conditions = [];
-    const values = [];
-
-    for (const f of filters) {
-      const idx = values.length + 1;
-      if (f.operator === 'eq') {
-        conditions.push(`"${f.column}" = $${idx}`);
-        values.push(f.value);
-      } else if (f.operator === 'in') {
-        const placeholders = f.value.map((_, i) => `$${values.length + i + 1}`).join(', ');
-        conditions.push(`"${f.column}" IN (${placeholders})`);
-        values.push(...f.value);
-      } else if (f.operator === 'is') {
-        if (f.value === null) {
-          conditions.push(`"${f.column}" IS NULL`);
-        } else {
-          conditions.push(`"${f.column}" = $${idx}`);
-          values.push(f.value);
-        }
-      }
-    }
+    const { conditions, values } = buildWhereClause(filters);
 
     let sql = `SELECT ${cols} FROM public."${table}"`;
     if (conditions.length) sql += ` WHERE ${conditions.join(' AND ')}`;
@@ -374,36 +407,32 @@ app.post('/api/db/query', readLimiter, authMiddleware, async (req, res) => {
 });
 
 // ─── POST /api/db/mutate ───────────────────────────────────────────────────────
-// Generic write handler used by supabase-config.js QueryBuilder
 
 app.post('/api/db/mutate', readLimiter, authMiddleware, async (req, res) => {
-  const { table, action, values: mutValues, filters = [], select, single, maybeSingle } = req.body || {};
+  const { table, action, values: mutValues, filters, select, single, maybeSingle } = req.body || {};
 
   if (!table) return res.status(400).json({ data: null, error: 'table is required' });
   if (!action) return res.status(400).json({ data: null, error: 'action is required' });
-
-  const ALLOWED_TABLES = new Set([
-    'users', 'posts', 'worlds', 'world_access', 'music_tracks', 'categories'
-  ]);
   if (!ALLOWED_TABLES.has(table)) {
     return res.status(400).json({ data: null, error: `Unknown table: ${table}` });
   }
 
   try {
     let sql = '';
-    const values = [];
+    let values = [];
 
     if (action === 'insert') {
-      const rows = Array.isArray(mutValues) ? mutValues : [mutValues];
-      const keys = Object.keys(rows[0]);
+      const inputRows = Array.isArray(mutValues) ? mutValues : [mutValues];
+      const keys = Object.keys(inputRows[0]);
       const colNames = keys.map(k => `"${k}"`).join(', ');
-      const rowPlaceholders = rows.map((row, ri) => {
-        return '(' + keys.map((_, ki) => {
-          values.push(row[keys[ki]]);
+      const rowPlaceholders = inputRows.map((row) => {
+        return '(' + keys.map((k) => {
+          values.push(row[k]);
           return `$${values.length}`;
         }).join(', ') + ')';
       });
       sql = `INSERT INTO public."${table}" (${colNames}) VALUES ${rowPlaceholders.join(', ')}`;
+
     } else if (action === 'update') {
       const keys = Object.keys(mutValues);
       const setClauses = keys.map(k => {
@@ -412,24 +441,22 @@ app.post('/api/db/mutate', readLimiter, authMiddleware, async (req, res) => {
       });
       sql = `UPDATE public."${table}" SET ${setClauses.join(', ')}`;
 
-      const conditions = [];
-      for (const f of filters) {
-        if (f.operator === 'eq') {
-          values.push(f.value);
-          conditions.push(`"${f.column}" = $${values.length}`);
-        }
-      }
-      if (conditions.length) sql += ` WHERE ${conditions.join(' AND ')}`;
+      const { conditions: whereConds, values: whereVals } = buildWhereClause(filters, values.length + 1);
+      values = values.concat(whereVals);
+      if (whereConds.length) sql += ` WHERE ${whereConds.join(' AND ')}`;
+
     } else if (action === 'delete') {
       sql = `DELETE FROM public."${table}"`;
-      const conditions = [];
-      for (const f of filters) {
-        if (f.operator === 'eq') {
-          values.push(f.value);
-          conditions.push(`"${f.column}" = $${values.length}`);
-        }
+
+      const { conditions: whereConds, values: whereVals } = buildWhereClause(filters);
+      values = whereVals;
+
+      if (whereConds.length === 0) {
+        // Safety: never allow an unfiltered delete
+        return res.status(400).json({ data: null, error: 'Delete requires at least one filter' });
       }
-      if (conditions.length) sql += ` WHERE ${conditions.join(' AND ')}`;
+      sql += ` WHERE ${whereConds.join(' AND ')}`;
+
     } else {
       return res.status(400).json({ data: null, error: `Unknown action: ${action}` });
     }
@@ -444,7 +471,7 @@ app.post('/api/db/mutate', readLimiter, authMiddleware, async (req, res) => {
     const result = await pool.query(sql, values);
     const rows = result.rows || [];
 
-    if (single) return res.json({ data: rows[0] || null, error: null });
+    if (single)      return res.json({ data: rows[0] || null, error: null });
     if (maybeSingle) return res.json({ data: rows[0] || null, error: null });
     return res.json({ data: select ? rows : null, error: null });
   } catch (err) {
@@ -462,6 +489,10 @@ app.post('/api/storage/upload', uploadLimiter, authMiddleware, uploadAny.single(
   const path    = req.body.path   || `${uuidv4()}-${req.file.originalname}`;
 
   try {
+    // Auto-create bucket if it doesn't exist
+    const exists = await minioClient.bucketExists(bucket);
+    if (!exists) await minioClient.makeBucket(bucket);
+
     await minioClient.putObject(bucket, path, req.file.buffer, req.file.size, {
       'Content-Type': req.file.mimetype,
     });
@@ -509,7 +540,7 @@ app.post('/api/storage/remove', uploadLimiter, authMiddleware, async (req, res) 
   }
 });
 
-// ─── GET /api/storage/public/:bucket/* ──────────────────────────────���─────────
+// ─── GET /api/storage/public/:bucket/* ────────────────────────────────────────
 
 app.get('/api/storage/public/:bucket/*', async (req, res) => {
   const bucket    = req.params.bucket;
@@ -530,7 +561,6 @@ app.post('/api/rpc/:name', readLimiter, authMiddleware, async (req, res) => {
   const fnName = req.params.name;
   const args   = req.body || {};
 
-  // Build a safe parameterised call: SELECT * FROM <fn>($1, $2, ...)
   const ALLOWED_RPCS = new Set(['set_world_password', 'grant_world_access']);
   if (!ALLOWED_RPCS.has(fnName)) {
     return res.status(400).json({ data: null, error: `Unknown RPC: ${fnName}` });
