@@ -1,10 +1,20 @@
 import { apiRequest, apiUpload, getPublicObjectUrl } from './api.js';
 
-const AUTH_TOKEN_KEY = 'demo0-auth-token-v1';
+const AUTH_TOKEN_KEY = 'auth_token';
+const AUTH_USER_KEY  = 'auth_user';
 
 function getStoredToken() {
 	try {
 		return window.localStorage.getItem(AUTH_TOKEN_KEY) || null;
+	} catch {
+		return null;
+	}
+}
+
+function getStoredUser() {
+	try {
+		const raw = window.localStorage.getItem(AUTH_USER_KEY);
+		return raw ? JSON.parse(raw) : null;
 	} catch {
 		return null;
 	}
@@ -16,6 +26,7 @@ function setStoredToken(token) {
 			window.localStorage.setItem(AUTH_TOKEN_KEY, token);
 		} else {
 			window.localStorage.removeItem(AUTH_TOKEN_KEY);
+			window.localStorage.removeItem(AUTH_USER_KEY);
 		}
 	} catch {
 		// Ignore storage write errors in private browsing contexts.
@@ -258,27 +269,30 @@ class AuthClient {
 	}
 
 	async signOut() {
-		const token = getStoredToken();
-		const result = await apiRequest('/api/auth/signout', {
-			method: 'POST',
-			token
-		});
 		setStoredToken(null);
-		return result;
+		return { data: null, error: null };
 	}
 
 	async getSession() {
-		return apiRequest('/api/auth/session', {
-			method: 'GET',
-			token: getStoredToken()
-		});
+		const token = getStoredToken();
+		const user  = getStoredUser();
+		if (!token || !user) {
+			return { data: { session: null }, error: null };
+		}
+		return {
+			data: {
+				session: {
+					access_token: token,
+					user
+				}
+			},
+			error: null
+		};
 	}
 
 	async getUser() {
-		return apiRequest('/api/auth/user', {
-			method: 'GET',
-			token: getStoredToken()
-		});
+		const user = getStoredUser();
+		return { data: { user: user || null }, error: null };
 	}
 }
 
