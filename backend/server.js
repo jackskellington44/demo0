@@ -29,6 +29,7 @@ const MINIO_ENDPOINT = process.env.MINIO_ENDPOINT || 'localhost';
 const MINIO_PORT     = process.env.MINIO_PORT     || '9000';
 const MINIO_BUCKET   = process.env.MINIO_BUCKET   || 'group0-pfps';
 const MINIO_PROTOCOL = MINIO_USE_SSL ? 'https' : 'http';
+const SLOW_REQUEST_MS = 200;
 
 const MAX_PFP_BYTES = 2 * 1024 * 1024; // 2 MB
 const ALLOWED_PFP_MIMETYPES = new Set(['image/webp', 'image/gif', 'image/png', 'image/jpeg']);
@@ -90,6 +91,16 @@ const uploadAny = multer({ storage: multer.memoryStorage() });
 
 app.use(cors());
 app.use(express.json());
+app.use((req, res, next) => {
+  const startedAt = process.hrtime.bigint();
+  res.on('finish', () => {
+    const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+    if (durationMs <= SLOW_REQUEST_MS) return;
+    const safeUrl = (req.originalUrl || req.url || '').split('?')[0];
+    console.warn(`[slow-request] ${req.method} ${safeUrl} ${res.statusCode} ${durationMs.toFixed(1)}ms`);
+  });
+  next();
+});
 
 // ─── Rate limiting ─────────────────────────────────────────────────────────────
 
@@ -496,10 +507,6 @@ app.post('/api/storage/upload', uploadLimiter, authMiddleware, uploadAny.single(
   const path    = req.body.path   || `${uuidv4()}-${req.file.originalname}`;
 
   try {
-    // Auto-create bucket if it doesn't exist
-    const exists = await minioClient.bucketExists(bucket);
-    if (!exists) await minioClient.makeBucket(bucket);
-
     await minioClient.putObject(bucket, path, req.file.buffer, req.file.size, {
       'Content-Type': req.file.mimetype,
     });
