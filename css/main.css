@@ -1406,6 +1406,14 @@ body.anim-off .post-card .post-footer-category-track {
     animation-play-state: paused !important;
 }
 
+/* hard freeze: no motion at all while freeze mode is active */
+body.anim-hard-freeze *,
+body.anim-hard-freeze *::before,
+body.anim-hard-freeze *::after {
+    animation: none !important;
+    transition: none !important;
+}
+
 .post-layout-title-visual-text.is-long-text .post-visual-text-row .post-body,
 .post-layout-visual-text.is-long-text .post-visual-text-row .post-body,
 .post-layout-title-text.is-long-text .post-body {

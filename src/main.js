@@ -258,6 +258,104 @@ let worldModeTransitionKey = '';
 let notificationsLoadPromise = null;
 let notificationsLastRequestAt = 0;
 let notificationsRetryAfter = 0;
+const USER_PROFILE_CACHE_TTL_MS = 60000;
+const userProfileCache = new Map();
+const userProfileInFlight = new Map();
+const POST_RECORD_CACHE_TTL_MS = 30000;
+const postRecordCache = new Map();
+const postRecordInFlight = new Map();
+const AUTO_FREEZE_MIN_BOOT_MS = 1600;
+const AUTO_FREEZE_MAX_BOOT_MS = 9000;
+let autoFreezeActive = false;
+let autoFreezeReleaseTimer = 0;
+let autoFreezeFailsafeTimer = 0;
+
+function getEffectiveAnimationMode() {
+  return autoFreezeActive ? 'off' : animationMode;
+}
+
+function shouldHardFreezeMotion() {
+  return editMode || getEffectiveAnimationMode() === 'off';
+}
+
+function isSuperFastStableConnection() {
+  const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  if (!conn) return false;
+
+  if (conn.saveData) return false;
+
+  const effectiveType = String(conn.effectiveType || '').toLowerCase();
+  const downlink = Number(conn.downlink || 0);
+  const rtt = Number(conn.rtt || 0);
+
+  const fastType = effectiveType === '4g' || effectiveType === '';
+  const fastDownlink = downlink >= 20;
+  const fastRtt = rtt > 0 && rtt <= 80;
+
+  return fastType && fastDownlink && fastRtt;
+}
+
+function clearAutoFreezeTimers() {
+  if (autoFreezeReleaseTimer) {
+    window.clearTimeout(autoFreezeReleaseTimer);
+    autoFreezeReleaseTimer = 0;
+  }
+  if (autoFreezeFailsafeTimer) {
+    window.clearTimeout(autoFreezeFailsafeTimer);
+    autoFreezeFailsafeTimer = 0;
+  }
+}
+
+function setAutoFreezeActive(next) {
+  const value = Boolean(next);
+  if (autoFreezeActive === value) return;
+  autoFreezeActive = value;
+  applyAnimationMode(animationMode, { persist: false });
+}
+
+function scheduleAutoFreezeRelease(extraPromises = []) {
+  if (!autoFreezeActive) return;
+
+  clearAutoFreezeTimers();
+  const startAt = performance.now();
+  const work = [
+    loadPostsInFlightPromise || Promise.resolve(),
+    ...(Array.isArray(extraPromises) ? extraPromises : [])
+  ];
+
+  Promise.allSettled(work).finally(() => {
+    const elapsed = performance.now() - startAt;
+    const waitMs = Math.max(0, AUTO_FREEZE_MIN_BOOT_MS - elapsed);
+    autoFreezeReleaseTimer = window.setTimeout(() => {
+      setAutoFreezeActive(false);
+    }, waitMs);
+  });
+
+  autoFreezeFailsafeTimer = window.setTimeout(() => {
+    setAutoFreezeActive(false);
+  }, AUTO_FREEZE_MAX_BOOT_MS);
+}
+
+function enforceFrozenMediaState() {
+  const shouldFreeze = shouldHardFreezeMotion();
+  const videos = document.querySelectorAll('.post-preview-video, .pd-visual-video');
+
+  videos.forEach((video) => {
+    if (!(video instanceof HTMLVideoElement)) return;
+
+    if (shouldFreeze) {
+      video.pause();
+      video.removeAttribute('autoplay');
+      return;
+    }
+
+    if (video.classList.contains('post-preview-video')) {
+      if (!video.hasAttribute('autoplay')) {
+        video.setAttribute('autoplay', '');
+      }
+    }
+  });
+}
 
 function getLoadPostsRequestKey() {
   return JSON.stringify({
@@ -271,6 +369,130 @@ function getLoadPostsRequestKey() {
 
 function getWorldTransitionKey(mode, worldPayload = null) {
   return `${mode}:${String(worldPayload?.world?.id || 'main')}`;
+}
+
+async function getUsersMapByIds(userIds = []) {
+  const ids = [...new Set((userIds || []).map((id) => String(id || '').trim()).filter(Boolean))];
+  if (!ids.length) return {};
+
+  const now = Date.now();
+  for (const [id, entry] of userProfileCache.entries()) {
+    if (!entry || (now - entry.ts) > USER_PROFILE_CACHE_TTL_MS) {
+      userProfileCache.delete(id);
+    }
+  }
+
+  const result = {};
+  const missing = [];
+
+  ids.forEach((id) => {
+    const cached = userProfileCache.get(id);
+    if (cached?.user) {
+      result[id] = cached.user;
+    } else {
+      missing.push(id);
+    }
+  });
+
+  if (missing.length > 0) {
+    const missingKey = missing.slice().sort().join(',');
+    let requestPromise = userProfileInFlight.get(missingKey);
+
+    if (!requestPromise) {
+      requestPromise = supabase
+        .from('users')
+        .select('id, username, pfp, pfp_url')
+        .in('id', missing)
+        .then(({ data, error: usersError }) => {
+          if (usersError) throw usersError;
+          return data || [];
+        })
+        .finally(() => {
+          userProfileInFlight.delete(missingKey);
+        });
+
+      userProfileInFlight.set(missingKey, requestPromise);
+    }
+
+    const fetchedUsers = await requestPromise;
+    fetchedUsers.forEach((user) => {
+      const id = String(user?.id || '').trim();
+      if (!id) return;
+      userProfileCache.set(id, { ts: Date.now(), user });
+      result[id] = user;
+    });
+  }
+
+  return result;
+}
+
+function getCachedPostRecord(postId) {
+  const id = String(postId || '').trim();
+  if (!id) return null;
+
+  const now = Date.now();
+  const cached = postRecordCache.get(id);
+  if (cached && (now - cached.ts) <= POST_RECORD_CACHE_TTL_MS) {
+    return cached.post || null;
+  }
+
+  if (cached) {
+    postRecordCache.delete(id);
+  }
+
+  const loaded = (lastLoadedPosts || []).find((post) => String(post?.id || '') === id);
+  if (loaded) {
+    postRecordCache.set(id, { ts: now, post: loaded });
+    return loaded;
+  }
+
+  return null;
+}
+
+function cachePostRecord(post) {
+  const id = String(post?.id || '').trim();
+  if (!id || !post) return;
+  postRecordCache.set(id, { ts: Date.now(), post });
+}
+
+async function getPostRecordById(postId, { fallbackPost = null } = {}) {
+  const id = String(postId || '').trim();
+  if (!id) return null;
+
+  const cached = getCachedPostRecord(id);
+  if (cached) return cached;
+
+  if (fallbackPost && String(fallbackPost?.id || '') === id) {
+    cachePostRecord(fallbackPost);
+    return fallbackPost;
+  }
+
+  let inFlight = postRecordInFlight.get(id);
+  if (!inFlight) {
+    inFlight = supabase
+      .from('posts')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (error) throw error;
+        if (data) {
+          cachePostRecord(data);
+        }
+        return data || null;
+      })
+      .catch((err) => {
+        console.error('Failed to load post record:', err);
+        return null;
+      })
+      .finally(() => {
+        postRecordInFlight.delete(id);
+      });
+
+    postRecordInFlight.set(id, inFlight);
+  }
+
+  return inFlight;
 }
 
 function resolvePfpUrl(user = null) {
@@ -978,7 +1200,7 @@ function syncCardEnergyState(card, lod, { allowPreviewVideoPlayback = true } = {
 
   const previewVideo = card.querySelector('.post-preview-video');
   if (previewVideo) {
-    if (lod === 'near' && allowPreviewVideoPlayback && !editMode && animationMode !== 'off') {
+    if (lod === 'near' && allowPreviewVideoPlayback && !shouldHardFreezeMotion()) {
       previewVideo.play().catch(() => {});
     } else {
       previewVideo.pause();
@@ -1052,21 +1274,33 @@ function scheduleCardLodRefresh() {
   });
 }
 
-function applyAnimationMode(mode) {
+function applyAnimationMode(mode, { persist = true } = {}) {
   animationMode = mode;
-  localStorage.setItem('demo4-anim-mode', mode);
+  if (persist) {
+    localStorage.setItem('demo4-anim-mode', mode);
+  }
+
+  const effectiveMode = getEffectiveAnimationMode();
   document.body.classList.remove('anim-full', 'anim-reduced', 'anim-off');
-  document.body.classList.add(`anim-${mode}`);
+  document.body.classList.add(`anim-${effectiveMode}`);
+  document.body.classList.toggle('anim-auto-freeze', autoFreezeActive);
+  document.body.classList.toggle('anim-hard-freeze', shouldHardFreezeMotion());
 
   const btn = document.getElementById('animModeBtn');
   if (btn) {
-    const icons  = { full: '͙͘͡★', reduced: '͙͘͡★', off: '˚✰' };
-    const titles = { full: 'animations: full', reduced: 'animations: reduced (near only)', off: 'animations: off' };
-    btn.textContent = icons[mode] || '͙͘͡★';
-    btn.title = titles[mode] || ''; 
-    btn.setAttribute('aria-label', titles[mode] || '');
-    btn.classList.toggle('active', mode !== 'full');
+    const icons = { full: '͙͘͡★', reduced: '͙͘͡★', off: '˚✰' };
+    const titles = {
+      full: 'animations: full',
+      reduced: 'animations: reduced (near only)',
+      off: autoFreezeActive ? 'animations: auto freeze (boot)' : 'animations: off'
+    };
+    btn.textContent = icons[effectiveMode] || '͙͘͡★';
+    btn.title = titles[effectiveMode] || '';
+    btn.setAttribute('aria-label', titles[effectiveMode] || '');
+    btn.classList.toggle('active', effectiveMode !== 'full');
   }
+
+  enforceFrozenMediaState();
 
   // Sync preview playback states now that mode changed.
   refreshCardLodStates();
@@ -1095,7 +1329,11 @@ function initAnimToggle() {
   applyAnimationMode(animationMode);
 
   btn.addEventListener('click', () => {
-    const next = ANIM_MODES[(ANIM_MODES.indexOf(animationMode) + 1) % ANIM_MODES.length];
+    const baseMode = getEffectiveAnimationMode();
+    if (autoFreezeActive) {
+      setAutoFreezeActive(false);
+    }
+    const next = ANIM_MODES[(ANIM_MODES.indexOf(baseMode) + 1) % ANIM_MODES.length];
     applyAnimationMode(next);
   });
 }
@@ -1974,6 +2212,43 @@ function frameWorldViewportOnDensePosts(posts = lastLoadedPosts) {
   return true;
 }
 
+function recoverViewportForCurrentContext() {
+  if (!postCanvas) return false;
+
+  const postCards = Array.from(postCanvas.querySelectorAll('.post-card[data-post-id]'));
+  const allCards = Array.from(postCanvas.querySelectorAll('.post-card'));
+  const inWorld = Boolean(activeWorldContext?.world?.id);
+
+  if (inWorld) {
+    if (frameWorldViewportOnDensePosts(lastLoadedPosts)) {
+      return true;
+    }
+
+    if (postCards.length > 0 && !hasVisibleCardInViewport(postCards)) {
+      return centerViewportOnCards(postCards);
+    }
+
+    if (!postCards.length && allCards.length > 0 && !hasVisibleCardInViewport(allCards)) {
+      return centerViewportOnCards(allCards);
+    }
+
+    return false;
+  }
+
+  if (postCards.length > 0) {
+    if (!hasVisibleCardInViewport(postCards)) {
+      return centerViewportOnCards(postCards);
+    }
+    return false;
+  }
+
+  if (allCards.length > 0 && !hasVisibleCardInViewport(allCards)) {
+    return centerViewportOnCards(allCards);
+  }
+
+  return false;
+}
+
 function applyWorldFormCategoryLock() {
   const inWorldMode = Boolean(activeWorldContext?.world?.category);
 
@@ -2009,7 +2284,7 @@ async function enterWorldMode(worldPayload) {
 
     await loadPosts();
     await waitForLayoutStability();
-    frameWorldViewportOnDensePosts(lastLoadedPosts);
+    recoverViewportForCurrentContext();
 
     await Promise.allSettled([
       loadLinks().then(() => renderLinks(lastLoadedPosts, lastLoadedLinks)),
@@ -2043,6 +2318,8 @@ async function exitWorldMode() {
     applyWorldModeVisuals(null);
 
     await loadPosts();
+    await waitForLayoutStability();
+    recoverViewportForCurrentContext();
 
     await Promise.allSettled([
       loadLinks().then(() => renderLinks(lastLoadedPosts, lastLoadedLinks)),
@@ -3807,7 +4084,7 @@ function wirePreviewVideoControls(content, { freezeMotion = false } = {}) {
   const muteBtn = content.querySelector('.post-preview-mute-btn');
   if (!previewVideo || !muteBtn) return;
 
-  if (freezeMotion) {
+  if (freezeMotion || shouldHardFreezeMotion()) {
     previewVideo.pause();
     previewVideo.removeAttribute('autoplay');
     try {
@@ -4213,6 +4490,10 @@ function buildPdVisualCarousel(visuals, inner, prevBtn, nextBtn, counterEl) {
       applyPdVisualZoom(inner);
     } else {
       inner.innerHTML = `<video class="pd-visual-video" src="${f.url}" controls></video>`;
+      if (shouldHardFreezeMotion()) {
+        const visualVideo = inner.querySelector('.pd-visual-video');
+        visualVideo?.pause();
+      }
     }
   }
 
@@ -4603,8 +4884,9 @@ async function loadConnectedTabs(post) {
     tab.title       = label;
 
     tab.addEventListener('click', async () => {
-      const { data: fullPost } = await supabase.from('posts').select('*').eq('id', cp.id).single();
-      const { data: fullUser } = await supabase.from('users').select('id, username, pfp, pfp_url').eq('id', cp.user_id).single();
+      const fullPost = await getPostRecordById(cp.id, { fallbackPost: cp });
+      const userMap = await getUsersMapByIds([cp.user_id]);
+      const fullUser = userMap[String(cp.user_id)] || null;
       if (fullPost) openPostDetailModal(fullPost, fullUser || {});
     });
 
@@ -4661,6 +4943,7 @@ function toggleEditMode() {
   mainPageContainer.classList.toggle('edit-mode', editMode);
   document.getElementById('editModeBtn')?.classList.toggle('active', editMode);
   if (!editMode) closePostForm();
+  applyAnimationMode(animationMode, { persist: false });
   worldsFeature?.refreshActiveWorldChrome?.();
   loadPosts();
   scheduleUiStatePersist();
@@ -5387,7 +5670,7 @@ function renderLinks(posts, links) {
     path.setAttribute('stroke-dasharray', '28 10 20 22 6 12 30 8 10 16');
     path.setAttribute('stroke-dashoffset', '0');
     path.setAttribute('filter', 'url(#post-thread-glow)');
-    path.style.animation = (editMode || animationMode === 'off') ? 'none' : 'link-flow 9s linear infinite';
+    path.style.animation = shouldHardFreezeMotion() ? 'none' : 'link-flow 9s linear infinite';
     path.style.pointerEvents = 'none';
     linkLayer.appendChild(path);
   }
@@ -5467,17 +5750,25 @@ async function filterValidThreadNotifications(notifications) {
   });
 }
 
-async function loadNotifications() {
+async function loadNotifications(options = {}) {
   if (!currentUser) return;
 
+  const {
+    force = false,
+    validateThreads = null
+  } = options;
+
+  const panelOpen = Boolean(notifPanel?.classList?.contains('open'));
+  const shouldValidateThreads = validateThreads == null ? panelOpen : Boolean(validateThreads);
+
   const now = Date.now();
-  if (notificationsLoadPromise) {
+  if (!force && notificationsLoadPromise) {
     return notificationsLoadPromise;
   }
-  if (now < notificationsRetryAfter) {
+  if (!force && now < notificationsRetryAfter) {
     return;
   }
-  if ((now - notificationsLastRequestAt) < 1500) {
+  if (!force && (now - notificationsLastRequestAt) < 1500) {
     return;
   }
   notificationsLastRequestAt = now;
@@ -5505,7 +5796,14 @@ async function loadNotifications() {
 
   notificationsRetryAfter = 0;
 
-  const filteredNotifications = await filterValidThreadNotifications(data || []);
+  if (!panelOpen) {
+    return;
+  }
+
+  const baseNotifications = data || [];
+  const filteredNotifications = shouldValidateThreads
+    ? await filterValidThreadNotifications(baseNotifications)
+    : baseNotifications;
 
   if (!filteredNotifications || filteredNotifications.length === 0) {
     notifList.innerHTML = `<div class="notif-empty">no notifications</div>`;
@@ -5545,20 +5843,11 @@ async function loadNotifications() {
     `;
 
     item.addEventListener('click', async () => {
-      // Load the related post and open its detail modal
-      const { data: post, error: postErr } = await supabase
-        .from('posts')
-        .select('*')
-        .eq('id', n.post_id)
-        .single();
+      const post = await getPostRecordById(n.post_id);
+      if (!post) return;
 
-      if (postErr || !post) return;
-
-      const { data: userData } = await supabase
-        .from('users')
-        .select('id, username, pfp, pfp_url')
-        .eq('id', post.user_id)
-        .single();
+      const userMap = await getUsersMapByIds([post.user_id]);
+      const userData = userMap[String(post.user_id)] || {};
 
       openPostDetailModal(post, userData || {});
     });
@@ -5591,7 +5880,10 @@ async function openProfileModal(userId) {
   newProfilePfpFile   = null;
 
   const { data: user, error } = await supabase
-    .from('users').select('*').eq('id', userId).single();
+    .from('users')
+    .select('id, username, pfp, pfp_url, cover_image_url')
+    .eq('id', userId)
+    .single();
   if (error || !user) return;
 
   const isOwnProfile = currentUser && userId === currentUser.id;
@@ -5641,18 +5933,22 @@ async function openProfileModal(userId) {
   const postsList = document.getElementById('profilePostsList');
   postsList.innerHTML = '';
 
-  const { data: worlds } = await supabase
-    .from('worlds')
-    .select('id, user_id, name, description, category, background_url, font_family, font_color, ui_color, is_public_view, is_public_edit')
-    .eq('user_id', userId)
-    .order('created_at', { ascending: false });
-
-  const { data: posts } = await supabase
-    .from('posts')
-    .select('id, title, body, file_name, user_id, world_id')
-    .eq('user_id', userId)
-    .eq('group_id', 'group0')
-    .order('created_at', { ascending: false });
+  const [
+    { data: worlds },
+    { data: posts }
+  ] = await Promise.all([
+    supabase
+      .from('worlds')
+      .select('id, user_id, name, description, category, background_url, font_family, font_color, ui_color, is_public_view, is_public_edit')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false }),
+    supabase
+      .from('posts')
+      .select('id, title, body, file_name, user_id, world_id')
+      .eq('user_id', userId)
+      .eq('group_id', 'group0')
+      .order('created_at', { ascending: false })
+  ]);
 
   if (worlds && worlds.length > 0) {
     const worldsLabel = document.createElement('div');
@@ -5709,8 +6005,7 @@ async function openProfileModal(userId) {
       item.addEventListener('click', async () => {
         const wasPostModalOpen = postDetailOverlay?.style.display === 'flex';
 
-        const { data: fullPost } = await supabase
-          .from('posts').select('*').eq('id', p.id).single();
+        const fullPost = await getPostRecordById(p.id, { fallbackPost: p });
         if (!fullPost) return;
 
         activeUserFilter = null;
@@ -6465,6 +6760,7 @@ async function loadPosts() {
 
     // Store + apply tree filter (exclusive)
     lastLoadedPosts = posts || [];
+    (lastLoadedPosts || []).forEach((post) => cachePostRecord(post));
 
     if (
       activeThreadSourcePostId &&
@@ -6486,22 +6782,15 @@ async function loadPosts() {
       ...(lastLoadedWorlds || []).map(w => w.user_id)
     ].filter(Boolean))];
 
-    let users = [];
+    let userMap = {};
     if (userIds.length > 0) {
-      const { data, error: usersError } = await supabase
-        .from('users')
-        .select('id, username, pfp, pfp_url')
-        .in('id', userIds);
-
-      if (usersError) {
+      try {
+        userMap = await getUsersMapByIds(userIds);
+      } catch (usersError) {
         console.error('Failed to load users:', usersError);
         return;
       }
-      users = data || [];
     }
-
-    const userMap = {};
-    users.forEach(u => { userMap[u.id] = u; });
 
     if (!postCanvas) {
       console.error('postCanvas element not found. Check your HTML wrapper.');
@@ -7355,7 +7644,7 @@ function closeNotificationsPanel() {
 function openNotificationsPanel() {
   notifPanel.classList.add('open');
   document.body.classList.add('notif-open');
-  loadNotifications();
+  loadNotifications({ force: true, validateThreads: true });
   scheduleUiStatePersist();
 }
 
@@ -7525,18 +7814,12 @@ async function restoreUiPanelsAndModals(snapshot) {
   }
 
   if (snapshot.activePostId) {
-    const { data: post, error: postErr } = await supabase
-      .from('posts')
-      .select('*')
-      .eq('id', snapshot.activePostId)
-      .maybeSingle();
+    const post = await getPostRecordById(snapshot.activePostId);
+    const postErr = !post;
 
     if (!postErr && post) {
-      const { data: user } = await supabase
-        .from('users')
-        .select('id, username, pfp, pfp_url')
-        .eq('id', post.user_id)
-        .maybeSingle();
+      const userMap = await getUsersMapByIds([post.user_id]);
+      const user = userMap[String(post.user_id)] || null;
 
       await openPostDetailModal(post, user || {});
     }
@@ -7868,7 +8151,7 @@ function buildPostCard(post, user) {
     applyMarqueeIfNeeded(fileListEl, fileListTrackEl, '   +   ');
   }
 
-  wirePreviewVideoControls(content, { freezeMotion: editMode });
+  wirePreviewVideoControls(content, { freezeMotion: shouldHardFreezeMotion() });
   wireAudioPreviewControls(content);
   wireFileDownloadControls(content);
   wireMultiFileDownloadControls(content, post);
@@ -8788,6 +9071,12 @@ function initializeEventListeners() {
 document.addEventListener('DOMContentLoaded', async () => {
   console.log('Main page loaded');
 
+  if (animationMode !== 'off') {
+    setAutoFreezeActive(!isSuperFastStableConnection());
+  } else {
+    setAutoFreezeActive(false);
+  }
+
   installPrettyAlerts({ baseUrl: import.meta.env.BASE_URL });
   initializePostTextSpellcheck();
 
@@ -8876,14 +9165,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  Promise.resolve()
+  const deferredLinksPromise = Promise.resolve()
     .then(async () => {
       await loadLinks();
       renderLinks(lastLoadedPosts, lastLoadedLinks);
     })
     .catch((err) => console.error('Deferred links load failed:', err));
 
-  Promise.resolve()
+  const deferredNotificationsPromise = Promise.resolve()
     .then(() => loadNotifications())
     .catch((err) => console.error('Deferred notifications load failed:', err));
 
@@ -8906,6 +9195,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   persistUiStateNow();
 
   scheduleCardLodRefresh();
+  scheduleAutoFreezeRelease([deferredLinksPromise, deferredNotificationsPromise]);
 
   console.log('Main page ready');
 });

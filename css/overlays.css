@@ -942,6 +942,11 @@
   to   { stroke-dashoffset: -52; }
 }
 
+body.anim-hard-freeze #linkLayer path,
+body.anim-hard-freeze #categoryLayer path {
+  animation: none !important;
+}
+
 /* ============================================ */
 /* 19.0 MULTI-FILE NAVIGATOR                    */
 /* ============================================ */
