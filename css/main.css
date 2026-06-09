@@ -886,6 +886,8 @@ a.post-external-link:hover {
     --post-scale: 1;
     display: flex;
     flex-direction: column;
+    min-width: 220px;
+    min-height: 120px;
     max-width: 600px;
     overflow: visible; /* allow title to bleed past card edges */
     transform: scale(var(--post-scale));

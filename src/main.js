@@ -807,6 +807,10 @@ const VIEWPORT_NEAR_MARGIN_PX = 120;
 const VIEWPORT_FAR_MARGIN_PX = 680;
 const VIEWPORT_LINK_CULL_MARGIN_PX = 360;
 const ZOOM_OUT_DETAIL_THRESHOLD = 0.11;
+const POST_COORD_MIN = -5000;
+const POST_COORD_MAX = 18000;
+const POST_CARD_FALLBACK_WIDTH = 320;
+const POST_CARD_FALLBACK_HEIGHT = 220;
 
 // Placement mode
 let isPlacing = false;
@@ -859,6 +863,106 @@ function rectIntersects(a, b) {
     a.bottom < b.top ||
     a.top > b.bottom
   );
+}
+
+function clampCanvasCoord(value, min = POST_COORD_MIN, max = POST_COORD_MAX) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizePostPosition(post, index = 0) {
+  const fallbackX = 60 + (index % 4) * 340;
+  const fallbackY = 60 + Math.floor(index / 4) * 280;
+
+  const rawX = Number(post?.x);
+  const rawY = Number(post?.y);
+  const x = Number.isFinite(rawX) ? rawX : fallbackX;
+  const y = Number.isFinite(rawY) ? rawY : fallbackY;
+
+  return {
+    x: clampCanvasCoord(x),
+    y: clampCanvasCoord(y)
+  };
+}
+
+function centerViewportOnCards(cards = []) {
+  if (!postCanvas || !cards.length) return false;
+
+  const viewport = document.getElementById('canvasViewport');
+  const viewportRect = viewport?.getBoundingClientRect?.();
+  if (!viewportRect) return false;
+
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+
+  cards.forEach((card) => {
+    const x = Number.parseFloat(card.style.left || '0');
+    const y = Number.parseFloat(card.style.top || '0');
+    const scale = getCardScale(card);
+    const width = Math.max(POST_CARD_FALLBACK_WIDTH, (card.offsetWidth || 0) * scale);
+    const height = Math.max(POST_CARD_FALLBACK_HEIGHT, (card.offsetHeight || 0) * scale);
+
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x + width);
+    maxY = Math.max(maxY, y + height);
+  });
+
+  if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+    return false;
+  }
+
+  const centerCanvasX = (minX + maxX) / 2;
+  const centerCanvasY = (minY + maxY) / 2;
+  const viewportCenterX = (viewportRect.left + viewportRect.right) / 2;
+  const viewportCenterY = (viewportRect.top + viewportRect.bottom) / 2;
+
+  canvasOffsetX = viewportCenterX - (centerCanvasX * canvasScale);
+  canvasOffsetY = viewportCenterY - (centerCanvasY * canvasScale);
+  applyCanvasTransform();
+  return true;
+}
+
+function hasVisibleCardInViewport(cards = []) {
+  const viewportRect = getViewportScreenRect(0);
+  return cards.some((card) => {
+    const rect = card.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) return false;
+    return rectIntersects(rect, viewportRect);
+  });
+}
+
+function centerPosts() {
+  if (!postCanvas) return false;
+  const cards = Array.from(postCanvas.querySelectorAll('.post-card'));
+  return centerViewportOnCards(cards);
+}
+
+function debugPostsLayout() {
+  const cards = Array.from(postCanvas?.querySelectorAll('.post-card') || []);
+  const rows = cards.map((card) => {
+    const rect = card.getBoundingClientRect();
+    return {
+      postId: card.dataset.postId || '',
+      leftStyle: card.style.left || '',
+      topStyle: card.style.top || '',
+      widthStyle: card.style.width || '',
+      scale: card.dataset.postScale || '',
+      rectX: Number(rect.x.toFixed(2)),
+      rectY: Number(rect.y.toFixed(2)),
+      rectW: Number(rect.width.toFixed(2)),
+      rectH: Number(rect.height.toFixed(2))
+    };
+  });
+
+  console.table(rows);
+  return rows;
+}
+
+if (typeof window !== 'undefined') {
+  window.centerPosts = centerPosts;
+  window.debugPostsLayout = debugPostsLayout;
 }
 
 const MAX_ACTIVE_PREVIEW_VIDEOS = 1;
@@ -6442,6 +6546,13 @@ async function loadPosts() {
 
     renderLinks(lastLoadedPosts, lastLoadedLinks);
     scheduleCardLodRefresh();
+    requestAnimationFrame(() => {
+      const cards = Array.from(postCanvas.querySelectorAll('.post-card'));
+      if (!cards.length) return;
+      if (!hasVisibleCardInViewport(cards)) {
+        centerViewportOnCards(cards);
+      }
+    });
     scheduleUiStatePersist();
   } catch (err) {
     console.error('loadPosts crashed:', err);
@@ -7336,17 +7447,52 @@ function readPersistedUiState() {
   }
 }
 
+function isReasonableViewportState(snapshot) {
+  if (!snapshot) return false;
+
+  const scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, Number(snapshot.canvasScale)));
+  if (!Number.isFinite(scale) || scale <= 0) return false;
+
+  const offsetX = Number(snapshot.canvasOffsetX);
+  const offsetY = Number(snapshot.canvasOffsetY);
+  if (!Number.isFinite(offsetX) || !Number.isFinite(offsetY)) return false;
+
+  // Hard cap to reject pathological stale offsets from previous broken sessions.
+  const HARD_OFFSET_LIMIT = 50000;
+  if (Math.abs(offsetX) > HARD_OFFSET_LIMIT || Math.abs(offsetY) > HARD_OFFSET_LIMIT) {
+    return false;
+  }
+
+  const viewportCenterX = (window.innerWidth || 0) / 2;
+  const viewportCenterY = (window.innerHeight || 0) / 2;
+  const centerCanvasX = (viewportCenterX - offsetX) / scale;
+  const centerCanvasY = (viewportCenterY - offsetY) / scale;
+
+  const CENTER_MARGIN = 3000;
+  if (centerCanvasX < (POST_COORD_MIN - CENTER_MARGIN)) return false;
+  if (centerCanvasX > (POST_COORD_MAX + CENTER_MARGIN)) return false;
+  if (centerCanvasY < (POST_COORD_MIN - CENTER_MARGIN)) return false;
+  if (centerCanvasY > (POST_COORD_MAX + CENTER_MARGIN)) return false;
+
+  return true;
+}
+
 function applyInitialViewportState(snapshot) {
   if (
     snapshot &&
     isFiniteNumber(snapshot.canvasScale) &&
     isFiniteNumber(snapshot.canvasOffsetX) &&
-    isFiniteNumber(snapshot.canvasOffsetY)
+    isFiniteNumber(snapshot.canvasOffsetY) &&
+    isReasonableViewportState(snapshot)
   ) {
     canvasScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, snapshot.canvasScale));
     canvasOffsetX = snapshot.canvasOffsetX;
     canvasOffsetY = snapshot.canvasOffsetY;
     return;
+  }
+
+  if (snapshot) {
+    console.warn('Ignoring stale viewport state; using safe startup viewport.');
   }
 
   canvasScale = DEFAULT_BOOT_SCALE;
@@ -7671,11 +7817,7 @@ function buildPostCard(post, user) {
   const idx = (buildPostCard._indexCounter || 0);
   buildPostCard._indexCounter = idx + 1;
 
-  const fallbackX = 60 + (idx % 4) * 340;
-  const fallbackY = 60 + Math.floor(idx / 4) * 280;
-
-  const x = (post.x ?? fallbackX);
-  const y = (post.y ?? fallbackY);
+  const { x, y } = normalizePostPosition(post, idx);
 
   card.style.left = `${x}px`;
   card.style.top = `${y}px`;
