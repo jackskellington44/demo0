@@ -1,4 +1,30 @@
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const RETRY_DELAY_MS = 1000;
+const MAX_RETRIES = 1;
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithTimeoutAndRetry(url, options = {}, timeoutMs = 30000) {
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const requestOptions = { ...options, signal: controller.signal };
+
+    try {
+      return await fetch(url, requestOptions);
+    } catch (err) {
+      const isAbort = err?.name === 'AbortError';
+      const isLastAttempt = attempt === MAX_RETRIES;
+      if (isAbort || isLastAttempt) throw err;
+      await delay(RETRY_DELAY_MS);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+  throw new Error('Request failed');
+}
 
 // ─── Token helpers ─────────────────────────────────────────────────────────────
 
@@ -18,9 +44,9 @@ function authHeaders() {
 
 // ─── Low-level fetch wrapper ───────────────────────────────────────────────────
 
-async function apiFetch(path, options = {}) {
+async function apiFetch(path, options = {}, timeoutMs = 30000) {
   try {
-    const res = await fetch(`${API_BASE}${path}`, options);
+    const res = await fetchWithTimeoutAndRetry(`${API_BASE}${path}`, options, timeoutMs);
     let json;
     try {
       json = await res.json();
@@ -38,15 +64,15 @@ async function apiFetch(path, options = {}) {
 
 // ─── Shared helpers used by supabase-config.js ────────────────────────────────
 
-export async function apiRequest(path, { method = 'GET', token, body } = {}) {
+export async function apiRequest(path, { method = 'GET', token, body } = {}, timeoutMs = 30000) {
   const headers = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = 'Bearer ' + token;
   try {
-    const res = await fetch(`${API_BASE}${path}`, {
+    const res = await fetchWithTimeoutAndRetry(`${API_BASE}${path}`, {
       method,
       headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
+    }, timeoutMs);
     let json;
     try { json = await res.json(); } catch { json = {}; }
     if (!res.ok) return { data: null, error: json.error || `Request failed with status ${res.status}` };
