@@ -403,6 +403,10 @@ export function initWorldsFeature(options) {
   let makerEditingWorld = null;
   let makerEditingType = 'plug';
   let latestUpdateInfo = null;
+  let latestUpdateInfoPromise = null;
+  let latestUpdateInfoRetryAt = 0;
+  let loadWorldsInFlightPromise = null;
+  let loadWorldsInFlightKey = '';
   let myWorldIds = [];
   let myWorldMap = new Map();
   let myWorldsHydrated = false;
@@ -876,7 +880,16 @@ export function initWorldsFeature(options) {
   }
 
   async function loadWorlds(filters = {}) {
-    await ensureLatestUpdateInfo();
+    const requestKey = JSON.stringify(filters || {});
+    if (loadWorldsInFlightPromise && loadWorldsInFlightKey === requestKey) {
+      console.warn('[feed reload skipped: already loading]');
+      return loadWorldsInFlightPromise;
+    }
+
+    const runPromise = (async () => {
+    Promise.resolve()
+      .then(() => ensureLatestUpdateInfo())
+      .catch(() => null);
 
     let query = supabase
       .from('worlds')
@@ -908,26 +921,55 @@ export function initWorldsFeature(options) {
     }
 
     return data || [];
+    })();
+
+    loadWorldsInFlightKey = requestKey;
+    loadWorldsInFlightPromise = runPromise;
+
+    try {
+      return await runPromise;
+    } finally {
+      if (loadWorldsInFlightPromise === runPromise) {
+        loadWorldsInFlightPromise = null;
+        loadWorldsInFlightKey = '';
+      }
+    }
   }
 
   async function ensureLatestUpdateInfo(force = false) {
     if (latestUpdateInfo && !force) return latestUpdateInfo;
+    if (!force && latestUpdateInfoPromise) return latestUpdateInfoPromise;
+    if (!force && Date.now() < latestUpdateInfoRetryAt) return latestUpdateInfo;
 
-    const { data, error } = await supabase
-      .from('updates')
-      .select('id, version, description, released_at')
-      .order('released_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const requestPromise = (async () => {
+      const { data, error } = await supabase
+        .from('updates')
+        .select('id, version, description, released_at')
+        .order('released_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-    if (error) {
-      console.warn('Failed to load update metadata:', error);
-      latestUpdateInfo = null;
-      return null;
+      if (error) {
+        console.warn('Failed to load update metadata:', error);
+        latestUpdateInfoRetryAt = Date.now() + 10000;
+        latestUpdateInfo = null;
+        return null;
+      }
+
+      latestUpdateInfoRetryAt = 0;
+      latestUpdateInfo = data || null;
+      return latestUpdateInfo;
+    })();
+
+    latestUpdateInfoPromise = requestPromise;
+
+    try {
+      return await requestPromise;
+    } finally {
+      if (latestUpdateInfoPromise === requestPromise) {
+        latestUpdateInfoPromise = null;
+      }
     }
-
-    latestUpdateInfo = data || null;
-    return latestUpdateInfo;
   }
 
   function worldNeedsManualUpdate(world, currentUserId) {

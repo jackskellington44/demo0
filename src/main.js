@@ -234,6 +234,8 @@ const UI_STATE_QUICK_KEY = 'demo4-main-ui-state-quick-v1';
 const UI_STATE_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 3;
 const DEFAULT_BOOT_SCALE = 0.14;
 const DEFAULT_BG_URL = `${import.meta.env.BASE_URL}images/background.jpg`;
+const DEFAULT_PFP_URL = `${import.meta.env.BASE_URL}images/pfps/default.png`;
+const USE_DEFAULT_FOR_SUPABASE_PFP = true;
 
 let restoredUiState = null;
 let restoreInFlight = false;
@@ -246,6 +248,77 @@ let worldsFeature = null;
 let activeWorldContext = null;
 let postsLoadSequence = 0;
 const LINK_SCOPE_CHUNK_SIZE = 120;
+let loadPostsInFlightPromise = null;
+let loadPostsInFlightKey = '';
+let worldModeReloadTimer = null;
+let worldModeReloadResolve = null;
+let worldModeReloadSeq = 0;
+let worldModeTransitionPromise = null;
+let worldModeTransitionKey = '';
+let notificationsLoadPromise = null;
+let notificationsLastRequestAt = 0;
+let notificationsRetryAfter = 0;
+
+function getLoadPostsRequestKey() {
+  return JSON.stringify({
+    worldId: activeWorldContext?.world?.id || null,
+    editMode: Boolean(editMode),
+    activeUserFilter: activeUserFilter || null,
+    activeCategoryFilter: activeCategoryFilter || null,
+    activeLinkTreeRootPostId: activeLinkTreeRootPostId || null
+  });
+}
+
+function getWorldTransitionKey(mode, worldPayload = null) {
+  return `${mode}:${String(worldPayload?.world?.id || 'main')}`;
+}
+
+function resolvePfpUrl(user = null) {
+  const rawPfpUrl = String(user?.pfp_url || '').trim();
+  if (rawPfpUrl) {
+    if (USE_DEFAULT_FOR_SUPABASE_PFP && /supabase\.co/i.test(rawPfpUrl)) {
+      return DEFAULT_PFP_URL;
+    }
+    return rawPfpUrl;
+  }
+
+  const pfpName = String(user?.pfp || '').trim();
+  if (pfpName) {
+    return `${import.meta.env.BASE_URL}images/pfps/${pfpName}`;
+  }
+
+  return DEFAULT_PFP_URL;
+}
+
+function applyImageRuntimeDefaults(rootEl) {
+  if (!rootEl) return;
+
+  const images = [];
+  if (rootEl instanceof HTMLImageElement) {
+    images.push(rootEl);
+  }
+  images.push(...rootEl.querySelectorAll?.('img') || []);
+
+  images.forEach((img) => {
+    if (!img.getAttribute('loading')) img.setAttribute('loading', 'lazy');
+    if (!img.getAttribute('decoding')) img.setAttribute('decoding', 'async');
+
+    const isAvatar =
+      img.dataset.avatar === '1'
+      || img.classList.contains('post-footer-pfp')
+      || img.classList.contains('comment-pfp')
+      || img.id === 'pdPfp';
+
+    if (isAvatar && img.dataset.avatarFallbackBound !== '1') {
+      img.dataset.avatarFallbackBound = '1';
+      img.addEventListener('error', () => {
+        if (img.dataset.avatarFallbackApplied === '1') return;
+        img.dataset.avatarFallbackApplied = '1';
+        img.src = DEFAULT_PFP_URL;
+      });
+    }
+  });
+}
 
 // ============================================
 // 3. LINK GRAPH HELPERS
@@ -1819,31 +1892,105 @@ function applyWorldFormCategoryLock() {
 async function enterWorldMode(worldPayload) {
   if (!worldPayload?.world) return;
 
-  activeWorldContext = worldPayload;
-  if (postCanvas) {
-    postCanvas.innerHTML = '';
-    setCanvasLoadingState(true, 'loading world...');
+  const transitionKey = getWorldTransitionKey('enter', worldPayload);
+  if (worldModeTransitionPromise && worldModeTransitionKey === transitionKey) {
+    console.warn('[feed reload skipped: already loading]');
+    return worldModeTransitionPromise;
   }
-  applyWorldModeVisuals(worldPayload);
 
-  await loadPosts();
-  await waitForLayoutStability();
-  frameWorldViewportOnDensePosts(lastLoadedPosts);
-  await loadLinks();
-  renderLinks(lastLoadedPosts, lastLoadedLinks);
+  const runPromise = (async () => {
+    activeWorldContext = worldPayload;
+    setCanvasLoadingState(true, 'loading world...');
+    applyWorldModeVisuals(worldPayload);
+
+    await loadPosts();
+    await waitForLayoutStability();
+    frameWorldViewportOnDensePosts(lastLoadedPosts);
+
+    await Promise.allSettled([
+      loadLinks().then(() => renderLinks(lastLoadedPosts, lastLoadedLinks)),
+      loadNotifications()
+    ]);
+  })();
+
+  worldModeTransitionKey = transitionKey;
+  worldModeTransitionPromise = runPromise;
+
+  try {
+    return await runPromise;
+  } finally {
+    if (worldModeTransitionPromise === runPromise) {
+      worldModeTransitionPromise = null;
+      worldModeTransitionKey = '';
+    }
+  }
 }
 
 async function exitWorldMode() {
-  activeWorldContext = null;
-  if (postCanvas) {
-    postCanvas.innerHTML = '';
-    setCanvasLoadingState(true, 'loading main...');
+  const transitionKey = getWorldTransitionKey('exit', null);
+  if (worldModeTransitionPromise && worldModeTransitionKey === transitionKey) {
+    console.warn('[feed reload skipped: already loading]');
+    return worldModeTransitionPromise;
   }
-  applyWorldModeVisuals(null);
 
-  await loadPosts();
-  await loadLinks();
-  renderLinks(lastLoadedPosts, lastLoadedLinks);
+  const runPromise = (async () => {
+    activeWorldContext = null;
+    setCanvasLoadingState(true, 'loading main...');
+    applyWorldModeVisuals(null);
+
+    await loadPosts();
+
+    await Promise.allSettled([
+      loadLinks().then(() => renderLinks(lastLoadedPosts, lastLoadedLinks)),
+      loadNotifications()
+    ]);
+  })();
+
+  worldModeTransitionKey = transitionKey;
+  worldModeTransitionPromise = runPromise;
+
+  try {
+    return await runPromise;
+  } finally {
+    if (worldModeTransitionPromise === runPromise) {
+      worldModeTransitionPromise = null;
+      worldModeTransitionKey = '';
+    }
+  }
+}
+
+function scheduleWorldModeReload(mode, worldPayload = null, delayMs = 400) {
+  worldModeReloadSeq += 1;
+  const seq = worldModeReloadSeq;
+
+  if (worldModeReloadResolve) {
+    worldModeReloadResolve(false);
+    worldModeReloadResolve = null;
+  }
+  window.clearTimeout(worldModeReloadTimer);
+
+  return new Promise((resolve) => {
+    worldModeReloadResolve = resolve;
+    worldModeReloadTimer = window.setTimeout(async () => {
+      if (seq !== worldModeReloadSeq) {
+        resolve(false);
+        return;
+      }
+
+      worldModeReloadResolve = null;
+      try {
+        if (mode === 'enter') {
+          await enterWorldMode(worldPayload);
+        } else {
+          await exitWorldMode();
+        }
+        resolve(true);
+      } catch (err) {
+        console.error('World mode reload failed:', err);
+        resolve(false);
+      }
+    }, delayMs);
+  });
 }
 
 function openPostForm() {
@@ -1979,7 +2126,7 @@ function initFileNav(files) {
     label.textContent = `${f.name}  (${idx + 1} / ${files.length})`;
 
     if (f.type === 'image') {
-      viewer.innerHTML = `<img class="post-image" src="${f.url}" alt="">`;
+      viewer.innerHTML = `<img class="post-image" src="${f.url}" alt="" loading="lazy" decoding="async">`;
     } else if (f.type === 'video') {
       viewer.innerHTML = `<video class="post-video" src="${f.url}" controls></video>`;
     } else if (f.type === 'audio') {
@@ -2063,7 +2210,7 @@ function createYouTubePosterShellMarkup(youtubeId, shellClass, buttonClass, icon
   const posterUrl = getYouTubePosterUrl(youtubeId);
   return `
     <div class="${shellClass}" data-youtube-id="${youtubeId}">
-      <img class="post-file-preview-cover" src="${posterUrl}" alt="YouTube thumbnail" loading="lazy">
+      <img class="post-file-preview-cover" src="${posterUrl}" alt="YouTube thumbnail" loading="lazy" decoding="async">
       <button class="${buttonClass}" type="button" aria-label="play YouTube video">
         <span class="${iconClass}" aria-hidden="true">▶︎</span>
       </button>
@@ -3958,7 +4105,7 @@ function buildPdVisualCarousel(visuals, inner, prevBtn, nextBtn, counterEl) {
     } else if (f.type === 'pdf') {
       renderPdPdfViewer(f, inner);
     } else if (f.type === 'image') {
-      inner.innerHTML = `<img class="pd-visual-img" src="${f.url}" alt="">`;
+      inner.innerHTML = `<img class="pd-visual-img" src="${f.url}" alt="" loading="lazy" decoding="async">`;
       applyPdVisualZoom(inner);
     } else {
       inner.innerHTML = `<video class="pd-visual-video" src="${f.url}" controls></video>`;
@@ -4060,10 +4207,13 @@ async function openPostDetailModal(post, user) {
   activePostForModal = post;
 
   // ── User block ──
-  const pfpFallback = './images/pfps/default.png';
-  const pfpSrc = user?.pfp_url || (user?.pfp ? `./images/pfps/${user.pfp}` : pfpFallback);
+  const pfpSrc = resolvePfpUrl(user);
   const pdPfpEl = document.getElementById('pdPfp');
+  pdPfpEl.loading = 'lazy';
+  pdPfpEl.decoding = 'async';
+  pdPfpEl.dataset.avatar = '1';
   pdPfpEl.src = pfpSrc;
+  applyImageRuntimeDefaults(pdPfpEl);
   pdPfpEl.onclick = user?.id ? () => openProfileModal(user.id) : null;
   pdPfpEl.style.cursor = user?.id ? 'pointer' : '';
   document.getElementById('pdUsername').textContent = user?.username || '';
@@ -5216,6 +5366,20 @@ async function filterValidThreadNotifications(notifications) {
 async function loadNotifications() {
   if (!currentUser) return;
 
+  const now = Date.now();
+  if (notificationsLoadPromise) {
+    return notificationsLoadPromise;
+  }
+  if (now < notificationsRetryAfter) {
+    return;
+  }
+  if ((now - notificationsLastRequestAt) < 1500) {
+    return;
+  }
+  notificationsLastRequestAt = now;
+
+  const runPromise = (async () => {
+
   const { data, error } = await supabase
     .from('notifications')
     .select('id, type, post_id, actor_user_id, created_at')
@@ -5226,8 +5390,16 @@ async function loadNotifications() {
 
   if (error) {
     console.error('Failed to load notifications:', error);
+    const message = String(error?.message || error || '');
+    if (/aborted|abort/i.test(message)) {
+      notificationsRetryAfter = Date.now() + 6000;
+    } else {
+      notificationsRetryAfter = Date.now() + 3000;
+    }
     return;
   }
+
+  notificationsRetryAfter = 0;
 
   const filteredNotifications = await filterValidThreadNotifications(data || []);
 
@@ -5289,6 +5461,16 @@ async function loadNotifications() {
 
     notifList.appendChild(item);
   });
+  })();
+
+  notificationsLoadPromise = runPromise;
+  try {
+    return await runPromise;
+  } finally {
+    if (notificationsLoadPromise === runPromise) {
+      notificationsLoadPromise = null;
+    }
+  }
 }
 
 
@@ -5329,12 +5511,15 @@ async function openProfileModal(userId) {
   const pfpWidget  = document.getElementById('profilePfpWidget');
   const pfpOverlay = document.getElementById('profilePfpOverlay');
   pfpWidget.innerHTML = '';
-  const pfpFallback = './images/pfps/default.webp';
-  const pfpSrc = user.pfp_url || (user.pfp ? `./images/pfps/${user.pfp}` : pfpFallback);
+  const pfpSrc = resolvePfpUrl(user);
   const img = document.createElement('img');
   img.src = pfpSrc;
+  img.loading = 'lazy';
+  img.decoding = 'async';
+  img.dataset.avatar = '1';
   img.style.cssText = 'width:60px;height:60px;object-fit:cover;display:block;';
   pfpWidget.appendChild(img);
+  applyImageRuntimeDefaults(img);
   pfpOverlay.style.display = 'none';
 
   // ── Username ──
@@ -5390,7 +5575,7 @@ async function openProfileModal(userId) {
         if (worldsFeature?.openWorldById) {
           await worldsFeature.openWorldById(world.id);
         } else {
-          await enterWorldMode({
+          await scheduleWorldModeReload('enter', {
             world,
             creator: user,
             backgroundUrl: world.background_url || DEFAULT_BG_URL,
@@ -5451,7 +5636,7 @@ async function openProfileModal(userId) {
             if (worldsFeature?.openWorldById) {
               await worldsFeature.openWorldById(worldRow.id);
             } else {
-              await enterWorldMode({
+              await scheduleWorldModeReload('enter', {
                 world: worldRow,
                 creator: user,
                 backgroundUrl: worldRow.background_url || DEFAULT_BG_URL,
@@ -5462,7 +5647,7 @@ async function openProfileModal(userId) {
             }
           }
         } else if (activeWorldContext?.world?.id) {
-          await exitWorldMode();
+          await scheduleWorldModeReload('exit');
         }
 
         centerCanvasOnPost(fullPost.id);
@@ -5791,7 +5976,6 @@ async function handlePostSubmit() {
 
     const createdEl = postCanvas.querySelector(`.post-card[data-post-id="${created.id}"]`);
     if (createdEl) {
-      await waitForCardMedia(createdEl);
       await waitForLayoutStability();
       startPlacement(created, createdEl,
         window.__lastMouseEventForPlacement || { clientX: 200, clientY: 200 });
@@ -5814,7 +5998,6 @@ async function finalizeCoverImagePromptSave(saved, isEdit) {
   if (!isEdit && saved) {
     const createdEl = postCanvas.querySelector(`.post-card[data-post-id="${saved.id}"]`);
     if (createdEl) {
-      await waitForCardMedia(createdEl);
       await waitForLayoutStability();
       startPlacement(saved, createdEl, window.__lastMouseEventForPlacement || { clientX: 200, clientY: 200 });
     }
@@ -5949,18 +6132,19 @@ async function loadCommentsForPost(postId) {
 
     const u = commentUserMap[c.user_id];
     const uname = u?.username || 'unknown';
-    const pfpSrc = u?.pfp_url || (u?.pfp ? `./images/pfps/${u.pfp}` : './images/pfps/default.png');
+    const pfpSrc = resolvePfpUrl(u);
     const isOwn = currentUser && c.user_id === currentUser.id;
     const stamp = formatTimestamp(c.created_at);
 
     row.innerHTML = `
       <div class="comment-header">
-        <img class="comment-pfp" src="${pfpSrc}" alt="">
+        <img class="comment-pfp" src="${pfpSrc}" alt="" loading="lazy" decoding="async" data-avatar="1">
         <span class="comment-username">${uname}</span>
         <span class="comment-time">${stamp}</span>
       </div>
       <div class="comment-body">${formatBodyTextWithMentions(c.body || '', { clickable: true })}</div>
     `;
+    applyImageRuntimeDefaults(row);
 
     // Double right-click to edit/delete own comments
     if (isOwn) {
@@ -6107,6 +6291,13 @@ async function submitComment() {
 // 20. POST LOADING + CANVAS RENDERING
 // ============================================
 async function loadPosts() {
+  const requestKey = getLoadPostsRequestKey();
+  if (loadPostsInFlightPromise && loadPostsInFlightKey === requestKey) {
+    console.warn('[feed reload skipped: already loading]');
+    return loadPostsInFlightPromise;
+  }
+
+  const runPromise = (async () => {
   const loadSeq = ++postsLoadSequence;
   const worldLoading = Boolean(activeWorldContext?.world?.id);
   setCanvasLoadingState(true, worldLoading ? 'loading world posts...' : 'loading posts...');
@@ -6257,6 +6448,19 @@ async function loadPosts() {
   } finally {
     if (loadSeq === postsLoadSequence) {
       setCanvasLoadingState(false);
+    }
+  }
+  })();
+
+  loadPostsInFlightKey = requestKey;
+  loadPostsInFlightPromise = runPromise;
+
+  try {
+    return await runPromise;
+  } finally {
+    if (loadPostsInFlightPromise === runPromise) {
+      loadPostsInFlightPromise = null;
+      loadPostsInFlightKey = '';
     }
   }
 }
@@ -7206,15 +7410,21 @@ function scheduleRealtimeRefresh(options = {}) {
   realtimeRefreshTimer = window.setTimeout(async () => {
     await loadPosts();
 
+    const secondaryTasks = [];
+
     if (realtimeNeedsLinks) {
-      await loadLinks();
-      realtimeNeedsLinks = false;
+      secondaryTasks.push(
+        loadLinks().then(() => {
+          realtimeNeedsLinks = false;
+          renderLinks(lastLoadedPosts, lastLoadedLinks);
+        })
+      );
+    } else {
+      renderLinks(lastLoadedPosts, lastLoadedLinks);
     }
 
-    renderLinks(lastLoadedPosts, lastLoadedLinks);
-
     if (withNotifications && notifPanel?.classList.contains('open')) {
-      await loadNotifications();
+      secondaryTasks.push(loadNotifications());
     }
 
     if (
@@ -7222,7 +7432,11 @@ function scheduleRealtimeRefresh(options = {}) {
       maybeCommentPostId &&
       String(activePostForModal.id) === String(maybeCommentPostId)
     ) {
-      await loadCommentsForPost(activePostForModal.id);
+      secondaryTasks.push(loadCommentsForPost(activePostForModal.id));
+    }
+
+    if (secondaryTasks.length > 0) {
+      await Promise.allSettled(secondaryTasks);
     }
   }, 220);
 }
@@ -7479,6 +7693,7 @@ function buildPostCard(post, user) {
     card.classList.add(...contentConfig.cardClasses);
   }
   content.innerHTML = contentConfig.html;
+  applyImageRuntimeDefaults(content);
   contentConfig.onRender?.(content, card);
 
   if (
@@ -7523,13 +7738,12 @@ function buildPostCard(post, user) {
   const footer = document.createElement('div');
   footer.className = 'post-footer';
 
-  const pfpFallback = './images/pfps/default.png';
-  const pfpSrc = user?.pfp_url || (user?.pfp ? `./images/pfps/${user.pfp}` : pfpFallback);
+  const pfpSrc = resolvePfpUrl(user);
 
 
       if (editMode && canEditThisPost) {
     footer.innerHTML = `
-      <img class="post-footer-pfp" src="${pfpSrc}" alt="" data-user-id="${post.user_id}" style="cursor:pointer;">
+      <img class="post-footer-pfp" src="${pfpSrc}" alt="" data-user-id="${post.user_id}" data-avatar="1" loading="lazy" decoding="async" style="cursor:pointer;">
       <span class="post-footer-username"><span class="post-footer-username-track">${user?.username || 'unknown'}</span></span>
       <span class="post-footer-category"><span class="post-footer-category-track">${post.category || 'none'}</span></span>
     `;
@@ -7626,7 +7840,7 @@ function buildPostCard(post, user) {
 
   } else {
     footer.innerHTML = `
-    <img class="post-footer-pfp" src="${pfpSrc}" alt="" data-user-id="${post.user_id}" style="cursor:pointer;">
+    <img class="post-footer-pfp" src="${pfpSrc}" alt="" data-user-id="${post.user_id}" data-avatar="1" loading="lazy" decoding="async" style="cursor:pointer;">
     <span class="post-footer-username post-footer-filter-btn"><span class="post-footer-username-track">${user?.username || 'unknown'}</span></span>
     <span class="post-footer-category post-footer-filter-btn"><span class="post-footer-category-track">${post.category || 'none'}</span></span>
   `;
@@ -7651,6 +7865,8 @@ function buildPostCard(post, user) {
       });
     }
   }
+
+  applyImageRuntimeDefaults(footer);
 
   const pfpEl = footer.querySelector('.post-footer-pfp');
   if (!editMode) {
@@ -8488,7 +8704,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
       }
 
-      await waitForCardMedia(worldCardEl);
       await waitForLayoutStability();
       startPlacement(
         world,
@@ -8500,10 +8715,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       await loadPosts();
     },
     onEnterWorld: async (worldPayload) => {
-      await enterWorldMode(worldPayload);
+      await scheduleWorldModeReload('enter', worldPayload);
     },
     onExitWorld: async () => {
-      await exitWorldMode();
+      await scheduleWorldModeReload('exit');
     },
     onOpenProfile: async (userId) => {
       await openProfileModal(userId);
@@ -8511,8 +8726,25 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   const bootWorldId = new URLSearchParams(window.location.search).get('world');
   await loadPosts();
-  await loadLinks();
-  await loadNotifications();
+
+  if (canvasViewport) {
+    requestAnimationFrame(() => {
+      canvasViewport.style.opacity = '1';
+      canvasViewport.style.filter = 'blur(0px)';
+    });
+  }
+
+  Promise.resolve()
+    .then(async () => {
+      await loadLinks();
+      renderLinks(lastLoadedPosts, lastLoadedLinks);
+    })
+    .catch((err) => console.error('Deferred links load failed:', err));
+
+  Promise.resolve()
+    .then(() => loadNotifications())
+    .catch((err) => console.error('Deferred notifications load failed:', err));
+
   await initMusic(currentUser, currentUserData);
   initAnimToggle();
   initThemeColorPicker();
@@ -8530,13 +8762,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   initializeRealtimeRefresh();
   persistUiStateNow();
-
-  if (canvasViewport) {
-    requestAnimationFrame(() => {
-      canvasViewport.style.opacity = '1';
-      canvasViewport.style.filter = 'blur(0px)';
-    });
-  }
 
   scheduleCardLodRefresh();
 

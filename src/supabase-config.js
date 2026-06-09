@@ -2,6 +2,17 @@ import { apiRequest, apiUpload, getPublicObjectUrl } from './api.js';
 
 const AUTH_TOKEN_KEY = 'auth_token';
 const AUTH_USER_KEY  = 'auth_user';
+const DB_QUERY_CACHE_TTL_MS = 10000;
+const dbQueryInFlight = new Map();
+const dbQueryCache = new Map();
+
+function pruneDbQueryCache(now = Date.now()) {
+	for (const [cacheKey, entry] of dbQueryCache.entries()) {
+		if (!entry || (now - entry.timestamp) > DB_QUERY_CACHE_TTL_MS) {
+			dbQueryCache.delete(cacheKey);
+		}
+	}
+}
 
 function getStoredToken() {
 	try {
@@ -133,21 +144,53 @@ class QueryBuilder {
 		const token = getStoredToken();
 
 		if (this.mode === 'select') {
-			return apiRequest('/api/db/query', {
+			const body = {
+				table: this.table,
+				select: this.selectColumns,
+				filters: this.filters,
+				or: this.orExpr,
+				order: this.orderBy,
+				limit: this.limitValue,
+				range: this.rangeValue,
+				single: this.singleMode,
+				maybeSingle: this.maybeSingleMode
+			};
+
+			console.log('[db-query]', body.table, body.filters, Date.now());
+
+			const cacheKey = JSON.stringify(body);
+			const now = Date.now();
+			pruneDbQueryCache(now);
+
+			if (dbQueryInFlight.has(cacheKey)) {
+				console.warn('[db-query skipped duplicate]', cacheKey);
+				return dbQueryInFlight.get(cacheKey);
+			}
+
+			const cachedEntry = dbQueryCache.get(cacheKey);
+			if (cachedEntry && (now - cachedEntry.timestamp) <= DB_QUERY_CACHE_TTL_MS) {
+				console.warn('[db-query skipped duplicate]', cacheKey);
+				return cachedEntry.result;
+			}
+
+			const requestPromise = apiRequest('/api/db/query', {
 				method: 'POST',
 				token,
-				body: {
-					table: this.table,
-					select: this.selectColumns,
-					filters: this.filters,
-					or: this.orExpr,
-					order: this.orderBy,
-					limit: this.limitValue,
-					range: this.rangeValue,
-					single: this.singleMode,
-					maybeSingle: this.maybeSingleMode
+				body
+			}).then((result) => {
+				if (!result?.error) {
+					dbQueryCache.set(cacheKey, {
+						timestamp: Date.now(),
+						result
+					});
 				}
+				return result;
+			}).finally(() => {
+				dbQueryInFlight.delete(cacheKey);
 			});
+
+			dbQueryInFlight.set(cacheKey, requestPromise);
+			return requestPromise;
 		}
 
 		return apiRequest('/api/db/mutate', {
