@@ -2268,6 +2268,49 @@ function applyWorldFormCategoryLock() {
   postCategoryDisplay?.removeAttribute('aria-disabled');
 }
 
+function clearVisibleCanvasContent() {
+  if (!postCanvas) return;
+
+  postCanvas.innerHTML = '';
+  buildPostCard._indexCounter = 0;
+  lastLoadedPosts = [];
+  lastLoadedWorlds = [];
+  renderLinks(lastLoadedPosts, lastLoadedLinks);
+  scheduleCardLodRefresh();
+}
+
+function applyOptimisticPostRemoval(postIds = []) {
+  const idSet = new Set((postIds || []).map((id) => String(id)).filter(Boolean));
+  if (!idSet.size) return;
+
+  lastLoadedPosts = (lastLoadedPosts || []).filter((post) => !idSet.has(String(post?.id)));
+  idSet.forEach((id) => {
+    postRecordCache.delete(String(id));
+    if (postCanvas) {
+      postCanvas.querySelector(`.post-card[data-post-id="${id}"]`)?.remove();
+    }
+  });
+
+  renderLinks(lastLoadedPosts, lastLoadedLinks);
+  scheduleCardLodRefresh();
+}
+
+function refreshFeedAfterMutation(options = {}) {
+  const { withLinks = true } = options;
+  const postsPromise = loadPosts({ force: true });
+
+  if (!withLinks) return postsPromise;
+
+  return postsPromise
+    .then(() => loadLinks())
+    .then(() => {
+      renderLinks(lastLoadedPosts, lastLoadedLinks);
+    })
+    .catch((error) => {
+      console.error('Post-mutation refresh failed:', error);
+    });
+}
+
 async function enterWorldMode(worldPayload) {
   if (!worldPayload?.world) return;
 
@@ -2281,8 +2324,9 @@ async function enterWorldMode(worldPayload) {
     activeWorldContext = worldPayload;
     setCanvasLoadingState(true, 'loading world...');
     applyWorldModeVisuals(worldPayload);
+    clearVisibleCanvasContent();
 
-    await loadPosts();
+    await loadPosts({ force: true, clearCanvasImmediately: true });
     await waitForLayoutStability();
     recoverViewportForCurrentContext();
 
@@ -2316,8 +2360,9 @@ async function exitWorldMode() {
     activeWorldContext = null;
     setCanvasLoadingState(true, 'loading main...');
     applyWorldModeVisuals(null);
+    clearVisibleCanvasContent();
 
-    await loadPosts();
+    await loadPosts({ force: true, clearCanvasImmediately: true });
     await waitForLayoutStability();
     recoverViewportForCurrentContext();
 
@@ -2340,7 +2385,7 @@ async function exitWorldMode() {
   }
 }
 
-function scheduleWorldModeReload(mode, worldPayload = null, delayMs = 400) {
+function scheduleWorldModeReload(mode, worldPayload = null, delayMs = 0) {
   worldModeReloadSeq += 1;
   const seq = worldModeReloadSeq;
 
@@ -2352,7 +2397,8 @@ function scheduleWorldModeReload(mode, worldPayload = null, delayMs = 400) {
 
   return new Promise((resolve) => {
     worldModeReloadResolve = resolve;
-    worldModeReloadTimer = window.setTimeout(async () => {
+
+    const executeReload = async () => {
       if (seq !== worldModeReloadSeq) {
         resolve(false);
         return;
@@ -2370,7 +2416,14 @@ function scheduleWorldModeReload(mode, worldPayload = null, delayMs = 400) {
         console.error('World mode reload failed:', err);
         resolve(false);
       }
-    }, delayMs);
+    };
+
+    if (delayMs > 0) {
+      worldModeReloadTimer = window.setTimeout(executeReload, delayMs);
+      return;
+    }
+
+    Promise.resolve().then(executeReload);
   });
 }
 
@@ -5003,6 +5056,8 @@ async function handleDeletePosts(postIds = []) {
       : window.confirm(confirmMessage);
     if (!confirmed) return;
 
+    applyOptimisticPostRemoval(ids);
+
     let deleteQuery = supabase
       .from('posts')
       .delete()
@@ -5022,11 +5077,10 @@ async function handleDeletePosts(postIds = []) {
     }
 
     console.log(isBulk ? 'Posts deleted:' : 'Post deleted:', isBulk ? ids : ids[0]);
-    await loadPosts();
-    await loadLinks();
-    renderLinks(lastLoadedPosts, lastLoadedLinks);
+    void refreshFeedAfterMutation();
   } catch (error) {
     console.error('Delete failed:', error.message);
+    void refreshFeedAfterMutation();
     alert(`Delete failed: ${error.message}`);
   }
 }
@@ -6338,9 +6392,7 @@ async function handlePostSubmit() {
         actorUserId: currentUser.id
       });
       closePostForm();
-      await loadPosts();
-      await loadLinks();
-      renderLinks(lastLoadedPosts, lastLoadedLinks);
+      void refreshFeedAfterMutation();
       return;
     }
 
@@ -6369,16 +6421,14 @@ async function handlePostSubmit() {
     }
 
     closePostForm();
-    await loadPosts();
-    await loadLinks();
-    renderLinks(lastLoadedPosts, lastLoadedLinks);
+    void refreshFeedAfterMutation().then(async () => {
+      const createdEl = postCanvas.querySelector(`.post-card[data-post-id="${created.id}"]`);
+      if (!createdEl) return;
 
-    const createdEl = postCanvas.querySelector(`.post-card[data-post-id="${created.id}"]`);
-    if (createdEl) {
       await waitForLayoutStability();
       startPlacement(created, createdEl,
         window.__lastMouseEventForPlacement || { clientX: 200, clientY: 200 });
-    }
+    });
    } catch (error) {
     console.error('Post submission failed:', error?.message || error);
     alert(`Post failed: ${error?.message || error}`);
@@ -6390,16 +6440,18 @@ async function handlePostSubmit() {
 
 async function finalizeCoverImagePromptSave(saved, isEdit) {
   closeCoverImagePrompt();
-  await loadPosts();
-  await loadLinks();
-  renderLinks(lastLoadedPosts, lastLoadedLinks);
+  const refreshPromise = refreshFeedAfterMutation();
 
-  if (!isEdit && saved) {
-    const createdEl = postCanvas.querySelector(`.post-card[data-post-id="${saved.id}"]`);
-    if (createdEl) {
-      await waitForLayoutStability();
-      startPlacement(saved, createdEl, window.__lastMouseEventForPlacement || { clientX: 200, clientY: 200 });
-    }
+  if (isEdit || !saved) {
+    return;
+  }
+
+  await refreshPromise;
+
+  const createdEl = postCanvas.querySelector(`.post-card[data-post-id="${saved.id}"]`);
+  if (createdEl) {
+    await waitForLayoutStability();
+    startPlacement(saved, createdEl, window.__lastMouseEventForPlacement || { clientX: 200, clientY: 200 });
   }
 }
 
@@ -6689,9 +6741,10 @@ async function submitComment() {
 // ============================================
 // 20. POST LOADING + CANVAS RENDERING
 // ============================================
-async function loadPosts() {
+async function loadPosts(options = {}) {
+  const { force = false, clearCanvasImmediately = false } = options;
   const requestKey = getLoadPostsRequestKey();
-  if (loadPostsInFlightPromise && loadPostsInFlightKey === requestKey) {
+  if (!force && loadPostsInFlightPromise && loadPostsInFlightKey === requestKey) {
     console.warn('[feed reload skipped: already loading]');
     return loadPostsInFlightPromise;
   }
@@ -6700,6 +6753,14 @@ async function loadPosts() {
   const loadSeq = ++postsLoadSequence;
   const worldLoading = Boolean(activeWorldContext?.world?.id);
   setCanvasLoadingState(true, worldLoading ? 'loading world posts...' : 'loading posts...');
+
+  if (clearCanvasImmediately && postCanvas) {
+    postCanvas.innerHTML = '';
+    buildPostCard._indexCounter = 0;
+    lastLoadedPosts = [];
+    lastLoadedWorlds = [];
+    renderLinks(lastLoadedPosts, lastLoadedLinks);
+  }
 
   try {
     let query = supabase
