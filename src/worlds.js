@@ -8,6 +8,10 @@ const MY_WORLDS_LIMIT = 48;
 const DEFAULT_UI_COLOR = '#cfd8e3';
 const DEFAULT_WORLD_TITLE = 'untitled world';
 const DEFAULT_WORLD_DESCRIPTION = 'No description yet.';
+const WORLD_BG_MAX_WIDTH = 2560;
+const WORLD_BG_MAX_HEIGHT = 1440;
+const WORLD_BG_TARGET_TYPE = 'image/webp';
+const WORLD_BG_TARGET_QUALITY = 0.82;
 
 const WORLD_FONTS = [
   { value: '', label: 'site default' },
@@ -31,6 +35,110 @@ function normalizeStorageName(fileName = 'asset') {
     .trim()
     .replace(/\s+/g, '-')
     .replace(/[^a-zA-Z0-9._-]/g, '') || 'asset';
+}
+
+function guessFileExtensionFromMime(mime = '') {
+  const normalized = String(mime || '').toLowerCase();
+  if (normalized === 'image/webp') return 'webp';
+  if (normalized === 'image/png') return 'png';
+  if (normalized === 'image/avif') return 'avif';
+  if (normalized === 'image/gif') return 'gif';
+  return 'jpg';
+}
+
+function getFileNameFromUrl(url, fallbackBase = 'background') {
+  try {
+    const parsed = new URL(String(url || ''), window.location.origin);
+    const lastSegment = parsed.pathname.split('/').pop() || '';
+    const safe = normalizeStorageName(lastSegment);
+    if (safe && safe !== 'asset') return safe;
+  } catch {
+    // Ignore parse failures; fallback below.
+  }
+
+  return `${fallbackBase}.jpg`;
+}
+
+function clampImageDimensions(width, height, maxWidth, maxHeight) {
+  const safeWidth = Math.max(1, Number(width) || 1);
+  const safeHeight = Math.max(1, Number(height) || 1);
+  const scale = Math.min(1, maxWidth / safeWidth, maxHeight / safeHeight);
+  return {
+    width: Math.max(1, Math.round(safeWidth * scale)),
+    height: Math.max(1, Math.round(safeHeight * scale))
+  };
+}
+
+function loadImageFromBlob(blob) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(img);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Failed to decode image for optimization.'));
+    };
+    img.src = url;
+  });
+}
+
+function canvasToBlob(canvas, type, quality) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error('Failed to encode optimized image.'));
+        return;
+      }
+      resolve(blob);
+    }, type, quality);
+  });
+}
+
+async function normalizeWorldImageFile(file) {
+  const mime = String(file?.type || '').toLowerCase();
+  if (mime === 'image/heic' || mime === 'image/heif') {
+    const heic2anyModule = await import('heic2any');
+    const heic2any = heic2anyModule.default || heic2anyModule;
+    const converted = await heic2any({
+      blob: file,
+      toType: 'image/jpeg'
+    });
+    const convertedBlob = Array.isArray(converted) ? converted[0] : converted;
+    const baseName = String(file.name || 'background').replace(/\.[^.]+$/, '');
+    return new File([convertedBlob], `${baseName}.jpg`, { type: 'image/jpeg' });
+  }
+
+  return file;
+}
+
+async function optimizeWorldBackgroundImage(file) {
+  if (!file) return null;
+
+  const normalizedFile = await normalizeWorldImageFile(file);
+  const decoded = await loadImageFromBlob(normalizedFile);
+  const { width, height } = clampImageDimensions(
+    decoded.naturalWidth || decoded.width,
+    decoded.naturalHeight || decoded.height,
+    WORLD_BG_MAX_WIDTH,
+    WORLD_BG_MAX_HEIGHT
+  );
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d', { alpha: false });
+  if (!ctx) return normalizedFile;
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(decoded, 0, 0, width, height);
+
+  const optimizedBlob = await canvasToBlob(canvas, WORLD_BG_TARGET_TYPE, WORLD_BG_TARGET_QUALITY);
+  const baseName = String(normalizedFile.name || file.name || 'background').replace(/\.[^.]+$/, '');
+  return new File([optimizedBlob], `${baseName}.webp`, { type: WORLD_BG_TARGET_TYPE });
 }
 
 function isTypingSurface(target = document.activeElement) {
@@ -1258,10 +1366,11 @@ export function initWorldsFeature(options) {
       }
       const bgFile = dom.plugBackground.files?.[0] || null;
       if (bgFile) {
+        const optimizedBgFile = await optimizeWorldBackgroundImage(bgFile);
         const backgroundUrl = await uploadWorldFile(
           nextWorld.id,
-          `background-${Date.now()}-${normalizeStorageName(bgFile.name)}`,
-          bgFile
+          `background-${Date.now()}-${normalizeStorageName(optimizedBgFile?.name || bgFile.name)}`,
+          optimizedBgFile || bgFile
         );
 
         const { data: updated, error: updateError } = await supabase
@@ -1404,6 +1513,107 @@ export function initWorldsFeature(options) {
       dom.codePublish.disabled = false;
       dom.codePublish.textContent = makerMode === 'edit' ? 'update world' : 'publish world';
     }
+  }
+
+  async function optimizeExistingWorldBackgrounds(options = {}) {
+    const {
+      dryRun = false,
+      onlyWorldId = null
+    } = options;
+
+    const currentUser = getCurrentUser?.();
+    if (!currentUser?.id) {
+      throw new Error('You must be signed in to optimize world backgrounds.');
+    }
+
+    let query = supabase
+      .from('worlds')
+      .select('id, user_id, name, background_url')
+      .eq('user_id', currentUser.id)
+      .order('created_at', { ascending: false });
+
+    if (onlyWorldId) {
+      query = query.eq('id', onlyWorldId);
+    }
+
+    const { data: worlds, error } = await query;
+    if (error) throw error;
+
+    const candidates = (worlds || []).filter((world) => {
+      const bgUrl = String(world?.background_url || '').trim();
+      return Boolean(bgUrl);
+    });
+
+    const report = {
+      totalWorlds: candidates.length,
+      optimized: 0,
+      skipped: 0,
+      failed: 0,
+      bytesBefore: 0,
+      bytesAfter: 0,
+      details: []
+    };
+
+    for (const world of candidates) {
+      const worldId = String(world.id || '').trim();
+      const bgUrl = String(world.background_url || '').trim();
+      if (!worldId || !bgUrl) {
+        report.skipped += 1;
+        continue;
+      }
+
+      try {
+        const response = await fetch(bgUrl, { cache: 'no-store' });
+        if (!response.ok) {
+          throw new Error(`download failed (${response.status})`);
+        }
+
+        const originalBlob = await response.blob();
+        const inputFileName = getFileNameFromUrl(bgUrl, `background-${worldId}`);
+        const inputType = originalBlob.type || `image/${guessFileExtensionFromMime('image/jpeg')}`;
+        const inputFile = new File([originalBlob], inputFileName, { type: inputType });
+
+        const optimizedFile = await optimizeWorldBackgroundImage(inputFile);
+        if (!optimizedFile) {
+          report.skipped += 1;
+          report.details.push({ worldId, name: world.name || DEFAULT_WORLD_TITLE, reason: 'optimizer returned no file' });
+          continue;
+        }
+
+        report.bytesBefore += originalBlob.size || 0;
+        report.bytesAfter += optimizedFile.size || 0;
+
+        if (!dryRun) {
+          const optimizedName = `background-${Date.now()}-${normalizeStorageName(optimizedFile.name || inputFile.name)}`;
+          const nextBackgroundUrl = await uploadWorldFile(worldId, optimizedName, optimizedFile);
+
+          const { data: updated, error: updateError } = await supabase
+            .from('worlds')
+            .update({ background_url: nextBackgroundUrl })
+            .eq('id', worldId)
+            .eq('user_id', currentUser.id)
+            .select('*')
+            .single();
+
+          if (updateError) throw updateError;
+
+          if (activeWorld?.id === worldId) {
+            activeWorld = updated;
+          }
+        }
+
+        report.optimized += 1;
+      } catch (err) {
+        report.failed += 1;
+        report.details.push({
+          worldId,
+          name: world.name || DEFAULT_WORLD_TITLE,
+          reason: err?.message || String(err)
+        });
+      }
+    }
+
+    return report;
   }
 
   async function downloadTemplateZip() {
@@ -1657,6 +1867,7 @@ export function initWorldsFeature(options) {
     isMakerOpen,
     isInWorldMode,
     openWorldById,
+    optimizeExistingWorldBackgrounds,
     refreshActiveWorldChrome: async (nextWorld = null) => {
       if (nextWorld && activeWorld && nextWorld.id === activeWorld.id) {
         activeWorld = nextWorld;

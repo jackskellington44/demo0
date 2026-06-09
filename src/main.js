@@ -9155,6 +9155,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       await openProfileModal(userId);
     }
   });
+
+  if (typeof window !== 'undefined') {
+    window.optimizeMyWorldBackgrounds = async (options = {}) => {
+      return worldsFeature?.optimizeExistingWorldBackgrounds?.(options);
+    };
+  }
+
   const bootWorldId = new URLSearchParams(window.location.search).get('world');
   await loadPosts();
 
