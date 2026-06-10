@@ -571,26 +571,35 @@ app.get('/api/storage/public/:bucket/*', async (req, res) => {
 
 // ─── POST /api/rpc/:name ───────────────────────────────────────────────────────
 
-app.post('/api/rpc/:name', readLimiter, authMiddleware, async (req, res) => {
+app.post('/api/rpc/:name', readLimiter, async (req, res) => {
   const fnName = req.params.name;
   const args   = req.body || {};
 
-  const ALLOWED_RPCS = new Set(['set_world_password', 'grant_world_access']);
-  if (!ALLOWED_RPCS.has(fnName)) {
+  const PUBLIC_RPCS = new Set(['verify_world_password']);
+  const AUTH_RPCS = new Set(['set_world_password', 'grant_world_access']);
+  if (!PUBLIC_RPCS.has(fnName) && !AUTH_RPCS.has(fnName)) {
     return res.status(400).json({ data: null, error: `Unknown RPC: ${fnName}` });
   }
 
-  try {
-    const keys   = Object.keys(args);
-    const params = keys.map(k => args[k]);
-    const named  = keys.map((k, i) => `${k} => $${i + 1}`).join(', ');
-    const sql    = `SELECT * FROM ${fnName}(${named})`;
-    const result = await pool.query(sql, params);
-    return res.json({ data: result.rows[0] || null, error: null });
-  } catch (err) {
-    console.error(`RPC ${fnName} error:`, err);
-    return res.status(500).json({ data: null, error: err.message });
+  const executeRpc = async () => {
+    try {
+      const keys   = Object.keys(args);
+      const params = keys.map(k => args[k]);
+      const named  = keys.map((k, i) => `${k} => $${i + 1}`).join(', ');
+      const sql    = `SELECT * FROM ${fnName}(${named})`;
+      const result = await pool.query(sql, params);
+      return res.json({ data: result.rows[0] || null, error: null });
+    } catch (err) {
+      console.error(`RPC ${fnName} error:`, err);
+      return res.status(500).json({ data: null, error: err.message });
+    }
+  };
+
+  if (AUTH_RPCS.has(fnName)) {
+    return authMiddleware(req, res, executeRpc);
   }
+
+  return executeRpc();
 });
 
 // ─── POST /api/admin/purge-deleted-posts ──────────────────────────────────────

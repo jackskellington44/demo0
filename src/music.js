@@ -47,15 +47,41 @@ let suppressAudioEnded = false;
 let scCurrentDurationMs = 0;
 let currentVolume = Number(localStorage.getItem('musicVolume') || '0.8');
 let lastNonZeroVolume = 0.8;
+let activeWorldId = null;
+let activeWorldName = '';
+let canModifyCurrentPlaylist = true;
+let supportsWorldScopedPlaylists = true;
+let crossfadeInProgress = false;
+let nativeOverlapMonitorId = null;
+let soundCloudOverlapMonitorId = null;
+let crossfadeIntervalId = null;
+let crossfadePrimedTrackId = '';
+let preloadedNativeTrackId = '';
+let autoplayRetryArmed = false;
 
 const MUSIC_DBLCLICK_MS = 400;
 const MUSIC_DEFAULT_VOLUME = 0.8;
+const MUSIC_CROSSFADE_MS = 2200;
+const MUSIC_CROSSFADE_OVERLAP_MS = 4200;
+const MUSIC_PRELOAD_OVERLAP_MS = 10000;
+const MUSIC_OVERLAP_MONITOR_MS = 140;
 
 // ============================================
 // 2. AUDIO INSTANCE
 // ============================================
-const audio = new Audio();
-audio.preload = 'metadata';
+const audioPrimary = new Audio();
+const audioSecondary = new Audio();
+audioPrimary.preload = 'metadata';
+audioSecondary.preload = 'metadata';
+let activeAudio = audioPrimary;
+
+function getActiveAudio() {
+  return activeAudio;
+}
+
+function getInactiveAudio() {
+  return activeAudio === audioPrimary ? audioSecondary : audioPrimary;
+}
 
 // ============================================
 // 3. DOM REFERENCES
@@ -66,13 +92,50 @@ let musicPanelOverlay, musicPanelTitle, musicTrackList, musicDropZone;
 let musicDownloadPlaylist, musicClosePanel;
 let musicShuffle, musicLoop;
 let musicVolumeWrap, musicVolumeBtn, musicVolumeSlider;
+let musicAddBtn, musicAddInput;
 
 // ============================================
 // 4. HELPERS
 // ============================================
 function getPlaylistTitle() {
   const month = new Date().toLocaleString('default', { month: 'long' }).toLowerCase();
+  if (activeWorldName) {
+    return `${activeWorldName} ${month} music`;
+  }
   return `monkey ${month} music`;
+}
+
+function getActivePlaylistScopeLabel() {
+  return activeWorldName || 'main';
+}
+
+function userCanModifyWorldPlaylist(world) {
+  if (!world?.id) return true;
+  if (!currentUser?.id) return false;
+  if (world.is_public_edit === false) {
+    return String(currentUser.id) === String(world.user_id || '');
+  }
+  return true;
+}
+
+function updatePlaylistAccessUi() {
+  if (musicDropZone) {
+    musicDropZone.classList.toggle('is-readonly', !canModifyCurrentPlaylist);
+  }
+
+  if (musicAddBtn) {
+    musicAddBtn.disabled = !canModifyCurrentPlaylist;
+    musicAddBtn.title = canModifyCurrentPlaylist
+      ? `add track to ${getActivePlaylistScopeLabel()}`
+      : 'you cannot add tracks in this world';
+  }
+
+  if (musicAddInput) {
+    musicAddInput.disabled = !canModifyCurrentPlaylist;
+    musicAddInput.placeholder = canModifyCurrentPlaylist
+      ? 'paste soundcloud link + enter'
+      : 'you do not have posting access in this world';
+  }
 }
 
 function pfpSrcFor(userRow) {
@@ -114,7 +177,7 @@ function normalizeTrackMetadata(rawTitle, rawArtist) {
   let title = String(rawTitle || '').trim() || 'Untitled';
   let artist = String(rawArtist || '').trim();
 
-  // SoundCloud oEmbed titles are often "Song by Artist"; split this so UI doesn't duplicate artist.
+  // oEmbed titles are often "Song by Artist"; split this so UI doesn't duplicate artist.
   const byMatch = title.match(/^(.*)\s+by\s+(.+)$/i);
   if (byMatch) {
     const splitTitle = byMatch[1].trim();
@@ -175,7 +238,8 @@ function isCurrentAudioTrackLoaded(track) {
   const trackUrl = getTrackAudioUrl(track);
   if (!trackUrl) return false;
 
-  const currentSrc = audio.currentSrc || audio.src || '';
+  const player = getActiveAudio();
+  const currentSrc = player.currentSrc || player.src || '';
   return currentSrc === trackUrl || currentSrc.includes(trackUrl);
 }
 
@@ -191,7 +255,8 @@ function updateVolumeUi() {
 
 function setPlaybackVolume(volume, { persist = true } = {}) {
   currentVolume = clampVolume(volume);
-  audio.volume = currentVolume;
+  audioPrimary.volume = currentVolume;
+  audioSecondary.volume = currentVolume;
 
   if (currentVolume > 0) {
     lastNonZeroVolume = currentVolume;
@@ -209,9 +274,229 @@ function setPlaybackVolume(volume, { persist = true } = {}) {
 }
 
 function syncCurrentVolumeToPlayers() {
-  audio.volume = currentVolume;
+  audioPrimary.volume = currentVolume;
+  audioSecondary.volume = currentVolume;
   if (scWidget) {
     scWidget.setVolume(Math.round(currentVolume * 100));
+  }
+}
+
+function clearOverlapMonitors() {
+  if (nativeOverlapMonitorId) {
+    window.clearInterval(nativeOverlapMonitorId);
+    nativeOverlapMonitorId = null;
+  }
+  if (soundCloudOverlapMonitorId) {
+    window.clearInterval(soundCloudOverlapMonitorId);
+    soundCloudOverlapMonitorId = null;
+  }
+  crossfadePrimedTrackId = '';
+}
+
+function clearPreloadedNativeTrack() {
+  preloadedNativeTrackId = '';
+  const standby = getInactiveAudio();
+  if (!standby || standby === getActiveAudio()) return;
+  standby.pause();
+  standby.currentTime = 0;
+  standby.src = '';
+}
+
+function clearCrossfadeInterval() {
+  if (crossfadeIntervalId) {
+    window.clearInterval(crossfadeIntervalId);
+    crossfadeIntervalId = null;
+  }
+}
+
+function armAutoplayRetry() {
+  if (autoplayRetryArmed) return;
+  autoplayRetryArmed = true;
+
+  const resume = async () => {
+    if (!autoplayRetryArmed) return;
+    autoplayRetryArmed = false;
+    if (tracks.length === 0 || currentIndex < 0 || isPlaying) return;
+    try {
+      await playTrack(currentIndex);
+    } catch {
+      // Ignore; another user interaction can still trigger play manually.
+    }
+  };
+
+  const opts = { once: true, passive: true };
+  window.addEventListener('pointerdown', resume, opts);
+  window.addEventListener('keydown', resume, opts);
+  window.addEventListener('touchstart', resume, opts);
+}
+
+function getUpcomingTrackIndex() {
+  if (tracks.length === 0) return -1;
+  const next = getNextTrackIndex();
+  return next;
+}
+
+function maybePrimeNextNativeTrack() {
+  if (isUsingSoundCloudWidget || currentIndex < 0) return;
+  if (loopMode === LOOP_MODE_TRACK) return;
+
+  const nextIndex = getUpcomingTrackIndex();
+  if (nextIndex < 0 || nextIndex >= tracks.length) return;
+
+  const nextTrack = tracks[nextIndex];
+  if (!nextTrack || nextTrack.soundcloud_url) {
+    preloadedNativeTrackId = '';
+    return;
+  }
+
+  const nextTrackId = String(nextTrack.id || nextIndex);
+  const nextUrl = getTrackAudioUrl(nextTrack);
+  if (!nextUrl) return;
+
+  const standby = getInactiveAudio();
+  if (preloadedNativeTrackId === nextTrackId && standby.src && standby.src.includes(nextUrl)) {
+    return;
+  }
+
+  standby.pause();
+  standby.currentTime = 0;
+  standby.src = nextUrl;
+  standby.preload = 'auto';
+  standby.load();
+  preloadedNativeTrackId = nextTrackId;
+}
+
+function startNativeOverlapMonitor() {
+  clearOverlapMonitors();
+
+  if (isUsingSoundCloudWidget || loopMode === LOOP_MODE_TRACK || currentIndex < 0) return;
+
+  nativeOverlapMonitorId = window.setInterval(() => {
+    if (isUsingSoundCloudWidget || crossfadeInProgress || !isPlaying) return;
+    if (loopMode === LOOP_MODE_TRACK) return;
+
+    const currentTrack = tracks[currentIndex];
+    if (!currentTrack || currentTrack.soundcloud_url) return;
+
+    const activePlayer = getActiveAudio();
+    if (!activePlayer || activePlayer.paused) return;
+
+    const durationSec = Number(activePlayer.duration || 0);
+    const currentSec = Number(activePlayer.currentTime || 0);
+    if (!Number.isFinite(durationSec) || durationSec <= 0) return;
+
+    const remainingMs = (durationSec - currentSec) * 1000;
+    if (remainingMs <= MUSIC_PRELOAD_OVERLAP_MS && remainingMs > MUSIC_CROSSFADE_OVERLAP_MS) {
+      maybePrimeNextNativeTrack();
+      return;
+    }
+
+    if (remainingMs <= MUSIC_CROSSFADE_OVERLAP_MS && remainingMs > 150) {
+      const currentTrackId = String(currentTrack.id || currentIndex);
+      if (crossfadePrimedTrackId === currentTrackId) return;
+      crossfadePrimedTrackId = currentTrackId;
+      void advanceToNextTrack({ fromEnded: false, preferCrossfade: true });
+    }
+  }, MUSIC_OVERLAP_MONITOR_MS);
+}
+
+function startSoundCloudOverlapMonitor() {
+  if (!scWidget) return;
+
+  clearOverlapMonitors();
+
+  if (!isUsingSoundCloudWidget || loopMode === LOOP_MODE_TRACK || currentIndex < 0) return;
+
+  soundCloudOverlapMonitorId = window.setInterval(() => {
+    if (!isUsingSoundCloudWidget || crossfadeInProgress || !isPlaying) return;
+    if (loopMode === LOOP_MODE_TRACK) return;
+    if (!scCurrentDurationMs || scCurrentDurationMs <= 0) return;
+
+    const currentTrack = tracks[currentIndex];
+    if (!currentTrack || !currentTrack.soundcloud_url) return;
+
+    scWidget.getPosition((positionMs) => {
+      const remainingMs = scCurrentDurationMs - (Number(positionMs) || 0);
+      if (remainingMs <= MUSIC_CROSSFADE_OVERLAP_MS && remainingMs > 150) {
+        const currentTrackId = String(currentTrack.id || currentIndex);
+        if (crossfadePrimedTrackId === currentTrackId) return;
+        crossfadePrimedTrackId = currentTrackId;
+        void advanceToNextTrack({ fromEnded: false, preferCrossfade: false });
+      }
+    });
+  }, Math.max(450, MUSIC_OVERLAP_MONITOR_MS * 2));
+}
+
+async function crossfadeToNativeTrack(nextIndex) {
+  const currentTrack = tracks[currentIndex];
+  const nextTrack = tracks[nextIndex];
+  if (!currentTrack || !nextTrack) return false;
+  if (currentTrack.soundcloud_url || nextTrack.soundcloud_url) return false;
+
+  const outgoing = getActiveAudio();
+  const incoming = getInactiveAudio();
+  const nextUrl = getTrackAudioUrl(nextTrack);
+  const nextTrackId = String(nextTrack.id || nextIndex);
+  if (!nextUrl) return false;
+
+  clearOverlapMonitors();
+  clearCrossfadeInterval();
+
+  crossfadeInProgress = true;
+  suppressAudioEnded = true;
+
+  try {
+    incoming.pause();
+    if (!(preloadedNativeTrackId === nextTrackId && incoming.src && incoming.src.includes(nextUrl))) {
+      incoming.src = nextUrl;
+      incoming.preload = 'auto';
+      incoming.load();
+    }
+    incoming.currentTime = 0;
+    incoming.volume = 0;
+    await incoming.play();
+
+    const startOut = Math.max(0, Number(outgoing.volume) || currentVolume);
+    const startedAt = Date.now();
+
+    await new Promise((resolve) => {
+      crossfadeIntervalId = window.setInterval(() => {
+        const elapsed = Date.now() - startedAt;
+        const progress = Math.min(1, elapsed / MUSIC_CROSSFADE_MS);
+        const eased = progress * progress * (3 - (2 * progress));
+
+        outgoing.volume = Math.max(0, startOut * (1 - eased));
+        incoming.volume = Math.min(currentVolume, currentVolume * eased);
+
+        if (progress >= 1) {
+          clearCrossfadeInterval();
+          resolve();
+        }
+      }, 50);
+    });
+
+    outgoing.pause();
+    outgoing.currentTime = 0;
+    outgoing.src = '';
+
+    incoming.volume = currentVolume;
+    activeAudio = incoming;
+    preloadedNativeTrackId = '';
+    currentIndex = nextIndex;
+    isUsingSoundCloudWidget = false;
+    isPlaying = true;
+
+    updateBarDisplay();
+    renderTrackList();
+    startNativeOverlapMonitor();
+    return true;
+  } catch (err) {
+    console.error('Crossfade failed, falling back to direct play:', err);
+    return false;
+  } finally {
+    crossfadeInProgress = false;
+    suppressAudioEnded = false;
+    syncCurrentVolumeToPlayers();
   }
 }
 
@@ -234,8 +519,9 @@ function restartCurrentTrack() {
     return;
   }
 
-  audio.currentTime = 0;
-  audio.play()
+  const player = getActiveAudio();
+  player.currentTime = 0;
+  player.play()
     .then(() => {
       isPlaying = true;
       updateBarDisplay();
@@ -246,8 +532,10 @@ function restartCurrentTrack() {
     });
 }
 
-function advanceToNextTrack({ fromEnded = false } = {}) {
+async function advanceToNextTrack({ fromEnded = false, preferCrossfade = false } = {}) {
   if (tracks.length === 0) {
+    clearOverlapMonitors();
+    clearCrossfadeInterval();
     isPlaying = false;
     currentIndex = -1;
     updateBarDisplay();
@@ -261,13 +549,19 @@ function advanceToNextTrack({ fromEnded = false } = {}) {
 
   const next = getNextTrackIndex();
   if (next === -1) {
+    clearOverlapMonitors();
     isPlaying = false;
     currentIndex = -1;
     updateBarDisplay();
     return;
   }
 
-  playTrack(next);
+  if (!fromEnded && preferCrossfade) {
+    const didCrossfade = await crossfadeToNativeTrack(next);
+    if (didCrossfade) return;
+  }
+
+  await playTrack(next);
 }
 
 function updatePlaybackModeButtons() {
@@ -362,9 +656,11 @@ async function ensureSoundCloudWidget() {
       scWidget.getDuration((ms) => {
         scCurrentDurationMs = Number(ms) || 0;
       });
+      startSoundCloudOverlapMonitor();
       updateBarDisplay();
     });
     scWidget.bind(window.SC.Widget.Events.PAUSE, () => {
+      clearOverlapMonitors();
       isPlaying = false;
       updateBarDisplay();
     });
@@ -373,7 +669,7 @@ async function ensureSoundCloudWidget() {
       if (scCurrentDurationMs > 0 && scCurrentDurationMs < 30000) {
         alert('This SoundCloud track appears to be preview-only in embeds. Try another link.');
       }
-      advanceToNextTrack({ fromEnded: true });
+      void advanceToNextTrack({ fromEnded: true });
     });
     scWidget.bind(window.SC.Widget.Events.ERROR, () => {
       isPlaying = false;
@@ -405,27 +701,86 @@ async function playSoundCloudTrack(soundcloudUrl) {
 }
 
 function stopAllPlayback() {
+  clearOverlapMonitors();
+  clearCrossfadeInterval();
+  preloadedNativeTrackId = '';
+
   if (isUsingSoundCloudWidget && scWidget) {
     scWidget.pause();
   }
-  if (!audio.paused) {
-    audio.pause();
+  if (!audioPrimary.paused) {
+    audioPrimary.pause();
+  }
+  if (!audioSecondary.paused) {
+    audioSecondary.pause();
   }
 }
 
 // ============================================
 // 5. LOAD TRACKS
 // ============================================
-export async function loadTracks() {
-  const { data, error } = await supabase
+export async function loadTracks(options = {}) {
+  const {
+    autoplay = false,
+    forceRestart = false
+  } = options;
+
+  const previousTrackId = tracks[currentIndex]?.id || null;
+
+  let query = supabase
     .from('music_tracks')
     .select('*')
     .eq('group_id', 'group0')
     .order('created_at', { ascending: true });
 
+  if (supportsWorldScopedPlaylists) {
+    if (activeWorldId) {
+      query = query.eq('world_id', activeWorldId);
+    } else {
+      query = query.is('world_id', null);
+    }
+  }
+
+  const { data, error } = await query;
+
+  if (error && /world_id|column/i.test(String(error.message || ''))) {
+    // Backward-compat: fallback to legacy global playlist if migration is not applied yet.
+    supportsWorldScopedPlaylists = false;
+    const fallback = await supabase
+      .from('music_tracks')
+      .select('*')
+      .eq('group_id', 'group0')
+      .order('created_at', { ascending: true });
+
+    if (fallback.error) {
+      console.error('Failed to load tracks:', fallback.error);
+      return;
+    }
+
+    return loadTracksFromRows(fallback.data || [], {
+      autoplay,
+      forceRestart,
+      previousTrackId
+    });
+  }
+
   if (error) { console.error('Failed to load tracks:', error); return; }
 
-  const userIds = [...new Set((data || []).map(t => t.user_id).filter(Boolean))];
+  await loadTracksFromRows(data || [], {
+    autoplay,
+    forceRestart,
+    previousTrackId
+  });
+}
+
+async function loadTracksFromRows(rows, options = {}) {
+  const {
+    autoplay = false,
+    forceRestart = false,
+    previousTrackId = null
+  } = options;
+
+  const userIds = [...new Set((rows || []).map(t => t.user_id).filter(Boolean))];
   let userMap = {};
   if (userIds.length > 0) {
     const { data: users } = await supabase
@@ -435,14 +790,39 @@ export async function loadTracks() {
     (users || []).forEach(u => { userMap[u.id] = u; });
   }
 
-  tracks = (data || []).map(t => ({ ...t, users: userMap[t.user_id] || null }));
+  tracks = (rows || []).map(t => ({ ...t, users: userMap[t.user_id] || null }));
+
+  const previousIndexInNextList = previousTrackId
+    ? tracks.findIndex((t) => String(t.id || '') === String(previousTrackId))
+    : -1;
 
   if (tracks.length === 0) {
+    stopAllPlayback();
+    audioPrimary.src = '';
+    audioSecondary.src = '';
+    isUsingSoundCloudWidget = false;
+    isPlaying = false;
     currentIndex = -1;
+  } else if (previousIndexInNextList >= 0) {
+    currentIndex = previousIndexInNextList;
   } else if (currentIndex < 0 || currentIndex >= tracks.length) {
     currentIndex = 0;
   }
 
+  if (autoplay && tracks.length > 0 && currentIndex >= 0) {
+    const nextTrackId = tracks[currentIndex]?.id || null;
+    const shouldStart = forceRestart || !isPlaying || String(previousTrackId || '') !== String(nextTrackId || '');
+    if (shouldStart) {
+      try {
+        await playTrack(currentIndex);
+      } catch {
+        armAutoplayRetry();
+      }
+    }
+  }
+
+  musicPanelTitle.textContent = getPlaylistTitle();
+  updatePlaylistAccessUi();
   renderTrackList();
   updateBarDisplay();
 }
@@ -455,13 +835,15 @@ function renderTrackList() {
   musicTrackList.innerHTML = '';
 
   // In edit mode only show the signed-in user's own tracks
-  const visibleTracks = isMusicEditMode
+  const visibleTracks = (isMusicEditMode && canModifyCurrentPlaylist)
     ? tracks.filter(t => currentUserData?.is_admin || t.user_id === currentUser?.id)
     : tracks;
 
   if (visibleTracks.length === 0) {
     musicTrackList.innerHTML = `<div class="music-empty">${
-      isMusicEditMode ? 'no tracks to edit' : 'no tracks yet — add a soundcloud link above'
+      isMusicEditMode
+        ? (canModifyCurrentPlaylist ? 'no tracks to edit' : 'you cannot edit this world playlist')
+        : 'no tracks yet - add a soundcloud link above'
     }</div>`;
     return;
   }
@@ -534,34 +916,48 @@ async function playTrack(idx) {
   if (idx < 0 || idx >= tracks.length) return;
   currentIndex = idx;
   const track = tracks[idx];
+  clearPreloadedNativeTrack();
   suppressAudioEnded = true;
   stopAllPlayback();
   suppressAudioEnded = false;
 
   if (track.soundcloud_url) {
     try {
-      audio.pause();
-      audio.src = '';
+      audioPrimary.pause();
+      audioSecondary.pause();
+      audioPrimary.src = '';
+      audioSecondary.src = '';
       await playSoundCloudTrack(track.soundcloud_url);
       isUsingSoundCloudWidget = true;
       isPlaying = true;
+      startSoundCloudOverlapMonitor();
     } catch (err) {
       console.error('SoundCloud playback error:', err);
       isUsingSoundCloudWidget = false;
       isPlaying = false;
+      armAutoplayRetry();
       alert('Could not start SoundCloud playback.');
     }
   } else if (track.stream_url || track.file_url) {
     isUsingSoundCloudWidget = false;
-    audio.src = getTrackAudioUrl(track);
-    audio.preload = 'auto';
+    activeAudio = getActiveAudio() || audioPrimary;
+    const player = getActiveAudio();
+    const standby = getInactiveAudio();
+    standby.pause();
+    standby.currentTime = 0;
+    standby.src = '';
+
+    player.src = getTrackAudioUrl(track);
+    player.preload = 'auto';
     setPlaybackVolume(currentVolume, { persist: false });
     try {
-      await audio.play();
+      await player.play();
       isPlaying = true;
+      startNativeOverlapMonitor();
     } catch (err) {
       console.error(err);
       isPlaying = false;
+      armAutoplayRetry();
       updateBarDisplay();
     }
   } else {
@@ -616,6 +1012,11 @@ function applyBarPosition() {
 // 10. SOUNDCLOUD URL HANDLER
 // ============================================
 async function addSoundCloudTrack(soundcloudUrl) {
+  if (!canModifyCurrentPlaylist) {
+    alert('You do not have permission to add tracks in this world.');
+    return;
+  }
+
   const url = soundcloudUrl.trim();
   if (!url) { alert('Please enter a SoundCloud URL'); return; }
   const normalizedUrl = normalizeSoundCloudUrl(url);
@@ -639,20 +1040,35 @@ async function addSoundCloudTrack(soundcloudUrl) {
     const thumbnail = oembedData.thumbnail_url || '';
 
     // Insert into Supabase (no stream_url - SoundCloud opens in new window)
-    const { error: dbErr } = await supabase
+    const baseInsertPayload = {
+      group_id: 'group0',
+      user_id: currentUser.id,
+      title,
+      artist,
+      soundcloud_url: normalizedUrl,
+      thumbnail_url: thumbnail
+    };
+
+    let insertPayload = { ...baseInsertPayload };
+
+    if (supportsWorldScopedPlaylists) {
+      insertPayload.world_id = activeWorldId;
+    }
+
+    let { error: dbErr } = await supabase
       .from('music_tracks')
-      .insert([{
-        group_id: 'group0',
-        user_id:  currentUser.id,
-        title,
-        artist,
-        soundcloud_url: normalizedUrl,
-        thumbnail_url: thumbnail
-      }]);
+      .insert([insertPayload]);
+
+    if (dbErr && /world_id|column/i.test(String(dbErr.message || ''))) {
+      supportsWorldScopedPlaylists = false;
+      const fallbackWorld = { ...insertPayload };
+      delete fallbackWorld.world_id;
+      ({ error: dbErr } = await supabase.from('music_tracks').insert([fallbackWorld]));
+    }
 
     if (dbErr) throw dbErr;
 
-    const urlInput = document.querySelector('input[placeholder="paste soundcloud link"]');
+    const urlInput = document.querySelector('input[placeholder="paste soundcloud link + enter"]');
     if (urlInput) urlInput.value = '';
     await loadTracks();
   } catch (error) {
@@ -669,6 +1085,11 @@ async function addSoundCloudTrack(soundcloudUrl) {
 // 11. DELETE
 // ============================================
 async function deleteTrack(trackId, idx) {
+  if (!canModifyCurrentPlaylist) {
+    alert('You do not have permission to edit this world playlist.');
+    return;
+  }
+
   const { error } = await supabase
     .from('music_tracks')
     .delete()
@@ -679,7 +1100,8 @@ async function deleteTrack(trackId, idx) {
 
   if (idx === currentIndex) {
     stopAllPlayback();
-    audio.src = '';
+    audioPrimary.src = '';
+    audioSecondary.src = '';
     isPlaying    = false;
     isUsingSoundCloudWidget = false;
     currentIndex = -1;
@@ -745,7 +1167,7 @@ export async function initMusic(user, userData) {
   currentUserData = userData;
 
   if (isMusicInitialized) {
-    await loadTracks();
+    await loadTracks({ autoplay: true, forceRestart: false });
     return;
   }
 
@@ -865,17 +1287,32 @@ export async function initMusic(user, userData) {
   });
 
   // ── Audio events ──
-  audio.addEventListener('ended', () => {
-    if (suppressAudioEnded) return;
-    if (isUsingSoundCloudWidget) return;
-    advanceToNextTrack({ fromEnded: true });
+  [audioPrimary, audioSecondary].forEach((player) => {
+    player.addEventListener('ended', () => {
+      if (suppressAudioEnded || crossfadeInProgress) return;
+      if (isUsingSoundCloudWidget) return;
+      if (player !== getActiveAudio()) return;
+      void advanceToNextTrack({ fromEnded: true });
+    });
+
+    player.addEventListener('play', () => {
+      if (player !== getActiveAudio()) return;
+      syncCurrentVolumeToPlayers();
+      isPlaying = true;
+      updateBarDisplay();
+      if (!isUsingSoundCloudWidget) {
+        startNativeOverlapMonitor();
+      }
+    });
+
+    player.addEventListener('pause', () => {
+      if (player !== getActiveAudio()) return;
+      if (crossfadeInProgress) return;
+      isPlaying = false;
+      clearOverlapMonitors();
+      updateBarDisplay();
+    });
   });
-  audio.addEventListener('play',  () => {
-    syncCurrentVolumeToPlayers();
-    isPlaying = true;
-    updateBarDisplay();
-  });
-  audio.addEventListener('pause', () => { isPlaying = false; updateBarDisplay(); });
 
   // ── Controls ──
   musicPrev.addEventListener('click', () => {
@@ -900,7 +1337,7 @@ export async function initMusic(user, userData) {
       if (isCurrentTrackSoundCloud && scWidget) {
         scWidget.pause();
       } else {
-        audio.pause();
+        getActiveAudio().pause();
       }
       return;
     }
@@ -919,7 +1356,7 @@ export async function initMusic(user, userData) {
       return;
     }
 
-    audio.play().catch((err) => {
+    getActiveAudio().play().catch((err) => {
       console.error(err);
       isPlaying = false;
       updateBarDisplay();
@@ -976,6 +1413,9 @@ export async function initMusic(user, userData) {
   buttonRow.appendChild(addBtn);
   buttonRow.appendChild(addInput);
   buttonRow.appendChild(searchBtn);
+
+  musicAddBtn = addBtn;
+  musicAddInput = addInput;
 
   function showAddInput() {
     addBtn.classList.add('hidden');
@@ -1043,5 +1483,39 @@ export async function initMusic(user, userData) {
     updatePlaybackModeButtons();
   });
 
-  await loadTracks();
+  updatePlaylistAccessUi();
+  await loadTracks({ autoplay: true, forceRestart: true });
 }
+
+export async function setMusicWorldContext(world = null, options = {}) {
+  const {
+    autoplay = true,
+    forceRestart = true
+  } = options;
+
+  const nextWorldId = world?.id ? String(world.id) : null;
+  const nextWorldName = world?.name ? String(world.name).trim() : '';
+  const nextCanModify = userCanModifyWorldPlaylist(world);
+
+  const hasScopeChanged = String(activeWorldId || '') !== String(nextWorldId || '');
+  const hasNameChanged = activeWorldName !== nextWorldName;
+  const hasPermissionChanged = canModifyCurrentPlaylist !== nextCanModify;
+
+  activeWorldId = nextWorldId;
+  activeWorldName = nextWorldName;
+  canModifyCurrentPlaylist = nextCanModify;
+
+  if (!isMusicInitialized) {
+    return;
+  }
+
+  if (!hasScopeChanged && !hasNameChanged && !hasPermissionChanged) {
+    return;
+  }
+
+  await loadTracks({
+    autoplay: autoplay && hasScopeChanged,
+    forceRestart
+  });
+}
+

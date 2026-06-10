@@ -252,6 +252,7 @@ export function installPrettyAlerts(options = {}) {
       justify-content: flex-end;
       gap: 10px;
       margin-top: 4px;
+      flex-wrap: wrap;
     }
 
     .pretty-confirm-btn {
@@ -444,8 +445,100 @@ export function installPrettyAlerts(options = {}) {
     cancelBtn.focus();
   });
 
+  const askChoice = ({
+    title = 'choose an option',
+    message = '',
+    choices = [],
+    cancelLabel = 'cancel'
+  } = {}) => new Promise((resolve) => {
+    const safeChoices = Array.isArray(choices)
+      ? choices.filter((choice) => choice && choice.value != null)
+      : [];
+
+    if (safeChoices.length === 0) {
+      resolve(null);
+      return;
+    }
+
+    const overlay = document.createElement('div');
+    overlay.className = 'pretty-confirm-overlay';
+
+    const modal = document.createElement('div');
+    modal.className = 'pretty-confirm-modal';
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+
+    const titleEl = document.createElement('div');
+    titleEl.className = 'pretty-confirm-title';
+    titleEl.textContent = title;
+
+    const messageEl = document.createElement('div');
+    messageEl.className = 'pretty-confirm-message';
+    messageEl.textContent = message;
+
+    const actions = document.createElement('div');
+    actions.className = 'pretty-confirm-actions';
+
+    const buttons = [];
+    safeChoices.forEach((choice) => {
+      const button = document.createElement('button');
+      button.className = `pretty-confirm-btn${choice.danger ? ' danger' : ''}`;
+      button.type = 'button';
+      button.textContent = choice.label || String(choice.value);
+      button.dataset.choiceValue = String(choice.value);
+      actions.appendChild(button);
+      buttons.push(button);
+    });
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'pretty-confirm-btn';
+    cancelBtn.type = 'button';
+    cancelBtn.textContent = cancelLabel;
+    actions.appendChild(cancelBtn);
+
+    modal.appendChild(titleEl);
+    modal.appendChild(messageEl);
+    modal.appendChild(actions);
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+
+    const finish = (value) => {
+      window.removeEventListener('keydown', onKeyDown, true);
+      overlay.remove();
+      resolve(value);
+    };
+
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        finish(null);
+        return;
+      }
+
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        finish(safeChoices[0]?.value ?? null);
+      }
+    };
+
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) finish(null);
+    });
+
+    cancelBtn.addEventListener('click', () => finish(null));
+    buttons.forEach((button, index) => {
+      button.addEventListener('click', () => {
+        finish(safeChoices[index]?.value ?? null);
+      });
+    });
+
+    window.addEventListener('keydown', onKeyDown, true);
+    buttons[0]?.focus();
+  });
+
   window.__prettyAlert = enqueue;
   window.__prettyConfirm = askConfirm;
+  window.__prettyChoice = askChoice;
   window.alert = (message) => enqueue(message);
 
   prettyAlertInstalled = true;

@@ -4,7 +4,10 @@ const WORLD_TRIGGER = 'world';
 const WORLD_BUCKET = 'worlds';
 const WORLD_QUERY_PARAM = 'world';
 const MY_WORLDS_STORAGE_PREFIX = 'demo0-my-worlds-v1';
+const WORLD_GUEST_ACCESS_STORAGE_PREFIX = 'demo0-world-guest-access-v1';
 const MY_WORLDS_LIMIT = 48;
+const MAIN_WORLD_LABEL = '4thworld';
+const DEFAULT_LOADER_TINT = '23, 27, 34';
 const DEFAULT_UI_COLOR = '#cfd8e3';
 const DEFAULT_WORLD_TITLE = 'untitled world';
 const DEFAULT_WORLD_DESCRIPTION = 'No description yet.';
@@ -12,6 +15,21 @@ const WORLD_BG_MAX_WIDTH = 2560;
 const WORLD_BG_MAX_HEIGHT = 1440;
 const WORLD_BG_TARGET_TYPE = 'image/webp';
 const WORLD_BG_TARGET_QUALITY = 0.82;
+const WORLD_COVER_MAX_WIDTH = 640;
+const WORLD_COVER_MAX_HEIGHT = 640;
+const WORLD_COVER_TARGET_TYPE = 'image/webp';
+const WORLD_COVER_TARGET_QUALITY = 0.74;
+const WORLD_COVER_MAX_STATIC_BYTES = 2 * 1024 * 1024;
+const WORLD_COVER_MAX_SOURCE_BYTES = 20 * 1024 * 1024;
+
+const WORLD_COVER_ALLOWED_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+  'image/heic',
+  'image/heif'
+]);
 
 const WORLD_FONTS = [
   { value: '', label: 'site default' },
@@ -37,13 +55,50 @@ function normalizeStorageName(fileName = 'asset') {
     .replace(/[^a-zA-Z0-9._-]/g, '') || 'asset';
 }
 
+function getErrorMessage(error, fallback = 'Unknown error.') {
+  if (!error) return fallback;
+  if (typeof error === 'string') return error;
+  if (error instanceof Error && error.message) return error.message;
+
+  const detail = [error.message, error.error_description, error.details, error.hint]
+    .map((value) => String(value || '').trim())
+    .find(Boolean);
+
+  if (detail) return detail;
+
+  const code = String(error.code || error.status || '').trim();
+  if (code) {
+    return `Request failed (${code}).`;
+  }
+
+  return fallback;
+}
+
+function getFileExtension(fileName = '') {
+  const parts = String(fileName || '').split('.');
+  return parts.length > 1 ? String(parts.pop() || '').toLowerCase() : '';
+}
+
 function guessFileExtensionFromMime(mime = '') {
   const normalized = String(mime || '').toLowerCase();
   if (normalized === 'image/webp') return 'webp';
   if (normalized === 'image/png') return 'png';
   if (normalized === 'image/avif') return 'avif';
   if (normalized === 'image/gif') return 'gif';
+  if (normalized === 'image/heic') return 'heic';
+  if (normalized === 'image/heif') return 'heif';
   return 'jpg';
+}
+
+function guessMimeFromFileName(fileName = '') {
+  const ext = getFileExtension(fileName);
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
+  if (ext === 'png') return 'image/png';
+  if (ext === 'webp') return 'image/webp';
+  if (ext === 'gif') return 'image/gif';
+  if (ext === 'heic') return 'image/heic';
+  if (ext === 'heif') return 'image/heif';
+  return '';
 }
 
 function getFileNameFromUrl(url, fallbackBase = 'background') {
@@ -97,9 +152,54 @@ function canvasToBlob(canvas, type, quality) {
   });
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, Math.max(0, Number(ms) || 0));
+  });
+}
+
+function isRateLimitedError(error) {
+  if (!error) return false;
+  const status = Number(error.status || error.code || 0);
+  if (status === 429) return true;
+
+  const message = getErrorMessage(error, '').toLowerCase();
+  return message.includes('too many requests')
+    || message.includes('rate limit')
+    || message.includes('status 429')
+    || message.includes('http 429');
+}
+
+async function withRateLimitRetry(task, options = {}) {
+  const {
+    retries = 4,
+    baseDelayMs = 500,
+    maxDelayMs = 6000
+  } = options;
+
+  let lastError = null;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await task();
+    } catch (error) {
+      lastError = error;
+      if (attempt >= retries || !isRateLimitedError(error)) {
+        throw error;
+      }
+
+      const backoff = Math.min(maxDelayMs, baseDelayMs * (2 ** attempt));
+      const jitter = Math.floor(Math.random() * 180);
+      await sleep(backoff + jitter);
+    }
+  }
+
+  throw lastError || new Error('Request failed after retries.');
+}
+
 async function normalizeWorldImageFile(file) {
   const mime = String(file?.type || '').toLowerCase();
-  if (mime === 'image/heic' || mime === 'image/heif') {
+  const ext = getFileExtension(file?.name || '');
+  if (mime === 'image/heic' || mime === 'image/heif' || ext === 'heic' || ext === 'heif') {
     const heic2anyModule = await import('heic2any');
     const heic2any = heic2anyModule.default || heic2anyModule;
     const converted = await heic2any({
@@ -114,31 +214,297 @@ async function normalizeWorldImageFile(file) {
   return file;
 }
 
-async function optimizeWorldBackgroundImage(file) {
-  if (!file) return null;
+async function optimizeWorldImageToWebp(file, options = {}) {
+  const {
+    maxWidth,
+    maxHeight,
+    targetType,
+    targetQuality,
+    maxOutputBytes = Infinity
+  } = options;
 
-  const normalizedFile = await normalizeWorldImageFile(file);
-  const decoded = await loadImageFromBlob(normalizedFile);
+  const decoded = await loadImageFromBlob(file);
   const { width, height } = clampImageDimensions(
     decoded.naturalWidth || decoded.width,
     decoded.naturalHeight || decoded.height,
-    WORLD_BG_MAX_WIDTH,
-    WORLD_BG_MAX_HEIGHT
+    maxWidth,
+    maxHeight
   );
 
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext('2d', { alpha: false });
-  if (!ctx) return normalizedFile;
+  if (!ctx) return file;
 
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(decoded, 0, 0, width, height);
 
-  const optimizedBlob = await canvasToBlob(canvas, WORLD_BG_TARGET_TYPE, WORLD_BG_TARGET_QUALITY);
-  const baseName = String(normalizedFile.name || file.name || 'background').replace(/\.[^.]+$/, '');
-  return new File([optimizedBlob], `${baseName}.webp`, { type: WORLD_BG_TARGET_TYPE });
+  const qualitySteps = [
+    targetQuality,
+    Math.max(0.68, targetQuality - 0.06),
+    Math.max(0.62, targetQuality - 0.12),
+    Math.max(0.55, targetQuality - 0.18),
+    Math.max(0.48, targetQuality - 0.24)
+  ];
+
+  let optimizedBlob = null;
+  for (const quality of qualitySteps) {
+    const candidate = await canvasToBlob(canvas, targetType, quality);
+    optimizedBlob = candidate;
+    if ((candidate?.size || 0) <= maxOutputBytes) {
+      break;
+    }
+  }
+
+  if (!optimizedBlob) {
+    throw new Error('Failed to optimize image output.');
+  }
+
+  const baseName = String(file.name || 'image').replace(/\.[^.]+$/, '');
+  return new File([optimizedBlob], `${baseName}.webp`, { type: targetType });
+}
+
+async function optimizeWorldBackgroundImage(file) {
+  if (!file) return null;
+
+  const normalizedFile = await normalizeWorldImageFile(file);
+  return optimizeWorldImageToWebp(normalizedFile, {
+    maxWidth: WORLD_BG_MAX_WIDTH,
+    maxHeight: WORLD_BG_MAX_HEIGHT,
+    targetType: WORLD_BG_TARGET_TYPE,
+    targetQuality: WORLD_BG_TARGET_QUALITY
+  });
+}
+
+function getWorldCardCoverUrl(world, baseUrl) {
+  return String(world?.cover_url || world?.background_url || '').trim() || getDefaultBackgroundUrl(baseUrl);
+}
+
+function getOptimizedWorldCardCoverUrl(coverUrl) {
+  const normalized = String(coverUrl || '').trim();
+  if (!normalized) return normalized;
+
+  try {
+    const parsed = new URL(normalized, window.location.origin);
+    if (!parsed.pathname.includes('/storage/v1/object/public/')) {
+      return normalized;
+    }
+
+    parsed.pathname = parsed.pathname.replace('/storage/v1/object/public/', '/storage/v1/render/image/public/');
+    parsed.searchParams.set('width', '640');
+    parsed.searchParams.set('height', '640');
+    parsed.searchParams.set('resize', 'cover');
+    parsed.searchParams.set('quality', '70');
+    parsed.searchParams.set('format', 'origin');
+    return parsed.toString();
+  } catch {
+    return normalized;
+  }
+}
+
+function getOptimizedWorldLoaderBackdropUrl(backgroundUrl) {
+  const normalized = String(backgroundUrl || '').trim();
+  if (!normalized) return normalized;
+
+  try {
+    const parsed = new URL(normalized, window.location.origin);
+    if (!parsed.pathname.includes('/storage/v1/object/public/')) {
+      return normalized;
+    }
+
+    parsed.pathname = parsed.pathname.replace('/storage/v1/object/public/', '/storage/v1/render/image/public/');
+    parsed.searchParams.set('width', '96');
+    parsed.searchParams.set('height', '96');
+    parsed.searchParams.set('resize', 'cover');
+    parsed.searchParams.set('quality', '18');
+    parsed.searchParams.set('format', 'origin');
+    return parsed.toString();
+  } catch {
+    return normalized;
+  }
+}
+
+function getOptimizedWorldLoaderCoverUrl(coverUrl) {
+  const normalized = String(coverUrl || '').trim();
+  if (!normalized) return normalized;
+
+  try {
+    const parsed = new URL(normalized, window.location.origin);
+    if (!parsed.pathname.includes('/storage/v1/object/public/')) {
+      return normalized;
+    }
+
+    parsed.pathname = parsed.pathname.replace('/storage/v1/object/public/', '/storage/v1/render/image/public/');
+    parsed.searchParams.set('width', '420');
+    parsed.searchParams.set('height', '420');
+    parsed.searchParams.set('resize', 'cover');
+    parsed.searchParams.set('quality', '72');
+    parsed.searchParams.set('format', 'origin');
+    return parsed.toString();
+  } catch {
+    return normalized;
+  }
+}
+
+const loaderTintCache = new Map();
+
+function clampColorChannel(value) {
+  return Math.max(0, Math.min(255, Math.round(Number(value) || 0)));
+}
+
+function toRgbTripletString(value) {
+  const normalized = String(value || '').trim();
+  if (!normalized) return '';
+
+  const hexMatch = normalized.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (hexMatch) {
+    const hex = hexMatch[1];
+    if (hex.length === 3) {
+      return hex.split('').map((char) => parseInt(`${char}${char}`, 16)).join(', ');
+    }
+    return [0, 2, 4].map((index) => parseInt(hex.slice(index, index + 2), 16)).join(', ');
+  }
+
+  const rgbMatch = normalized.match(/^rgba?\(([^)]+)\)$/i);
+  if (rgbMatch) {
+    const parts = rgbMatch[1].split(',').slice(0, 3).map((part) => clampColorChannel(part.trim()));
+    if (parts.length === 3) return parts.join(', ');
+  }
+
+  return '';
+}
+
+function setWorldLoaderTint(loaderOverlay, tintValue = '') {
+  if (!loaderOverlay) return;
+  const nextTint = toRgbTripletString(tintValue) || DEFAULT_LOADER_TINT;
+  loaderOverlay.style.setProperty('--world-loader-tint', nextTint);
+}
+
+async function sampleLoaderTintFromImage(imageUrl) {
+  const normalizedUrl = String(imageUrl || '').trim();
+  if (!normalizedUrl) return '';
+  if (loaderTintCache.has(normalizedUrl)) {
+    return loaderTintCache.get(normalizedUrl) || '';
+  }
+
+  const sampled = await new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.decoding = 'async';
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        const width = Math.max(1, Math.min(16, img.naturalWidth || img.width || 1));
+        const height = Math.max(1, Math.min(16, img.naturalHeight || img.height || 1));
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) {
+          resolve('');
+          return;
+        }
+
+        ctx.drawImage(img, 0, 0, width, height);
+        const data = ctx.getImageData(0, 0, width, height).data;
+        const pixelCount = Math.max(1, data.length / 4);
+        const startIndex = Math.floor(Math.random() * pixelCount) * 4;
+        const red = clampColorChannel(data[startIndex]);
+        const green = clampColorChannel(data[startIndex + 1]);
+        const blue = clampColorChannel(data[startIndex + 2]);
+        resolve(`${red}, ${green}, ${blue}`);
+      } catch {
+        resolve('');
+      }
+    };
+    img.onerror = () => resolve('');
+    img.src = normalizedUrl;
+  });
+
+  loaderTintCache.set(normalizedUrl, sampled || '');
+  return sampled || '';
+}
+
+function syncWorldLoaderTint(loaderOverlay, backgroundUrl, fallbackTint = '') {
+  const backdropUrl = getOptimizedWorldLoaderBackdropUrl(backgroundUrl);
+  const fallback = toRgbTripletString(fallbackTint) || DEFAULT_LOADER_TINT;
+  setWorldLoaderTint(loaderOverlay, fallback);
+
+  if (!loaderOverlay || !backdropUrl) return;
+
+  loaderOverlay.dataset.loaderTintKey = backdropUrl;
+  sampleLoaderTintFromImage(backdropUrl)
+    .then((sampledTint) => {
+      if (!sampledTint) return;
+      if (loaderOverlay?.dataset.loaderTintKey !== backdropUrl) return;
+      setWorldLoaderTint(loaderOverlay, sampledTint);
+    })
+    .catch(() => {
+      // Fallback tint already applied.
+    });
+}
+
+function getGuestWorldAccessStorageKey(worldId) {
+  return `${WORLD_GUEST_ACCESS_STORAGE_PREFIX}:${String(worldId || '').trim()}`;
+}
+
+function hasGuestWorldAccess(worldId) {
+  const storageKey = getGuestWorldAccessStorageKey(worldId);
+  if (!storageKey || storageKey.endsWith(':')) return false;
+
+  try {
+    return window.localStorage.getItem(storageKey) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function rememberGuestWorldAccess(worldId, unlocked = true) {
+  const storageKey = getGuestWorldAccessStorageKey(worldId);
+  if (!storageKey || storageKey.endsWith(':')) return;
+
+  try {
+    if (unlocked) {
+      window.localStorage.setItem(storageKey, '1');
+    } else {
+      window.localStorage.removeItem(storageKey);
+    }
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
+async function optimizeWorldCoverImage(file) {
+  if (!file) return null;
+
+  const normalizedMime = String(file.type || '').toLowerCase();
+  const normalizedExt = getFileExtension(file.name || '');
+  const looksHeicLike = normalizedMime === 'image/heic' || normalizedMime === 'image/heif' || normalizedExt === 'heic' || normalizedExt === 'heif';
+
+  if (!looksHeicLike && normalizedMime && !WORLD_COVER_ALLOWED_MIME_TYPES.has(normalizedMime)) {
+    throw new Error('World cover must be JPEG, PNG, GIF, WEBP, HEIC, or HEIF.');
+  }
+
+  if ((file.size || 0) > WORLD_COVER_MAX_SOURCE_BYTES) {
+    throw new Error('World cover source file is too large. Use a file under 20 MB.');
+  }
+
+  const normalizedFile = await normalizeWorldImageFile(file);
+
+  const optimized = await optimizeWorldImageToWebp(normalizedFile, {
+    maxWidth: WORLD_COVER_MAX_WIDTH,
+    maxHeight: WORLD_COVER_MAX_HEIGHT,
+    targetType: WORLD_COVER_TARGET_TYPE,
+    targetQuality: WORLD_COVER_TARGET_QUALITY,
+    maxOutputBytes: WORLD_COVER_MAX_STATIC_BYTES
+  });
+
+  if (optimized.size > WORLD_COVER_MAX_STATIC_BYTES) {
+    throw new Error('World cover is too large after optimization. Use an image that can compress below 2 MB.');
+  }
+
+  return optimized;
 }
 
 function isTypingSurface(target = document.activeElement) {
@@ -159,6 +525,34 @@ function getPfpSrc(user, baseUrl) {
 
 function getWorldAccent(world) {
   return String(world?.ui_color || world?.font_color || DEFAULT_UI_COLOR).trim() || DEFAULT_UI_COLOR;
+}
+
+function applyWorldTitleMarquee(titleEl, trackEl, separator = '\u00A0\u00A0') {
+  if (!titleEl || !trackEl) return;
+
+  requestAnimationFrame(() => {
+    if (trackEl.scrollWidth <= titleEl.clientWidth) return;
+
+    const originalText = trackEl.textContent;
+    trackEl.textContent = `${originalText}${separator}${originalText}`;
+
+    requestAnimationFrame(() => {
+      const totalWidth = trackEl.scrollWidth;
+      if (totalWidth <= 0) return;
+
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const style = getComputedStyle(trackEl);
+      ctx.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+
+      const firstHalfWidth = ctx.measureText(`${originalText}${separator}`).width;
+      const pct = (firstHalfWidth / totalWidth) * 100;
+      trackEl.style.setProperty('--marquee-end-pct', `-${pct.toFixed(3)}%`);
+      titleEl.classList.add('is-marquee');
+    });
+  });
 }
 
 function createWorldsDom(baseUrl) {
@@ -210,10 +604,17 @@ function createWorldsDom(baseUrl) {
                 <input type="color" id="worldPlugFontColor" value="#f5f5f5">
               </label>
               <label class="world-maker-field">
+                <span>world cover</span>
+                <label class="world-maker-upload">
+                  <span id="worldPlugCoverLabel">use world background as cover</span>
+                  <input type="file" id="worldPlugCover" accept="image/jpeg,image/png,image/gif,image/webp,image/heic,image/heif,.heic,.heif">
+                </label>
+              </label>
+              <label class="world-maker-field">
                 <span>background image</span>
                 <label class="world-maker-upload">
                   <span id="worldPlugBackgroundLabel">use site background</span>
-                  <input type="file" id="worldPlugBackground" accept="image/*">
+                  <input type="file" id="worldPlugBackground" accept="image/jpeg,image/png,image/gif,image/webp,image/heic,image/heif,.heic,.heif">
                 </label>
               </label>
               <label class="world-maker-field">
@@ -308,15 +709,17 @@ function createWorldsDom(baseUrl) {
             </div>
           </section>
         </div>
+        <button type="button" class="world-maker-danger" id="worldMakerDelete" style="display:none;">delete world</button>
       </div>
     </div>
 
     <div class="world-mode-chrome" id="worldModeChrome" style="display:none;">
-      <div class="world-mode-tabs" id="worldModeTabs" role="tablist" aria-label="world navigation">
-        <button type="button" class="world-mode-tab world-mode-tab-main" id="worldModeClose" role="tab" aria-selected="false">main</button>
-        <button type="button" class="world-mode-tab world-mode-tab-active" id="worldModeActiveTab" role="tab" aria-selected="true">world</button>
+      <div class="world-mode-nav-bar" id="worldModeNavBar">
+        <nav class="world-mode-breadcrumbs" id="worldModeTabs" aria-label="world navigation"></nav>
       </div>
       <div class="world-mode-myworlds-menu" id="worldModeMyWorldsMenu" style="display:none;"></div>
+      <button type="button" class="world-mode-recompress" id="worldModeRecompress" style="display:none;">recompress covers</button>
+      <button type="button" class="view-toggle world-mode-edit-toggle" id="worldModeEdit" style="display:none;">edit world</button>
       <button type="button" class="world-mode-delete" id="worldModeDelete" style="display:none;">delete</button>
       <div class="world-mode-pfp-wrap">
         <img id="worldModePfp" class="world-mode-pfp" src="${baseUrl}images/pfps/default.png" alt="">
@@ -328,8 +731,28 @@ function createWorldsDom(baseUrl) {
       <iframe id="worldModeFrame" class="world-mode-frame" sandbox="allow-scripts allow-same-origin" referrerpolicy="no-referrer" style="display:none;"></iframe>
     </div>
 
-    <div class="world-password-overlay" id="worldPasswordOverlay" style="display:none;">
-      <div class="world-password-modal" id="worldPasswordModal">
+    <div class="world-loader-overlay" id="worldLoaderOverlay" data-mode="loading" style="display:none;">
+      <div class="world-loader-backdrop" id="worldLoaderBackdrop"></div>
+      <div class="world-loader-wash" id="worldLoaderWash"></div>
+
+      <div class="world-loader-copy">
+        <div class="world-loader-kicker" id="worldLoaderKicker">world</div>
+        <h2 class="world-loader-title" id="worldLoaderTitle">untitled world</h2>
+        <div class="world-loader-meta" id="worldLoaderMeta">by unknown</div>
+        <p class="world-loader-description" id="worldLoaderDescription">No description yet.</p>
+        <div class="world-loader-status" id="worldLoaderStatusWrap">
+          <div class="world-loader-progress" aria-hidden="true">
+            <span class="world-loader-progress-bar"></span>
+          </div>
+          <div class="world-loader-status-text" id="worldLoaderStatus">loading world...</div>
+        </div>
+      </div>
+
+      <div class="world-loader-cover-shell" id="worldLoaderCoverShell">
+        <img class="world-loader-cover" id="worldLoaderCover" src="${baseUrl}images/background.jpg" alt="">
+      </div>
+
+      <div class="world-password-panel" id="worldPasswordPanel">
         <div class="world-password-kicker">password required</div>
         <h2 class="world-password-title" id="worldPasswordTitle">unlock this world</h2>
         <p class="world-password-copy" id="worldPasswordCopy">Enter the world password to continue.</p>
@@ -356,6 +779,8 @@ function createWorldsDom(baseUrl) {
     plugCategory: host.querySelector('#worldPlugCategory'),
     plugFont: host.querySelector('#worldPlugFont'),
     plugFontColor: host.querySelector('#worldPlugFontColor'),
+    plugCover: host.querySelector('#worldPlugCover'),
+    plugCoverLabel: host.querySelector('#worldPlugCoverLabel'),
     plugBackground: host.querySelector('#worldPlugBackground'),
     plugBackgroundLabel: host.querySelector('#worldPlugBackgroundLabel'),
     plugVisibility: host.querySelector('#worldPlugVisibility'),
@@ -380,10 +805,11 @@ function createWorldsDom(baseUrl) {
     modePlugBtn: host.querySelector('#worldModePlugBtn'),
     modeCodeBtn: host.querySelector('#worldModeCodeBtn'),
     modeChrome: host.querySelector('#worldModeChrome'),
+    modeNavBar: host.querySelector('#worldModeNavBar'),
     modeTabs: host.querySelector('#worldModeTabs'),
-    modeClose: host.querySelector('#worldModeClose'),
-    modeActiveTab: host.querySelector('#worldModeActiveTab'),
     modeMyWorldsMenu: host.querySelector('#worldModeMyWorldsMenu'),
+    modeRecompress: host.querySelector('#worldModeRecompress'),
+    modeEdit: host.querySelector('#worldModeEdit'),
     modeDelete: host.querySelector('#worldModeDelete'),
     modePfpWrap: host.querySelector('.world-mode-pfp-wrap'),
     modePfp: host.querySelector('#worldModePfp'),
@@ -391,14 +817,26 @@ function createWorldsDom(baseUrl) {
     modeName: host.querySelector('#worldModeName'),
     modeDescription: host.querySelector('#worldModeDescription'),
     modeFrame: host.querySelector('#worldModeFrame'),
-    passwordOverlay: host.querySelector('#worldPasswordOverlay'),
-    passwordModal: host.querySelector('#worldPasswordModal'),
+    loaderOverlay: host.querySelector('#worldLoaderOverlay'),
+    loaderBackdrop: host.querySelector('#worldLoaderBackdrop'),
+    loaderWash: host.querySelector('#worldLoaderWash'),
+    loaderKicker: host.querySelector('#worldLoaderKicker'),
+    loaderTitle: host.querySelector('#worldLoaderTitle'),
+    loaderMeta: host.querySelector('#worldLoaderMeta'),
+    loaderDescription: host.querySelector('#worldLoaderDescription'),
+    loaderStatusWrap: host.querySelector('#worldLoaderStatusWrap'),
+    loaderStatus: host.querySelector('#worldLoaderStatus'),
+    loaderCoverShell: host.querySelector('#worldLoaderCoverShell'),
+    loaderCover: host.querySelector('#worldLoaderCover'),
+    passwordOverlay: host.querySelector('#worldLoaderOverlay'),
+    passwordModal: host.querySelector('#worldPasswordPanel'),
     passwordTitle: host.querySelector('#worldPasswordTitle'),
     passwordCopy: host.querySelector('#worldPasswordCopy'),
     passwordInput: host.querySelector('#worldPasswordInput'),
     passwordError: host.querySelector('#worldPasswordError'),
     passwordCancel: host.querySelector('#worldPasswordCancel'),
-    passwordSubmit: host.querySelector('#worldPasswordSubmit')
+    passwordSubmit: host.querySelector('#worldPasswordSubmit'),
+    makerDelete: host.querySelector('#worldMakerDelete')
   };
 }
 
@@ -538,6 +976,70 @@ export function initWorldsFeature(options) {
     return next;
   }
 
+  async function loadDirectChildWorlds(parentWorldId) {
+    const normalizedParentId = String(parentWorldId || '').trim();
+    if (!normalizedParentId) return [];
+
+    const { data, error } = await supabase
+      .from('worlds')
+      .select('id, parent_world_id, user_id, name')
+      .eq('parent_world_id', normalizedParentId)
+      .order('created_at', { ascending: true });
+
+    if (error) throw error;
+    return data || [];
+  }
+
+  async function loadDescendantWorlds(rootWorldId) {
+    const descendants = [];
+    let frontier = [String(rootWorldId || '').trim()].filter(Boolean);
+
+    while (frontier.length > 0) {
+      const { data, error } = await supabase
+        .from('worlds')
+        .select('id, parent_world_id, user_id, name')
+        .in('parent_world_id', frontier)
+        .order('created_at', { ascending: true });
+
+      if (error) throw error;
+
+      const rows = data || [];
+      if (!rows.length) break;
+
+      descendants.push(...rows);
+      frontier = rows.map((row) => String(row.id || '').trim()).filter(Boolean);
+    }
+
+    return descendants;
+  }
+
+  async function chooseChildWorldDeleteMode(world, childWorlds = []) {
+    if (!childWorlds.length) {
+      return 'delete-children';
+    }
+
+    const title = String(world?.name || DEFAULT_WORLD_TITLE);
+    const childCount = childWorlds.length;
+    const message = `${title} contains ${childCount} nested world${childCount === 1 ? '' : 's'}.
+
+Delete contained worlds to remove the full subtree, or move only the direct child worlds to main so they become top-level worlds.`;
+
+    if (typeof window.__prettyChoice === 'function') {
+      return window.__prettyChoice({
+        title: 'nested worlds detected',
+        message,
+        cancelLabel: 'cancel',
+        choices: [
+          { value: 'delete-children', label: 'delete contained worlds', danger: true },
+          { value: 'transfer-children', label: 'move child worlds to main' }
+        ]
+      });
+    }
+
+    const shouldDelete = window.confirm(`${message}\n\nPress OK to delete contained worlds, or Cancel to keep them at main.`);
+    return shouldDelete ? 'delete-children' : 'transfer-children';
+  }
+
   function readStoredMyWorldIds(userId) {
     if (!userId) return [];
     try {
@@ -660,45 +1162,94 @@ export function initWorldsFeature(options) {
     worldNavStack = [...worldNavStack, world];
   }
 
+  function renderBreadcrumbBar(entries = []) {
+    if (!dom.modeTabs) return;
+
+    dom.modeTabs.innerHTML = '';
+
+    entries.forEach((entry, index) => {
+      if (index > 0) {
+        const separator = document.createElement('span');
+        separator.className = 'world-mode-breadcrumb-separator';
+        separator.setAttribute('aria-hidden', 'true');
+        separator.textContent = '>';
+        dom.modeTabs.appendChild(separator);
+      }
+
+      const isCurrent = Boolean(entry?.current);
+      const label = String(entry?.label || DEFAULT_WORLD_TITLE);
+
+      if (isCurrent) {
+        const current = document.createElement('span');
+        current.className = 'world-mode-breadcrumb world-mode-breadcrumb-current';
+        current.setAttribute('aria-current', 'page');
+        current.textContent = label;
+        dom.modeTabs.appendChild(current);
+        return;
+      }
+
+      const navTarget = String(entry?.navTarget || 'root');
+      const worldId = String(entry?.worldId || '').trim();
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'world-mode-breadcrumb';
+      button.dataset.worldNav = navTarget;
+      button.dataset.worldId = worldId;
+      button.textContent = label;
+      button.addEventListener('click', async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+
+        if (navTarget === 'root') {
+          showTransitionLoader({
+            mode: 'loading',
+            kicker: 'main',
+            title: MAIN_WORLD_LABEL,
+            meta: 'monkey space',
+            description: 'Loading the main canvas and bringing everything back into view.',
+            status: 'loading main...',
+            backgroundUrl: getDefaultBackgroundUrl(baseUrl),
+            coverUrl: getDefaultBackgroundUrl(baseUrl),
+            showCover: false,
+            progress: 8
+          });
+          await exitWorldMode();
+          return;
+        }
+
+        if (navTarget === 'crumb' && worldId) {
+          await openWorldById(worldId);
+        }
+      });
+      dom.modeTabs.appendChild(button);
+    });
+  }
+
   async function renderWorldNavigation(world) {
     clearWorldTabs();
 
     if (!world || !dom.modeTabs) return;
 
-    dom.modeClose.style.display = '';
-    dom.modeClose.textContent = 'main';
-    dom.modeClose.dataset.worldNav = 'main';
-    dom.modeClose.dataset.worldId = '';
-    dom.modeClose.classList.remove('world-mode-tab-active');
-    dom.modeClose.setAttribute('aria-selected', 'false');
-    dom.modeActiveTab.textContent = world.name || DEFAULT_WORLD_TITLE;
-    dom.modeActiveTab.dataset.worldNav = 'current';
-    dom.modeActiveTab.dataset.worldId = String(world.id || '');
-    dom.modeActiveTab.classList.add('world-mode-tab-active');
-    dom.modeActiveTab.setAttribute('aria-selected', 'true');
     parentTabAction = async () => {
       await exitWorldMode();
     };
 
-    worldNavStack.slice(0, -1).forEach((stackWorld) => {
-      const stackWorldId = String(stackWorld?.id || '').trim();
-      if (!stackWorldId) return;
+    const breadcrumbEntries = [
+      {
+        label: MAIN_WORLD_LABEL,
+        navTarget: 'root',
+        worldId: '',
+        current: false
+      },
+      ...worldNavStack.map((stackWorld, index) => ({
+        label: stackWorld?.name || DEFAULT_WORLD_TITLE,
+        navTarget: 'crumb',
+        worldId: String(stackWorld?.id || ''),
+        current: index === worldNavStack.length - 1
+      }))
+    ];
 
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'world-mode-tab world-mode-tab-crumb';
-      button.setAttribute('role', 'tab');
-      button.dataset.worldNav = 'crumb';
-      button.dataset.worldId = stackWorldId;
-      button.textContent = stackWorld.name || DEFAULT_WORLD_TITLE;
-      button.setAttribute('aria-selected', 'false');
-      button.addEventListener('click', async (event) => {
-        event.stopPropagation();
-        await openWorldById(stackWorldId);
-      });
-
-      dom.modeActiveTab.before(button);
-    });
+    renderBreadcrumbBar(breadcrumbEntries);
   }
 
   function canUseCustomWorldFrame(world) {
@@ -741,6 +1292,8 @@ export function initWorldsFeature(options) {
     dom.plugDescription.value = '';
     dom.plugFont.value = '';
     dom.plugFontColor.value = '#f5f5f5';
+    dom.plugCover.value = '';
+    dom.plugCoverLabel.textContent = 'use world background as cover';
     dom.plugBackground.value = '';
     dom.plugBackgroundLabel.textContent = 'use site background';
     dom.plugPassword.value = '';
@@ -754,6 +1307,7 @@ export function initWorldsFeature(options) {
     dom.codePassword.value = '';
     dom.plugPublish.textContent = 'publish world';
     dom.codePublish.textContent = 'publish world';
+    dom.makerDelete.style.display = 'none';
     syncCategories();
     showStep('mode');
   }
@@ -785,6 +1339,10 @@ export function initWorldsFeature(options) {
     dom.plugCategory.value = world.category || dom.plugCategory.value;
     dom.plugFont.value = world.font_family || '';
     dom.plugFontColor.value = world.font_color || '#f5f5f5';
+    dom.plugCover.value = '';
+    dom.plugCoverLabel.textContent = world.cover_url
+      ? 'keep current world cover (choose file to replace)'
+      : (world.background_url ? 'use world background as cover (choose file to replace)' : 'use site background as cover');
     dom.plugBackground.value = '';
     dom.plugBackgroundLabel.textContent = world.background_url ? 'keep current background (choose file to replace)' : 'use site background';
     dom.plugVisibility.value = world.is_public_view === false ? 'false' : 'true';
@@ -805,6 +1363,7 @@ export function initWorldsFeature(options) {
 
     dom.plugPublish.textContent = 'update world';
     dom.codePublish.textContent = 'update world';
+    dom.makerDelete.style.display = 'inline-flex';
 
     dom.makerOverlay.style.display = 'flex';
     showStep(makerEditingType);
@@ -827,14 +1386,14 @@ export function initWorldsFeature(options) {
     const creatorPfp = getPfpSrc(creator, baseUrl);
     const currentUserId = getCurrentUser?.()?.id || null;
     const inEditMode = Boolean(getIsEditMode?.());
-    const canDelete = currentUserId && currentUserId === world.user_id && inEditMode;
+    const canEditWorld = Boolean(currentUserId) && String(currentUserId) === String(world?.user_id || '');
+    const canUseRecompress = Boolean(currentUserId);
     const worldFont = world.font_family || 'inherit';
     const worldColor = world.font_color || 'inherit';
     const useCustomFrame = canUseCustomWorldFrame(world);
 
     dom.modeName.textContent = world.name || DEFAULT_WORLD_TITLE;
     dom.modeDescription.textContent = world.description || DEFAULT_WORLD_DESCRIPTION;
-    dom.modeActiveTab.textContent = world.name || DEFAULT_WORLD_TITLE;
     dom.modeChrome.style.setProperty('--world-mode-font-family', worldFont);
     dom.modeChrome.style.setProperty('--world-mode-font-color', worldColor);
     dom.modePfp.src = creatorPfp;
@@ -842,9 +1401,11 @@ export function initWorldsFeature(options) {
     dom.modePfp.style.cursor = creator?.id ? 'pointer' : '';
     if (dom.modePfpWrap) dom.modePfpWrap.style.display = '';
     if (dom.modeIdentityPanel) dom.modeIdentityPanel.style.display = '';
-    dom.modeClose.style.display = '';
+    if (dom.modeNavBar) dom.modeNavBar.style.display = inEditMode ? 'none' : 'flex';
     dom.modeTabs.style.display = inEditMode ? 'none' : 'inline-flex';
-    dom.modeDelete.style.display = canDelete ? 'inline-flex' : 'none';
+    dom.modeRecompress.style.display = canUseRecompress && inEditMode ? 'inline-flex' : 'none';
+    dom.modeEdit.style.display = canEditWorld && inEditMode ? 'inline-flex' : 'none';
+    dom.modeDelete.style.display = 'none';
     dom.modeFrame.style.display = useCustomFrame ? 'block' : 'none';
     dom.modeFrame.src = useCustomFrame ? world.custom_code_url : 'about:blank';
   }
@@ -859,7 +1420,10 @@ export function initWorldsFeature(options) {
     dom.modeChrome.style.display = 'block';
     dom.modeChrome.style.removeProperty('--world-mode-font-family');
     dom.modeChrome.style.removeProperty('--world-mode-font-color');
+    if (dom.modeNavBar) dom.modeNavBar.style.display = 'flex';
     dom.modeTabs.style.display = 'inline-flex';
+    dom.modeRecompress.style.display = 'none';
+    dom.modeEdit.style.display = 'none';
     dom.modeDelete.style.display = 'none';
     dom.modeFrame.style.display = 'none';
     dom.modeFrame.src = 'about:blank';
@@ -868,33 +1432,109 @@ export function initWorldsFeature(options) {
     if (dom.modePfpWrap) dom.modePfpWrap.style.display = 'none';
     if (dom.modeIdentityPanel) dom.modeIdentityPanel.style.display = 'none';
 
-    dom.modeClose.style.display = 'none';
-    dom.modeClose.textContent = 'main';
-    dom.modeClose.dataset.worldNav = 'main';
-    dom.modeClose.dataset.worldId = '';
-    dom.modeActiveTab.textContent = 'main';
+    renderBreadcrumbBar([
+      {
+        label: MAIN_WORLD_LABEL,
+        navTarget: 'root',
+        worldId: '',
+        current: true
+      }
+    ]);
     parentTabAction = async () => {};
   }
 
   function clearWorldTabs() {
-    Array.from(dom.modeTabs.querySelectorAll('[data-world-nav]')).forEach((button) => {
-      if (button === dom.modeClose || button === dom.modeActiveTab) return;
-      button.remove();
-    });
+    if (!dom.modeTabs) return;
+    dom.modeTabs.innerHTML = '';
   }
 
-  function setPasswordPromptVisible(visible) {
-    if (!dom.passwordOverlay) return;
-    dom.passwordOverlay.style.display = visible ? 'flex' : 'none';
+  function setWorldLoaderVisible(visible) {
+    if (!dom.loaderOverlay) return;
+    dom.loaderOverlay.style.display = visible ? 'block' : 'none';
+    dom.loaderOverlay.setAttribute('aria-hidden', visible ? 'false' : 'true');
+    document.body.classList.toggle('world-loader-active', !!visible);
+
     if (!visible) {
+      dom.loaderOverlay.dataset.mode = 'loading';
+      if (dom.loaderOverlay) dom.loaderOverlay.style.setProperty('--world-loader-progress', '0%');
       if (dom.passwordInput) dom.passwordInput.value = '';
       if (dom.passwordError) dom.passwordError.textContent = '';
     }
   }
 
-  function showPasswordPrompt(world, message = '') {
+  function setWorldLoaderProgress(progress = 0) {
+    if (!dom.loaderOverlay) return;
+    const normalized = Math.max(0, Math.min(100, Number(progress) || 0));
+    dom.loaderOverlay.style.setProperty('--world-loader-progress', `${normalized}%`);
+  }
+
+  function populateWorldLoader(world, creator = null, options = {}) {
+    const {
+      mode = 'loading',
+      kicker = 'world',
+      status = 'loading world...',
+      progress = 0,
+      title,
+      meta,
+      description,
+      backgroundUrl: explicitBackgroundUrl,
+      coverUrl: explicitCoverUrl,
+      showCover = true
+    } = options;
+
+    const backgroundUrl = explicitBackgroundUrl || world?.background_url || getDefaultBackgroundUrl(baseUrl);
+    const coverUrl = explicitCoverUrl || getWorldCardCoverUrl(world, baseUrl);
+    const creatorName = String(creator?.username || 'unknown').trim() || 'unknown';
+    if (dom.loaderOverlay) dom.loaderOverlay.dataset.mode = mode;
+    if (dom.loaderKicker) dom.loaderKicker.textContent = kicker;
+    if (dom.loaderTitle) dom.loaderTitle.textContent = title || world?.name || DEFAULT_WORLD_TITLE;
+    if (dom.loaderMeta) dom.loaderMeta.textContent = meta || `by ${creatorName}`;
+    if (dom.loaderDescription) dom.loaderDescription.textContent = description || world?.description || DEFAULT_WORLD_DESCRIPTION;
+    if (dom.loaderStatus) dom.loaderStatus.textContent = status;
+    setWorldLoaderProgress(progress);
+    if (dom.loaderCoverShell) {
+      dom.loaderCoverShell.style.display = showCover ? '' : 'none';
+    }
+    if (dom.loaderBackdrop) {
+      dom.loaderBackdrop.style.backgroundImage = `url("${getOptimizedWorldLoaderBackdropUrl(backgroundUrl)}")`;
+    }
+    if (dom.loaderCover) {
+      dom.loaderCover.src = getOptimizedWorldLoaderCoverUrl(coverUrl) || coverUrl;
+      dom.loaderCover.alt = world?.name ? `${world.name} cover` : 'World cover';
+    }
+  }
+
+  function setPasswordPromptVisible(visible) {
+    if (!dom.loaderOverlay) return;
+    if (visible) {
+      if (!dom.loaderOverlay.dataset.mode || dom.loaderOverlay.dataset.mode === 'loading') {
+        dom.loaderOverlay.dataset.mode = 'password';
+      }
+      setWorldLoaderVisible(true);
+      return;
+    }
+
+    setWorldLoaderVisible(false);
+  }
+
+  function showTransitionLoader(options = {}) {
+    populateWorldLoader(null, null, options);
+    setWorldLoaderVisible(true);
+  }
+
+  function hideTransitionLoader() {
+    setWorldLoaderVisible(false);
+  }
+
+  function showPasswordPrompt(world, creator = null, message = '') {
     return new Promise((resolve) => {
       passwordPromptState = { resolve, worldId: world?.id || null };
+      populateWorldLoader(world, creator, {
+        mode: 'password',
+        kicker: 'world access',
+        status: 'waiting for password...',
+        progress: 0
+      });
       if (dom.passwordTitle) {
         dom.passwordTitle.textContent = `unlock ${world?.name || DEFAULT_WORLD_TITLE}`;
       }
@@ -943,6 +1583,16 @@ export function initWorldsFeature(options) {
     return Boolean(data);
   }
 
+  async function verifyWorldPassword(worldId, password) {
+    const { data, error } = await supabase.rpc('verify_world_password', {
+      p_world_id: worldId,
+      p_password: password
+    });
+
+    if (error) throw error;
+    return Boolean(data);
+  }
+
   async function loadWorldById(worldId) {
     if (!worldId) return null;
 
@@ -960,14 +1610,42 @@ export function initWorldsFeature(options) {
     return data || null;
   }
 
-  async function openWorldById(worldId) {
+  function getKnownWorldById(worldId) {
+    const normalizedId = String(worldId || '').trim();
+    if (!normalizedId) return null;
+
+    const stackMatch = worldNavStack.find((entry) => String(entry?.id || '').trim() === normalizedId);
+    if (stackMatch) return stackMatch;
+
+    return myWorldMap.get(normalizedId) || null;
+  }
+
+  async function openWorldById(worldId, options = {}) {
+    const loaderWorld = options?.world || getKnownWorldById(worldId);
+    if (loaderWorld) {
+      showTransitionLoader({
+        mode: 'loading',
+        kicker: 'world',
+        title: loaderWorld.name || DEFAULT_WORLD_TITLE,
+        meta: 'opening world',
+        description: loaderWorld.description || DEFAULT_WORLD_DESCRIPTION,
+        backgroundUrl: loaderWorld.background_url || getDefaultBackgroundUrl(baseUrl),
+        coverUrl: getWorldCardCoverUrl(loaderWorld, baseUrl),
+        showCover: true,
+        status: 'loading world...',
+        progress: 8
+      });
+    }
+
     const nextWorld = await loadWorldById(worldId);
     if (!nextWorld) {
+      setWorldLoaderVisible(false);
       pruneRememberedWorld(worldId);
       alert('Could not load that world.');
       return;
     }
 
+    setWorldLoaderProgress(20);
     const nextCreator = await resolveWorldCreator(nextWorld);
     await openWorldMode(nextWorld, nextCreator);
   }
@@ -976,12 +1654,14 @@ export function initWorldsFeature(options) {
     dom.modeChrome.style.display = 'none';
     dom.modeChrome.style.removeProperty('--world-mode-font-family');
     dom.modeChrome.style.removeProperty('--world-mode-font-color');
-    dom.modeActiveTab.textContent = 'world';
+    clearWorldTabs();
+    if (dom.modeNavBar) dom.modeNavBar.style.display = '';
     dom.modeTabs.style.display = '';
+    dom.modeRecompress.style.display = 'none';
+    dom.modeEdit.style.display = 'none';
     dom.modeDelete.style.display = 'none';
     dom.modeFrame.style.display = 'none';
     dom.modeFrame.src = 'about:blank';
-    dom.modeClose.style.display = '';
     if (dom.modePfpWrap) dom.modePfpWrap.style.display = '';
     if (dom.modeIdentityPanel) dom.modeIdentityPanel.style.display = '';
     if (dom.modeMyWorldsMenu) dom.modeMyWorldsMenu.style.display = 'none';
@@ -1131,60 +1811,118 @@ export function initWorldsFeature(options) {
   async function openWorldMode(world, creator = null) {
     if (getIsEditMode?.()) return;
 
+    populateWorldLoader(world, creator, {
+      mode: 'loading',
+      kicker: 'world',
+      status: 'loading world...',
+      progress: 24
+    });
+    setWorldLoaderVisible(true);
+
     const currentUserId = getCurrentUser?.()?.id || null;
-    if (world.is_public_view === false && currentUserId !== world.user_id) {
-      alert('This world is private.');
-      return;
-    }
+    try {
+      const resolvedCreator = await resolveWorldCreator(world, creator);
+      populateWorldLoader(world, resolvedCreator, {
+        mode: 'loading',
+        kicker: 'world',
+        status: 'loading world...',
+        progress: 28
+      });
 
-    if (world.password_hash && !currentUserId) {
-      alert('Sign in to unlock this world.');
-      return;
-    }
+      if (world.is_public_view === false && currentUserId !== world.user_id) {
+        alert('This world is private.');
+        return;
+      }
 
-    if (world.password_hash && currentUserId) {
-      const hasAccess = await verifyWorldAccess(world.id, currentUserId);
-      if (!hasAccess) {
-        let nextMessage = '';
+      if (world.password_hash && currentUserId && currentUserId !== world.user_id) {
+        const hasAccess = await verifyWorldAccess(world.id, currentUserId);
+        if (!hasAccess) {
+          let nextMessage = '';
 
-        while (true) {
-          const password = await showPasswordPrompt(world, nextMessage);
-          if (!password) return;
+          while (true) {
+            const password = await showPasswordPrompt(world, resolvedCreator, nextMessage);
+            if (!password) return;
 
-          try {
-            const unlocked = await unlockWorldAccess(world.id, password);
-            if (unlocked) break;
-            nextMessage = 'Incorrect password.';
-          } catch (error) {
-            console.error('Failed to unlock world:', error);
-            nextMessage = error?.message || 'Could not unlock world.';
+            try {
+              const unlocked = await unlockWorldAccess(world.id, password);
+              if (unlocked) break;
+              nextMessage = 'Incorrect password.';
+            } catch (error) {
+              console.error('Failed to unlock world:', error);
+              nextMessage = error?.message || 'Could not unlock world.';
+            }
           }
         }
       }
+
+      if (world.password_hash && !currentUserId) {
+        const hasGuestAccess = hasGuestWorldAccess(world.id);
+        if (!hasGuestAccess) {
+          let nextMessage = '';
+
+          while (true) {
+            const password = await showPasswordPrompt(world, resolvedCreator, nextMessage);
+            if (!password) return;
+
+            try {
+              const unlocked = await verifyWorldPassword(world.id, password);
+              if (unlocked) {
+                rememberGuestWorldAccess(world.id, true);
+                break;
+              }
+              nextMessage = 'Incorrect password.';
+            } catch (error) {
+              console.error('Failed to verify world password:', error);
+              nextMessage = error?.message || 'Could not unlock world.';
+            }
+          }
+        }
+      }
+
+      activeWorld = world;
+      activeWorldCreator = resolvedCreator;
+      updateWorldNavStack(world);
+      await hydrateMyWorlds();
+      await rememberWorld(world);
+      setWorldUrl(world.id);
+
+      populateWorldLoader(world, activeWorldCreator, {
+        mode: 'loading',
+        kicker: 'world',
+        status: 'loading world...',
+        progress: 32
+      });
+
+      renderWorldModeChrome(world, activeWorldCreator);
+      dom.modeChrome.style.display = 'block';
+      await renderWorldNavigation(world);
+
+      await onEnterWorld?.({
+        world,
+        creator: activeWorldCreator,
+        backgroundUrl: world.background_url || getDefaultBackgroundUrl(baseUrl),
+        fontFamily: world.font_family || '',
+        fontColor: world.font_color || '',
+        uiColor: getWorldAccent(world)
+      });
+    } finally {
+      setWorldLoaderVisible(false);
     }
-
-    activeWorld = world;
-    activeWorldCreator = await resolveWorldCreator(world, creator);
-    updateWorldNavStack(world);
-    await hydrateMyWorlds();
-    await rememberWorld(world);
-    setWorldUrl(world.id);
-
-    renderWorldModeChrome(world, activeWorldCreator);
-    dom.modeChrome.style.display = 'block';
-    await renderWorldNavigation(world);
-
-    await onEnterWorld?.({
-      world,
-      creator: activeWorldCreator,
-      backgroundUrl: world.background_url || getDefaultBackgroundUrl(baseUrl),
-      fontFamily: world.font_family || '',
-      fontColor: world.font_color || '',
-      uiColor: getWorldAccent(world)
-    });
   }
 
   async function exitWorldMode() {
+    showTransitionLoader({
+      mode: 'loading',
+      kicker: 'main',
+      title: 'main page',
+      meta: 'monkey space',
+      description: 'Loading the main canvas and bringing everything back into view.',
+      status: 'loading main...',
+      backgroundUrl: getDefaultBackgroundUrl(baseUrl),
+      coverUrl: getDefaultBackgroundUrl(baseUrl),
+      showCover: false,
+      progress: 0
+    });
     activeWorld = null;
     activeWorldCreator = null;
     worldNavStack = [];
@@ -1207,11 +1945,52 @@ export function initWorldsFeature(options) {
     if (removeError) throw removeError;
   }
 
-  async function deleteWorld(world) {
+  async function cleanupWorldPosts(worldIds) {
+    const normalizedWorldIds = dedupeWorldIds(Array.isArray(worldIds) ? worldIds : [worldIds]);
+    if (!normalizedWorldIds.length) return;
+
+    const { error } = await supabase
+      .from('posts')
+      .delete()
+      .in('world_id', normalizedWorldIds);
+
+    if (error) throw error;
+  }
+
+  async function deleteWorld(world, options = {}) {
+    const {
+      includePosts = false,
+      fromForm = false
+    } = options;
+
+    let descendantWorlds = [];
+    let directChildWorlds = [];
+    let childWorldAction = null;
+
+    try {
+      directChildWorlds = await loadDirectChildWorlds(world.id);
+      if (directChildWorlds.length > 0) {
+        descendantWorlds = await loadDescendantWorlds(world.id);
+        childWorldAction = await chooseChildWorldDeleteMode(world, descendantWorlds);
+        if (!childWorldAction) return;
+      }
+    } catch (error) {
+      alert(`Delete failed: ${error.message}`);
+      return;
+    }
+
     const confirmed = typeof window.__prettyConfirm === 'function'
       ? await window.__prettyConfirm({
           title: 'delete world?',
-          message: 'This removes the world from the feed. Existing uploaded assets may remain in storage if bucket policies block cleanup.',
+          message: (() => {
+            const nestedMessage = childWorldAction === 'transfer-children'
+              ? 'Direct child worlds will be moved to main.'
+              : (descendantWorlds.length > 0 ? 'Contained worlds will also be deleted.' : '');
+
+            return includePosts
+              ? `This deletes the world and all the posts inside it. ${nestedMessage} Existing uploaded assets may remain in storage if bucket policies block cleanup.`.trim()
+              : `This removes the world from the feed. ${nestedMessage} Existing uploaded assets may remain in storage if bucket policies block cleanup.`.trim();
+          })(),
           confirmLabel: 'delete',
           cancelLabel: 'cancel',
           danger: true
@@ -1223,6 +2002,29 @@ export function initWorldsFeature(options) {
     const isActive = activeWorld?.id === world.id;
     if (isActive) {
       await exitWorldMode();
+    }
+
+    const descendantWorldIds = descendantWorlds.map((childWorld) => String(childWorld.id || '').trim()).filter(Boolean);
+    const targetWorldIdsForPostDelete = includePosts
+      ? dedupeWorldIds([world.id, ...descendantWorldIds])
+      : (childWorldAction === 'delete-children' ? descendantWorldIds : []);
+
+    try {
+      if (targetWorldIdsForPostDelete.length > 0) {
+        await cleanupWorldPosts(targetWorldIdsForPostDelete);
+      }
+
+      if (childWorldAction === 'delete-children' && descendantWorldIds.length > 0) {
+        const { error: deleteDescendantsError } = await supabase
+          .from('worlds')
+          .delete()
+          .in('id', descendantWorldIds);
+
+        if (deleteDescendantsError) throw deleteDescendantsError;
+      }
+    } catch (error) {
+      alert(`Delete failed: ${error.message}`);
+      return;
     }
 
     const { error } = await supabase
@@ -1238,11 +2040,18 @@ export function initWorldsFeature(options) {
 
     try {
       await cleanupWorldAssets(world.id);
+      if (childWorldAction === 'delete-children' && descendantWorldIds.length > 0) {
+        await Promise.allSettled(descendantWorldIds.map((worldId) => cleanupWorldAssets(worldId)));
+      }
     } catch (cleanupError) {
       console.warn('World asset cleanup skipped:', cleanupError?.message || cleanupError);
     }
 
     pruneRememberedWorld(world.id);
+
+    if (fromForm && isMakerOpen()) {
+      closeMaker();
+    }
 
     if (!isActive) {
       if (activeWorld?.id) {
@@ -1257,14 +2066,74 @@ export function initWorldsFeature(options) {
 
   async function uploadWorldFile(worldId, fileName, file) {
     const storagePath = `${worldId}/${fileName}`;
-    const { error: uploadError } = await supabase.storage
-      .from(WORLD_BUCKET)
-      .upload(storagePath, file, { upsert: true });
+    const inferredType = String(file?.type || '').trim() || guessMimeFromFileName(fileName) || 'application/octet-stream';
+    const uploadResult = await withRateLimitRetry(async () => {
+      const { error: uploadError } = await supabase.storage
+        .from(WORLD_BUCKET)
+        .upload(storagePath, file, {
+          upsert: true,
+          contentType: inferredType
+        });
 
-    if (uploadError) throw uploadError;
+      if (uploadError) throw uploadError;
+      return true;
+    }, {
+      retries: 5,
+      baseDelayMs: 650,
+      maxDelayMs: 8000
+    });
+
+    if (!uploadResult) {
+      throw new Error('Upload failed.');
+    }
 
     const { data } = supabase.storage.from(WORLD_BUCKET).getPublicUrl(storagePath);
     return data.publicUrl;
+  }
+
+  async function updateWorldCoverAsset(worldId, userId, coverUrl) {
+    const payloadCandidates = [
+      { cover_url: coverUrl },
+      { background_url: coverUrl }
+    ];
+
+    let lastError = null;
+
+    for (let i = 0; i < payloadCandidates.length; i += 1) {
+      const payload = payloadCandidates[i];
+      let query = supabase
+        .from('worlds')
+        .update(payload)
+        .eq('id', worldId);
+
+      if (userId) {
+        query = query.eq('user_id', userId);
+      }
+
+      const { data: updated, error } = await withRateLimitRetry(async () => {
+        return query
+          .select('*')
+          .single();
+      }, {
+        retries: 4,
+        baseDelayMs: 500,
+        maxDelayMs: 6000
+      });
+
+      if (!error) {
+        return updated;
+      }
+
+      lastError = error;
+      const missingCoverColumn = i === 0 && /cover_url|schema cache|column/i.test(`${error?.code || ''} ${error?.message || ''}`);
+      if (missingCoverColumn) {
+        continue;
+      }
+
+      throw error;
+    }
+
+    throw lastError || new Error('Failed to save world cover.');
   }
 
   async function setWorldPassword(worldId, plainPassword) {
@@ -1365,6 +2234,7 @@ export function initWorldsFeature(options) {
         nextWorld = inserted;
       }
       const bgFile = dom.plugBackground.files?.[0] || null;
+      const coverFile = dom.plugCover.files?.[0] || null;
       if (bgFile) {
         const optimizedBgFile = await optimizeWorldBackgroundImage(bgFile);
         const backgroundUrl = await uploadWorldFile(
@@ -1384,6 +2254,17 @@ export function initWorldsFeature(options) {
         nextWorld = updated;
       }
 
+      if (coverFile) {
+        const optimizedCoverFile = await optimizeWorldCoverImage(coverFile);
+        const coverUrl = await uploadWorldFile(
+          nextWorld.id,
+          `cover-${Date.now()}-${normalizeStorageName(optimizedCoverFile?.name || coverFile.name)}`,
+          optimizedCoverFile || coverFile
+        );
+
+        nextWorld = await updateWorldCoverAsset(nextWorld.id, currentUser.id, coverUrl);
+      }
+
       if (passwordInput?.trim()) {
         await setWorldPassword(nextWorld.id, passwordInput);
       }
@@ -1397,7 +2278,7 @@ export function initWorldsFeature(options) {
         startPlacement: !isEdit
       });
     } catch (error) {
-      alert(`World save failed: ${error.message}`);
+      alert(`World save failed: ${getErrorMessage(error)}`);
     } finally {
       publishInFlight = false;
       dom.plugPublish.disabled = false;
@@ -1507,7 +2388,7 @@ export function initWorldsFeature(options) {
         startPlacement: !isEdit
       });
     } catch (error) {
-      alert(`World save failed: ${error.message}`);
+      alert(`World save failed: ${getErrorMessage(error)}`);
     } finally {
       publishInFlight = false;
       dom.codePublish.disabled = false;
@@ -1563,14 +2444,30 @@ export function initWorldsFeature(options) {
       }
 
       try {
-        const response = await fetch(bgUrl, { cache: 'no-store' });
-        if (!response.ok) {
-          throw new Error(`download failed (${response.status})`);
-        }
+        const response = await withRateLimitRetry(async () => {
+          const nextResponse = await fetch(bgUrl, { cache: 'no-store' });
+          if (nextResponse.status === 429) {
+            const rateErr = new Error('Too many requests, please try again later.');
+            rateErr.status = 429;
+            throw rateErr;
+          }
+          if (!nextResponse.ok) {
+            throw new Error(`download failed (${nextResponse.status})`);
+          }
+          return nextResponse;
+        }, {
+          retries: 5,
+          baseDelayMs: 700,
+          maxDelayMs: 9000
+        });
 
         const originalBlob = await response.blob();
         const inputFileName = getFileNameFromUrl(bgUrl, `background-${worldId}`);
-        const inputType = originalBlob.type || `image/${guessFileExtensionFromMime('image/jpeg')}`;
+        const blobMime = String(originalBlob.type || '').toLowerCase();
+        const fallbackMime = guessMimeFromFileName(inputFileName);
+        const inputType = blobMime.startsWith('image/')
+          ? blobMime
+          : (fallbackMime || 'image/jpeg');
         const inputFile = new File([originalBlob], inputFileName, { type: inputType });
 
         const optimizedFile = await optimizeWorldBackgroundImage(inputFile);
@@ -1587,13 +2484,19 @@ export function initWorldsFeature(options) {
           const optimizedName = `background-${Date.now()}-${normalizeStorageName(optimizedFile.name || inputFile.name)}`;
           const nextBackgroundUrl = await uploadWorldFile(worldId, optimizedName, optimizedFile);
 
-          const { data: updated, error: updateError } = await supabase
-            .from('worlds')
-            .update({ background_url: nextBackgroundUrl })
-            .eq('id', worldId)
-            .eq('user_id', currentUser.id)
-            .select('*')
-            .single();
+          const { data: updated, error: updateError } = await withRateLimitRetry(async () => {
+            return supabase
+              .from('worlds')
+              .update({ background_url: nextBackgroundUrl })
+              .eq('id', worldId)
+              .eq('user_id', currentUser.id)
+              .select('*')
+              .single();
+          }, {
+            retries: 4,
+            baseDelayMs: 500,
+            maxDelayMs: 6000
+          });
 
           if (updateError) throw updateError;
 
@@ -1608,8 +2511,185 @@ export function initWorldsFeature(options) {
         report.details.push({
           worldId,
           name: world.name || DEFAULT_WORLD_TITLE,
-          reason: err?.message || String(err)
+          reason: getErrorMessage(err)
         });
+      }
+    }
+
+    return report;
+  }
+
+  async function optimizeExistingWorldCovers(options = {}) {
+    const {
+      dryRun = false,
+      onlyWorldId = null
+    } = options;
+
+    const currentUser = getCurrentUser?.();
+    if (!currentUser?.id) {
+      throw new Error('You must be signed in to recompress world covers.');
+    }
+
+    let query = supabase
+      .from('worlds')
+      .select('id, user_id, name, cover_url, background_url')
+      .eq('user_id', currentUser.id)
+      .order('created_at', { ascending: false });
+
+    if (onlyWorldId) {
+      query = query.eq('id', onlyWorldId);
+    }
+
+    const { data: worlds, error } = await query;
+    if (error) throw error;
+
+    const candidates = (worlds || []).filter((world) => {
+      const sourceUrl = String(world?.cover_url || world?.background_url || '').trim();
+      return Boolean(sourceUrl);
+    });
+
+    const report = {
+      totalWorlds: candidates.length,
+      optimized: 0,
+      skipped: 0,
+      failed: 0,
+      bytesBefore: 0,
+      bytesAfter: 0,
+      details: []
+    };
+
+    const initialRetryProfile = {
+      retries: 5,
+      baseDelayMs: 700,
+      maxDelayMs: 9000
+    };
+
+    const cooldownRetryProfile = {
+      retries: 7,
+      baseDelayMs: 1400,
+      maxDelayMs: 14000
+    };
+
+    async function recompressOneCover(world, retryProfile) {
+      const worldId = String(world.id || '').trim();
+      const sourceUrl = String(world.cover_url || world.background_url || '').trim();
+      if (!worldId || !sourceUrl) {
+        return { skipped: true };
+      }
+
+      const response = await withRateLimitRetry(async () => {
+        const nextResponse = await fetch(sourceUrl, { cache: 'no-store' });
+        if (nextResponse.status === 429) {
+          const rateErr = new Error('Too many requests, please try again later.');
+          rateErr.status = 429;
+          throw rateErr;
+        }
+        if (!nextResponse.ok) {
+          throw new Error(`download failed (${nextResponse.status})`);
+        }
+        return nextResponse;
+      }, retryProfile);
+
+      const originalBlob = await response.blob();
+      const inputFileName = getFileNameFromUrl(sourceUrl, `cover-${worldId}`);
+      const blobMime = String(originalBlob.type || '').toLowerCase();
+      const fallbackMime = guessMimeFromFileName(inputFileName);
+      const inputType = blobMime.startsWith('image/')
+        ? blobMime
+        : (fallbackMime || 'image/jpeg');
+      const inputFile = new File([originalBlob], inputFileName, { type: inputType });
+
+      const optimizedFile = await optimizeWorldCoverImage(inputFile);
+      if (!optimizedFile) {
+        return {
+          skipped: true,
+          detail: { worldId, name: world.name || DEFAULT_WORLD_TITLE, reason: 'optimizer returned no file' }
+        };
+      }
+
+      if (!dryRun) {
+        const optimizedName = `cover-${Date.now()}-${normalizeStorageName(optimizedFile.name || inputFile.name)}`;
+        const nextCoverUrl = await uploadWorldFile(worldId, optimizedName, optimizedFile);
+        const updated = await updateWorldCoverAsset(worldId, currentUser.id, nextCoverUrl);
+
+        if (activeWorld?.id === worldId) {
+          activeWorld = updated;
+        }
+      }
+
+      return {
+        skipped: false,
+        bytesBefore: originalBlob.size || 0,
+        bytesAfter: optimizedFile.size || 0
+      };
+    }
+
+    const deferredRateLimited = [];
+
+    for (const world of candidates) {
+      const worldId = String(world.id || '').trim();
+      const sourceUrl = String(world.cover_url || world.background_url || '').trim();
+      if (!worldId || !sourceUrl) {
+        report.skipped += 1;
+        continue;
+      }
+
+      try {
+        const result = await recompressOneCover(world, initialRetryProfile);
+        if (result?.skipped) {
+          report.skipped += 1;
+          if (result.detail) {
+            report.details.push(result.detail);
+          }
+          continue;
+        }
+
+        report.bytesBefore += result.bytesBefore || 0;
+        report.bytesAfter += result.bytesAfter || 0;
+
+        report.optimized += 1;
+      } catch (err) {
+        if (isRateLimitedError(err)) {
+          deferredRateLimited.push(world);
+        } else {
+          report.failed += 1;
+          report.details.push({
+            worldId,
+            name: world.name || DEFAULT_WORLD_TITLE,
+            reason: getErrorMessage(err)
+          });
+        }
+      }
+
+      await sleep(220);
+    }
+
+    if (deferredRateLimited.length > 0) {
+      await sleep(2500);
+      for (const world of deferredRateLimited) {
+        const worldId = String(world.id || '').trim();
+        try {
+          const result = await recompressOneCover(world, cooldownRetryProfile);
+          if (result?.skipped) {
+            report.skipped += 1;
+            if (result.detail) {
+              report.details.push(result.detail);
+            }
+          } else {
+            report.bytesBefore += result.bytesBefore || 0;
+            report.bytesAfter += result.bytesAfter || 0;
+            report.optimized += 1;
+          }
+        } catch (err) {
+          report.failed += 1;
+          report.details.push({
+            worldId,
+            name: world.name || DEFAULT_WORLD_TITLE,
+            reason: getErrorMessage(err)
+          });
+        }
+
+        await sleep(420);
       }
     }
 
@@ -1633,18 +2713,31 @@ export function initWorldsFeature(options) {
     card.dataset.lod = 'near';
 
     const idx = options.index || 0;
-    const fallbackX = 60 + (idx % 4) * 340;
-    const fallbackY = 60 + Math.floor(idx / 4) * 280;
+    const fallbackX = 60 + (idx % 4) * 390;
+    const fallbackY = 60 + Math.floor(idx / 4) * 360;
     card.style.left = `${options.x ?? fallbackX}px`;
     card.style.top = `${options.y ?? fallbackY}px`;
     card.style.setProperty('--world-ui-color', getWorldAccent(world));
+    const worldFontColor = String(world?.font_color || '').trim();
+    const worldFontFamily = String(world?.font_family || '').trim();
+    const containerFontColor = String(options?.containerFontColor || '').trim();
+    const hasContainerFontColor = Object.prototype.hasOwnProperty.call(options || {}, 'containerFontColor');
+    if (worldFontColor) {
+      card.style.color = worldFontColor;
+    } else {
+      card.style.removeProperty('color');
+    }
+    if (worldFontFamily) {
+      card.style.fontFamily = worldFontFamily;
+    } else {
+      card.style.removeProperty('font-family');
+    }
 
     const creatorPfp = getPfpSrc(creator, baseUrl);
     const creatorName = creator?.username || 'unknown';
-    const coverUrl = String(world.background_url || '').trim() || getDefaultBackgroundUrl(baseUrl);
+    const coverUrl = getOptimizedWorldCardCoverUrl(getWorldCardCoverUrl(world, baseUrl));
     const currentUserId = getCurrentUser?.()?.id || null;
     const canEdit = currentUserId && currentUserId === world.user_id;
-    const canDelete = currentUserId && currentUserId === world.user_id;
     const isPrivateView = world.is_public_view === false;
     const isPrivateEdit = world.is_public_edit === false;
     const hasPassword = Boolean(world.password_hash);
@@ -1652,8 +2745,11 @@ export function initWorldsFeature(options) {
 
     card.innerHTML = `
       <div class="post-card-content world-card-content">
-        <div class="world-card-screen" style="background-image:url('${escapeHtml(coverUrl)}');">
-          <div class="world-card-title">${escapeHtml(world.name || DEFAULT_WORLD_TITLE)}</div>
+        <div class="post-title world-card-title"><span class="post-title-track world-card-title-track">${escapeHtml(world.name || DEFAULT_WORLD_TITLE)}</span></div>
+        <div class="world-card-orb-wrap">
+          <div class="world-card-screen">
+            <img class="world-card-cover" src="${escapeHtml(coverUrl)}" alt="" loading="lazy" decoding="async">
+          </div>
           ${isPrivateView ? '<span class="world-card-badge world-card-badge--private">private</span>' : ''}
           ${isPrivateEdit ? '<span class="world-card-badge world-card-badge--locked">creator posts only</span>' : ''}
           ${hasPassword ? '<span class="world-card-badge world-card-badge--password">password</span>' : ''}
@@ -1667,9 +2763,40 @@ export function initWorldsFeature(options) {
       </div>
       ${hasUpdate ? '<button type="button" class="world-card-update-action">apply update</button>' : ''}
       ${options.editMode && canEdit ? '<button type="button" class="world-card-move">move</button>' : ''}
-      ${canEdit ? '<button type="button" class="world-card-edit">edit</button>' : ''}
-      ${options.editMode && canDelete ? '<button type="button" class="world-card-delete">x</button>' : ''}
     `;
+
+    const titleElement = card.querySelector('.world-card-title');
+    if (titleElement) {
+      if (hasContainerFontColor) {
+        titleElement.style.color = containerFontColor || '#000000';
+      } else {
+        titleElement.style.color = '#000000';
+      }
+    }
+
+    applyWorldTitleMarquee(
+      titleElement,
+      card.querySelector('.world-card-title-track')
+    );
+
+    const coverScreen = card.querySelector('.world-card-screen');
+    const coverImage = card.querySelector('.world-card-cover');
+    if (coverScreen && coverImage) {
+      coverScreen.classList.add('is-loading');
+
+      const markReady = () => {
+        coverScreen.classList.remove('is-loading');
+        coverImage.removeEventListener('load', markReady);
+        coverImage.removeEventListener('error', markReady);
+      };
+
+      if (coverImage.complete && coverImage.naturalWidth > 0) {
+        markReady();
+      } else {
+        coverImage.addEventListener('load', markReady, { once: true });
+        coverImage.addEventListener('error', markReady, { once: true });
+      }
+    }
 
     card.querySelector('.world-card-pfp')?.addEventListener('click', async (event) => {
       event.stopPropagation();
@@ -1689,16 +2816,6 @@ export function initWorldsFeature(options) {
         options.onFilterCategory?.(world.category || null);
       });
     }
-
-    card.querySelector('.world-card-delete')?.addEventListener('click', async (event) => {
-      event.stopPropagation();
-      await deleteWorld(world);
-    });
-
-    card.querySelector('.world-card-edit')?.addEventListener('click', (event) => {
-      event.stopPropagation();
-      openMakerForEdit(world);
-    });
 
     card.querySelector('.world-card-move')?.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) return;
@@ -1782,13 +2899,58 @@ export function initWorldsFeature(options) {
   dom.plugPublish.addEventListener('click', publishPlugWorld);
   dom.codePublish.addEventListener('click', publishCodeWorld);
   dom.codeDownload.addEventListener('click', downloadTemplateZip);
-  dom.modeClose.addEventListener('click', async () => {
-    await parentTabAction();
-  });
   dom.modeDelete.addEventListener('click', async () => {
     if (activeWorld) {
       await deleteWorld(activeWorld);
     }
+  });
+  dom.modeEdit.addEventListener('click', async () => {
+    if (!activeWorld?.id) return;
+    const latestWorld = await loadWorldById(activeWorld.id);
+    openMakerForEdit(latestWorld || activeWorld);
+  });
+  dom.modeRecompress.addEventListener('click', async () => {
+    const confirmed = typeof window.__prettyConfirm === 'function'
+      ? await window.__prettyConfirm({
+          title: 'recompress world covers?',
+          message: 'This scans your worlds and recompresses their covers into faster-loading files.',
+          confirmLabel: 'recompress',
+          cancelLabel: 'cancel'
+        })
+      : window.confirm('Recompress your world covers?');
+
+    if (!confirmed) return;
+
+    const previousLabel = dom.modeRecompress.textContent;
+    dom.modeRecompress.disabled = true;
+    dom.modeRecompress.textContent = 'recompressing...';
+
+    try {
+      const report = await optimizeExistingWorldCovers();
+      const beforeMB = (report.bytesBefore / (1024 * 1024)).toFixed(2);
+      const afterMB = (report.bytesAfter / (1024 * 1024)).toFixed(2);
+      const savedMB = ((report.bytesBefore - report.bytesAfter) / (1024 * 1024)).toFixed(2);
+      const failurePreview = report.details.slice(0, 3)
+        .map((item) => `${item.name || item.worldId}: ${item.reason}`)
+        .join('\n');
+      const failureSummary = report.failed > 0
+        ? `\n\nfailures:\n${failurePreview}${report.details.length > 3 ? '\n...' : ''}`
+        : '';
+      alert(`covers recompressed\n\noptimized: ${report.optimized}/${report.totalWorlds}\nskipped: ${report.skipped}\nfailed: ${report.failed}\n\nsize before: ${beforeMB} MB\nsize after: ${afterMB} MB\nsaved: ${savedMB} MB${failureSummary}`);
+      await onWorldCreated?.(activeWorld || null, { startPlacement: false });
+    } catch (error) {
+      alert(`Cover recompress failed: ${getErrorMessage(error)}`);
+    } finally {
+      dom.modeRecompress.disabled = false;
+      dom.modeRecompress.textContent = previousLabel;
+    }
+  });
+  dom.makerDelete.addEventListener('click', async () => {
+    if (!makerEditingWorld?.id) return;
+    await deleteWorld(makerEditingWorld, {
+      includePosts: true,
+      fromForm: true
+    });
   });
 
   dom.passwordCancel?.addEventListener('click', () => {
@@ -1828,7 +2990,10 @@ export function initWorldsFeature(options) {
   });
 
   dom.passwordOverlay?.addEventListener('click', (event) => {
-    if (event.target === dom.passwordOverlay) {
+    const isBackdropTarget = event.target === dom.passwordOverlay
+      || event.target === dom.loaderBackdrop
+      || event.target === dom.loaderWash;
+    if (isBackdropTarget && dom.passwordOverlay?.dataset.mode === 'password') {
       closePasswordPrompt(null);
     }
   });
@@ -1839,6 +3004,9 @@ export function initWorldsFeature(options) {
     }
   });
 
+  dom.plugCover.addEventListener('change', () => {
+    dom.plugCoverLabel.textContent = dom.plugCover.files?.[0]?.name || 'use world background as cover';
+  });
   dom.plugBackground.addEventListener('change', () => {
     dom.plugBackgroundLabel.textContent = dom.plugBackground.files?.[0]?.name || 'use site background';
   });
@@ -1862,12 +3030,16 @@ export function initWorldsFeature(options) {
   return {
     loadWorlds,
     buildWorldCard,
+    showTransitionLoader,
+    hideTransitionLoader,
+    setWorldLoaderProgress,
     syncCategories,
     closeActiveUi,
     isMakerOpen,
     isInWorldMode,
     openWorldById,
     optimizeExistingWorldBackgrounds,
+    optimizeExistingWorldCovers,
     refreshActiveWorldChrome: async (nextWorld = null) => {
       if (nextWorld && activeWorld && nextWorld.id === activeWorld.id) {
         activeWorld = nextWorld;

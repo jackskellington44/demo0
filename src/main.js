@@ -38,7 +38,7 @@ import { supabase } from './supabase-config.js';
 import { installPrettyAlerts } from './ui-alerts.js';
 import { initWorldsFeature } from './worlds.js';
 
-import { initMusic } from './music.js';
+import { initMusic, setMusicWorldContext } from './music.js';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import JSZip from 'jszip';
@@ -264,6 +264,9 @@ const userProfileInFlight = new Map();
 const POST_RECORD_CACHE_TTL_MS = 30000;
 const postRecordCache = new Map();
 const postRecordInFlight = new Map();
+const FEED_SNAPSHOT_CACHE_TTL_MS = 75000;
+const FEED_WIREFRAME_CARD_COUNT = 10;
+const feedSnapshotCache = new Map();
 const AUTO_FREEZE_MIN_BOOT_MS = 1600;
 const AUTO_FREEZE_MAX_BOOT_MS = 9000;
 let autoFreezeActive = false;
@@ -365,6 +368,101 @@ function getLoadPostsRequestKey() {
     activeCategoryFilter: activeCategoryFilter || null,
     activeLinkTreeRootPostId: activeLinkTreeRootPostId || null
   });
+}
+
+function cloneFeedRows(rows = []) {
+  return (rows || []).map((row) => ({ ...row }));
+}
+
+function pruneFeedSnapshotCache(now = Date.now()) {
+  for (const [cacheKey, snapshot] of feedSnapshotCache.entries()) {
+    if (!snapshot || (now - snapshot.ts) > FEED_SNAPSHOT_CACHE_TTL_MS) {
+      feedSnapshotCache.delete(cacheKey);
+    }
+  }
+}
+
+function getFeedSnapshot(cacheKey) {
+  const now = Date.now();
+  pruneFeedSnapshotCache(now);
+  const snapshot = feedSnapshotCache.get(cacheKey);
+  if (!snapshot) return null;
+  return snapshot;
+}
+
+function setFeedSnapshot(cacheKey, payload = {}) {
+  const posts = cloneFeedRows(payload.posts || []);
+  const worlds = cloneFeedRows(payload.worlds || []);
+  const userMap = { ...(payload.userMap || {}) };
+  feedSnapshotCache.set(cacheKey, {
+    ts: Date.now(),
+    posts,
+    worlds,
+    userMap
+  });
+}
+
+function renderFeedCards(posts = [], worlds = [], userMap = {}, options = {}) {
+  if (!postCanvas) return;
+
+  const { wireframe = false } = options;
+  postCanvas.innerHTML = '';
+  buildPostCard._indexCounter = 0;
+
+  (posts || []).forEach((post) => {
+    const user = userMap[post.user_id] || {};
+    const card = buildPostCard(post, user);
+    if (wireframe) card.classList.add('post-card-wireframe', 'post-card-wireframe--post');
+    postCanvas.appendChild(card);
+  });
+
+  (worlds || []).forEach((world, index) => {
+    const user = userMap[world.user_id] || {};
+    const card = worldsFeature.buildWorldCard(world, user, {
+      x: world.x,
+      y: world.y,
+      index: (posts?.length || 0) + index,
+      editMode,
+      containerFontColor: activeWorldContext?.world?.font_color || '',
+      onBeginMove: (worldRow, cardEl, pointerEvent) => {
+        if (!editMode) return;
+        startPlacement(worldRow, cardEl, pointerEvent);
+      },
+      onFilterUser: (userId) => {
+        activeUserFilter = activeUserFilter === userId ? null : userId;
+        loadPosts();
+      },
+      onFilterCategory: (category) => {
+        const nextFilter = category || NONE_CATEGORY_FILTER;
+        activeCategoryFilter = activeCategoryFilter === nextFilter ? null : nextFilter;
+        loadPosts();
+      }
+    });
+    if (wireframe) card.classList.add('post-card-wireframe', 'post-card-wireframe--world');
+    postCanvas.appendChild(card);
+  });
+}
+
+function renderFeedWireframes(options = {}) {
+  if (!postCanvas) return;
+
+  const worldLoading = Boolean(options.worldLoading);
+  const count = Number.isFinite(options.count)
+    ? Math.max(4, Math.floor(options.count))
+    : FEED_WIREFRAME_CARD_COUNT;
+
+  postCanvas.innerHTML = '';
+
+  for (let index = 0; index < count; index += 1) {
+    const card = document.createElement('div');
+    const isWorldSkeleton = worldLoading ? (index % 3 === 0) : (index % 4 === 0);
+    card.className = `post-card post-card-wireframe post-card-wireframe-placeholder${isWorldSkeleton ? ' post-card-wireframe--world' : ' post-card-wireframe--post'}`;
+    const x = 60 + (index % 4) * 390;
+    const y = 60 + Math.floor(index / 4) * 330;
+    card.style.left = `${x}px`;
+    card.style.top = `${y}px`;
+    postCanvas.appendChild(card);
+  }
 }
 
 function getWorldTransitionKey(mode, worldPayload = null) {
@@ -2046,12 +2144,37 @@ function applyBackgroundImage(bgUrl = DEFAULT_BG_URL) {
   document.documentElement.style.setProperty('--bg-url', `url(${bgUrl})`);
 }
 
+const backgroundImagePreloadCache = new Map();
+
+function preloadBackgroundImage(bgUrl = DEFAULT_BG_URL) {
+  const normalizedUrl = String(bgUrl || '').trim() || DEFAULT_BG_URL;
+  if (backgroundImagePreloadCache.has(normalizedUrl)) {
+    return backgroundImagePreloadCache.get(normalizedUrl);
+  }
+
+  const preloadPromise = new Promise((resolve) => {
+    const img = new Image();
+    img.decoding = 'async';
+    img.onload = () => resolve(normalizedUrl);
+    img.onerror = () => resolve(normalizedUrl);
+    img.src = normalizedUrl;
+  });
+
+  backgroundImagePreloadCache.set(normalizedUrl, preloadPromise);
+  return preloadPromise;
+}
+
 function setCanvasLoadingState(isLoading, label = 'loading posts...') {
   if (!postCanvas) return;
   postCanvas.classList.toggle('is-loading', !!isLoading);
 
   let indicator = postCanvas.querySelector('.post-canvas-loading');
   if (isLoading) {
+    if (document.body.classList.contains('world-loader-active')) {
+      indicator?.remove();
+      return;
+    }
+
     if (!indicator) {
       indicator = document.createElement('div');
       indicator.className = 'post-canvas-loading';
@@ -2322,18 +2445,25 @@ async function enterWorldMode(worldPayload) {
 
   const runPromise = (async () => {
     activeWorldContext = worldPayload;
+    worldsFeature?.setWorldLoaderProgress?.(0);
     setCanvasLoadingState(true, 'loading world...');
+    worldsFeature?.setWorldLoaderProgress?.(16);
+    await preloadBackgroundImage(worldPayload?.backgroundUrl || DEFAULT_BG_URL);
     applyWorldModeVisuals(worldPayload);
     clearVisibleCanvasContent();
 
+    worldsFeature?.setWorldLoaderProgress?.(28);
     await loadPosts({ force: true, clearCanvasImmediately: true });
+    worldsFeature?.setWorldLoaderProgress?.(68);
     await waitForLayoutStability();
     recoverViewportForCurrentContext();
 
+    worldsFeature?.setWorldLoaderProgress?.(84);
     await Promise.allSettled([
       loadLinks().then(() => renderLinks(lastLoadedPosts, lastLoadedLinks)),
       loadNotifications()
     ]);
+    worldsFeature?.setWorldLoaderProgress?.(100);
   })();
 
   worldModeTransitionKey = transitionKey;
@@ -2358,18 +2488,25 @@ async function exitWorldMode() {
 
   const runPromise = (async () => {
     activeWorldContext = null;
+    worldsFeature?.setWorldLoaderProgress?.(0);
     setCanvasLoadingState(true, 'loading main...');
+    worldsFeature?.setWorldLoaderProgress?.(16);
+    await preloadBackgroundImage(DEFAULT_BG_URL);
     applyWorldModeVisuals(null);
     clearVisibleCanvasContent();
 
+    worldsFeature?.setWorldLoaderProgress?.(28);
     await loadPosts({ force: true, clearCanvasImmediately: true });
+    worldsFeature?.setWorldLoaderProgress?.(68);
     await waitForLayoutStability();
     recoverViewportForCurrentContext();
 
+    worldsFeature?.setWorldLoaderProgress?.(84);
     await Promise.allSettled([
       loadLinks().then(() => renderLinks(lastLoadedPosts, lastLoadedLinks)),
       loadNotifications()
     ]);
+    worldsFeature?.setWorldLoaderProgress?.(100);
   })();
 
   worldModeTransitionKey = transitionKey;
@@ -2378,6 +2515,7 @@ async function exitWorldMode() {
   try {
     return await runPromise;
   } finally {
+    worldsFeature?.hideTransitionLoader?.();
     if (worldModeTransitionPromise === runPromise) {
       worldModeTransitionPromise = null;
       worldModeTransitionKey = '';
@@ -6755,11 +6893,20 @@ async function loadPosts(options = {}) {
   setCanvasLoadingState(true, worldLoading ? 'loading world posts...' : 'loading posts...');
 
   if (clearCanvasImmediately && postCanvas) {
-    postCanvas.innerHTML = '';
-    buildPostCard._indexCounter = 0;
-    lastLoadedPosts = [];
-    lastLoadedWorlds = [];
-    renderLinks(lastLoadedPosts, lastLoadedLinks);
+    const cachedSnapshot = getFeedSnapshot(requestKey);
+    if (cachedSnapshot) {
+      lastLoadedPosts = cloneFeedRows(cachedSnapshot.posts || []);
+      lastLoadedWorlds = cloneFeedRows(cachedSnapshot.worlds || []);
+      (lastLoadedPosts || []).forEach((post) => cachePostRecord(post));
+      renderFeedCards(lastLoadedPosts, lastLoadedWorlds, cachedSnapshot.userMap || {}, { wireframe: true });
+      renderLinks(lastLoadedPosts, lastLoadedLinks);
+      scheduleCardLodRefresh();
+    } else {
+      lastLoadedPosts = [];
+      lastLoadedWorlds = [];
+      renderFeedWireframes({ worldLoading });
+      renderLinks(lastLoadedPosts, lastLoadedLinks);
+    }
   }
 
   try {
@@ -6858,38 +7005,11 @@ async function loadPosts(options = {}) {
       return;
     }
 
-    postCanvas.innerHTML = '';
-    buildPostCard._indexCounter = 0;
-
-    // IMPORTANT: render from lastLoadedPosts (filtered), not posts
-    (lastLoadedPosts || []).forEach(post => {
-      const user = userMap[post.user_id] || {};
-      const card = buildPostCard(post, user);
-      postCanvas.appendChild(card);
-    });
-
-    (lastLoadedWorlds || []).forEach((world, index) => {
-      const user = userMap[world.user_id] || {};
-      const card = worldsFeature.buildWorldCard(world, user, {
-        x: world.x,
-        y: world.y,
-        index: (lastLoadedPosts?.length || 0) + index,
-        editMode,
-        onBeginMove: (worldRow, cardEl, pointerEvent) => {
-          if (!editMode) return;
-          startPlacement(worldRow, cardEl, pointerEvent);
-        },
-        onFilterUser: (userId) => {
-          activeUserFilter = activeUserFilter === userId ? null : userId;
-          loadPosts();
-        },
-        onFilterCategory: (category) => {
-          const nextFilter = category || NONE_CATEGORY_FILTER;
-          activeCategoryFilter = activeCategoryFilter === nextFilter ? null : nextFilter;
-          loadPosts();
-        }
-      });
-      postCanvas.appendChild(card);
+    renderFeedCards(lastLoadedPosts, lastLoadedWorlds, userMap, { wireframe: false });
+    setFeedSnapshot(requestKey, {
+      posts: lastLoadedPosts,
+      worlds: lastLoadedWorlds,
+      userMap
     });
 
     console.log(`Loaded ${lastLoadedPosts?.length || 0} posts and ${lastLoadedWorlds?.length || 0} worlds`);
@@ -6906,6 +7026,9 @@ async function loadPosts(options = {}) {
     scheduleUiStatePersist();
   } catch (err) {
     console.error('loadPosts crashed:', err);
+    if (clearCanvasImmediately && postCanvas && postCanvas.children.length === 0) {
+      renderFeedWireframes({ worldLoading });
+    }
   } finally {
     if (loadSeq === postsLoadSequence) {
       setCanvasLoadingState(false);
@@ -9207,9 +9330,17 @@ document.addEventListener('DOMContentLoaded', async () => {
       await loadPosts();
     },
     onEnterWorld: async (worldPayload) => {
+      await setMusicWorldContext(worldPayload?.world || null, {
+        autoplay: true,
+        forceRestart: true
+      });
       await scheduleWorldModeReload('enter', worldPayload);
     },
     onExitWorld: async () => {
+      await setMusicWorldContext(null, {
+        autoplay: true,
+        forceRestart: true
+      });
       await scheduleWorldModeReload('exit');
     },
     onOpenProfile: async (userId) => {
@@ -9245,6 +9376,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     .catch((err) => console.error('Deferred notifications load failed:', err));
 
   await initMusic(currentUser, currentUserData);
+  await setMusicWorldContext(activeWorldContext?.world || null, {
+    autoplay: false,
+    forceRestart: false
+  });
   initAnimToggle();
   initThemeColorPicker();
 
