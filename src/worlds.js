@@ -2737,11 +2737,14 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     const creatorName = creator?.username || 'unknown';
     const coverUrl = getOptimizedWorldCardCoverUrl(getWorldCardCoverUrl(world, baseUrl));
     const currentUserId = getCurrentUser?.()?.id || null;
-    const canEdit = currentUserId && currentUserId === world.user_id;
+    const canEdit = typeof options.canEditWorld === 'function'
+      ? Boolean(options.canEditWorld(world))
+      : Boolean(currentUserId && currentUserId === world.user_id);
+    const showMoveControl = Boolean(options.editMode && canEdit);
     const isPrivateView = world.is_public_view === false;
     const isPrivateEdit = world.is_public_edit === false;
     const hasPassword = Boolean(world.password_hash);
-    const hasUpdate = worldNeedsManualUpdate(world, currentUserId);
+    const hasUpdate = worldNeedsManualUpdate(world, currentUserId) && !options.editMode;
 
     card.innerHTML = `
       <div class="post-card-content world-card-content">
@@ -2762,7 +2765,13 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         <span class="post-footer-category post-footer-filter-btn"><span class="post-footer-category-track">${escapeHtml(world.category || 'none')}</span></span>
       </div>
       ${hasUpdate ? '<button type="button" class="world-card-update-action">apply update</button>' : ''}
-      ${options.editMode && canEdit ? '<button type="button" class="world-card-move">move</button>' : ''}
+      ${showMoveControl ? `
+        <div class="post-edit-chrome world-edit-chrome" aria-hidden="false">
+          <div class="post-edit-top-actions" aria-label="world edit actions">
+            <button class="post-edit-button post-edit-button-move world-card-move" type="button" title="move" aria-label="move world">𖦏</button>
+          </div>
+        </div>
+      ` : ''}
     `;
 
     const titleElement = card.querySelector('.world-card-title');

@@ -382,8 +382,14 @@ async function handleSignup() {
     window.location.href = `./main.html${window.location.search}`;
   } catch (error) {
     await rollbackSignupArtifacts();
-    console.error('Signup error:', error.message);
-    alert(`Signup failed: ${error.message}`);
+    const errorText = error instanceof Error
+      ? (error.message || String(error))
+      : String(error);
+    console.error('Signup error details:', {
+      message: errorText,
+      raw: error,
+    });
+    alert(`Signup failed: ${errorText}`);
   } finally {
     setSignupUIBusy(false);
     signupInFlight = false;

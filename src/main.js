@@ -423,6 +423,11 @@ function renderFeedCards(posts = [], worlds = [], userMap = {}, options = {}) {
       y: world.y,
       index: (posts?.length || 0) + index,
       editMode,
+      canEditWorld: (worldRow) => {
+        if (!worldRow) return false;
+        if (currentUserData?.is_admin) return true;
+        return String(currentUser?.id || '') === String(worldRow.user_id || '');
+      },
       containerFontColor: activeWorldContext?.world?.font_color || '',
       onBeginMove: (worldRow, cardEl, pointerEvent) => {
         if (!editMode) return;
