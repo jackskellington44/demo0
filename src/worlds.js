@@ -2,7 +2,6 @@ import JSZip from 'jszip';
 
 const WORLD_TRIGGER = 'world';
 const WORLD_BUCKET = 'worlds';
-const WORLD_QUERY_PARAM = 'world';
 const MY_WORLDS_STORAGE_PREFIX = 'demo0-my-worlds-v1';
 const WORLD_GUEST_ACCESS_STORAGE_PREFIX = 'demo0-world-guest-access-v1';
 const MY_WORLDS_LIMIT = 48;
@@ -515,6 +514,20 @@ function isTypingSurface(target = document.activeElement) {
 
 function getDefaultBackgroundUrl(baseUrl) {
   return `${baseUrl}images/background.jpg`;
+}
+
+function slugifyWorldPathSegment(value = '') {
+  const normalized = String(value || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+
+  const slug = normalized
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+  return slug || '';
 }
 
 function getPfpSrc(user, baseUrl) {
@@ -1062,25 +1075,50 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     }
   }
 
-  function setWorldUrl(worldId) {
-    const nextId = String(worldId || '').trim();
-    if (!nextId) return;
+  function setWorldUrl(world) {
+    const worldName = String(world?.name || '').trim();
+    const worldId = String(world?.id || '').trim();
+    const nextSegment = slugifyWorldPathSegment(worldName) || worldId;
+    if (!nextSegment) return;
+
     const current = new URL(window.location.href);
-    if (current.searchParams.get(WORLD_QUERY_PARAM) === nextId) return;
+    const currentSegment = decodeURIComponent(current.pathname.replace(/^\/+/, '').split('/')[0] || '');
+    if (currentSegment === nextSegment) return;
 
     const next = new URL(window.location.href);
-    next.search = '';
-    next.searchParams.set(WORLD_QUERY_PARAM, nextId);
+    next.pathname = `/${encodeURIComponent(nextSegment)}`;
     window.history.replaceState(window.history.state, '', `${next.pathname}${next.search}${next.hash}`);
   }
 
   function clearWorldUrl() {
     const current = new URL(window.location.href);
-    if (!current.searchParams.has(WORLD_QUERY_PARAM)) return;
+    if (current.pathname === '/') return;
 
     const next = new URL(window.location.href);
-    next.search = '';
-    window.history.replaceState(window.history.state, '', `${next.pathname}${next.hash}`);
+    next.pathname = '/';
+    window.history.replaceState(window.history.state, '', `${next.pathname}${next.search}${next.hash}`);
+  }
+
+  async function loadWorldByPathSegment(pathSegment) {
+    const requestedSegment = slugifyWorldPathSegment(pathSegment);
+    if (!requestedSegment) return null;
+
+    const { data, error } = await supabase
+      .from('worlds')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(800);
+
+    if (error) {
+      console.error('Failed to load worlds for path lookup:', error);
+      return null;
+    }
+
+    const rows = data || [];
+    const exactSlugMatch = rows.find((row) => slugifyWorldPathSegment(row?.name || '') === requestedSegment);
+    if (exactSlugMatch) return exactSlugMatch;
+
+    return rows.find((row) => String(row?.id || '').trim() === String(pathSegment || '').trim()) || null;
   }
 
   async function loadWorldRowsByIds(worldIds = []) {
@@ -1650,6 +1688,19 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     await openWorldMode(nextWorld, nextCreator);
   }
 
+  async function openWorldByPathSegment(pathSegment) {
+    const normalizedPath = String(pathSegment || '').trim();
+    if (!normalizedPath) return;
+
+    const world = await loadWorldByPathSegment(normalizedPath);
+    if (!world?.id) {
+      alert('Could not find that world.');
+      return;
+    }
+
+    await openWorldById(world.id, { world });
+  }
+
   function clearWorldModeChrome() {
     dom.modeChrome.style.display = 'none';
     dom.modeChrome.style.removeProperty('--world-mode-font-family');
@@ -1884,7 +1935,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       updateWorldNavStack(world);
       await hydrateMyWorlds();
       await rememberWorld(world);
-      setWorldUrl(world.id);
+      setWorldUrl(world);
 
       populateWorldLoader(world, activeWorldCreator, {
         mode: 'loading',
@@ -3047,6 +3098,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     isMakerOpen,
     isInWorldMode,
     openWorldById,
+    openWorldByPathSegment,
     optimizeExistingWorldBackgrounds,
     optimizeExistingWorldCovers,
     refreshActiveWorldChrome: async (nextWorld = null) => {

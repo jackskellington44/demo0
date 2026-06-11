@@ -13,6 +13,7 @@
 // ============================================
 
 import { api } from './api.js';
+import { supabase } from './supabase-config.js';
 import { installPrettyAlerts } from './ui-alerts.js';
 
 // ============================================
@@ -39,6 +40,33 @@ function getLandingWorldId() {
     return new URLSearchParams(window.location.search).get('world');
   } catch {
     return null;
+  }
+}
+
+function normalizeNextPath(rawNext) {
+  if (!rawNext) return '/';
+
+  try {
+    const parsed = new URL(String(rawNext), window.location.origin);
+    if (parsed.origin !== window.location.origin) return '/';
+
+    const candidate = `${parsed.pathname || '/'}${parsed.search || ''}${parsed.hash || ''}`;
+    if (!candidate.startsWith('/')) return '/';
+    if (candidate === '/login' || candidate.startsWith('/login?') || candidate.startsWith('/login#')) {
+      return '/';
+    }
+    return candidate;
+  } catch {
+    return '/';
+  }
+}
+
+function getPostAuthRedirectTarget() {
+  try {
+    const nextParam = new URLSearchParams(window.location.search).get('next');
+    return normalizeNextPath(nextParam);
+  } catch {
+    return '/';
   }
 }
 
@@ -285,7 +313,7 @@ async function handleLogin() {
     const { data, error } = await api.auth.signIn({ username, password });
     if (error) throw new Error(String(error));
 
-    window.location.href = `./main.html${window.location.search}`;
+    window.location.assign(getPostAuthRedirectTarget());
   } catch (error) {
     console.error('Login error:', error.message);
     alert(`Login failed: ${error.message}`);
@@ -382,7 +410,7 @@ async function handleSignup() {
       localStorage.setItem('auth_user', JSON.stringify(storedUser));
     }
 
-    window.location.href = `./main.html${window.location.search}`;
+    window.location.assign(getPostAuthRedirectTarget());
   } catch (error) {
     await rollbackSignupArtifacts();
     const errorText = error instanceof Error
@@ -433,6 +461,17 @@ document.addEventListener('DOMContentLoaded', () => {
   initializePFPSelection();
   initializePFPUpload();
   initializeFormSubmission();
+
+  supabase.auth.getSession()
+    .then(({ data: { session } }) => {
+      if (session) {
+        window.location.replace(getPostAuthRedirectTarget());
+      }
+    })
+    .catch((error) => {
+      console.warn('Session check on login page failed:', error);
+    });
+
   applyLandingWorldTheme(getLandingWorldId()).catch((error) => {
     console.warn('Failed to apply landing world theme:', error);
   });

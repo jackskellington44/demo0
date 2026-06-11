@@ -2059,7 +2059,8 @@ async function checkAuth() {
   }
 
   if (!session) {
-    window.location.href = './index.html';
+    const next = encodeURIComponent(`${window.location.pathname}${window.location.search}${window.location.hash}`);
+    window.location.replace(`/login?next=${next}`);
     return null;
   }
 
@@ -2080,6 +2081,16 @@ async function checkAuth() {
   currentUserData = data;
   console.log('User data loaded:', currentUserData.username);
   return session;
+}
+
+function getBootWorldPathSegment() {
+  const path = String(window.location.pathname || '/').trim();
+  if (!path || path === '/' || path === '/login') return null;
+
+  const firstSegment = path.replace(/^\/+/, '').split('/')[0] || '';
+  const normalized = decodeURIComponent(firstSegment).trim();
+  if (!normalized || normalized.toLowerCase() === 'login') return null;
+  return normalized;
 }
 
 // ============================================
@@ -9196,7 +9207,7 @@ function initializeEventListeners() {
       alert(`Logout failed: ${error.message}`);
       return;
     }
-    window.location.href = './index.html';
+    window.location.replace('/login');
   });
 
   postDeleteBtn.addEventListener('click', async () => {
@@ -9359,7 +9370,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     };
   }
 
-  const bootWorldId = new URLSearchParams(window.location.search).get('world');
+  const bootWorldPathSegment = getBootWorldPathSegment();
+  const legacyBootWorldId = new URLSearchParams(window.location.search).get('world');
   await loadPosts();
 
   if (canvasViewport) {
@@ -9395,8 +9407,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   await restoreUiPanelsAndModals(restoredUiState);
   restoreInFlight = false;
 
-  if (bootWorldId && worldsFeature?.openWorldById && !activeWorldContext?.world?.id) {
-    await worldsFeature.openWorldById(bootWorldId);
+  if (!activeWorldContext?.world?.id) {
+    if (bootWorldPathSegment && worldsFeature?.openWorldByPathSegment) {
+      await worldsFeature.openWorldByPathSegment(bootWorldPathSegment);
+    } else if (legacyBootWorldId && worldsFeature?.openWorldById) {
+      await worldsFeature.openWorldById(legacyBootWorldId);
+    }
   }
 
   initializeRealtimeRefresh();
