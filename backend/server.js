@@ -1,8 +1,10 @@
 require('dotenv').config();
 
+const JWT_SECRET = process.env.JWT_SECRET || process.env.AUTH_JWT_SECRET;
+
 // Fail fast on required secrets
-if (!process.env.JWT_SECRET) {
-  console.error('FATAL: JWT_SECRET environment variable is not set');
+if (!JWT_SECRET) {
+  console.error('FATAL: JWT_SECRET (or AUTH_JWT_SECRET) environment variable is not set');
   process.exit(1);
 }
 
@@ -22,7 +24,6 @@ const app = express();
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 
-const JWT_SECRET     = process.env.JWT_SECRET;
 const BCRYPT_ROUNDS  = parseInt(process.env.BCRYPT_ROUNDS || '10', 10);
 const MINIO_USE_SSL  = process.env.MINIO_USE_SSL === 'true';
 const MINIO_ENDPOINT = process.env.MINIO_ENDPOINT || 'localhost';
@@ -329,7 +330,7 @@ app.get('/worlds/:id/theme', readLimiter, async (req, res) => {
 
 // ─── GET /users ────────────────────────────────────────────────────────────────
 
-app.get('/users', readLimiter, async (req, res) => {
+async function handleGetUserByUsername(req, res) {
   const { username } = req.query;
 
   if (!username) {
@@ -347,11 +348,14 @@ app.get('/users', readLimiter, async (req, res) => {
     console.error('Get user by username error:', err);
     return res.status(500).json({ data: null, error: err.message });
   }
-});
+}
+
+app.get('/users', readLimiter, handleGetUserByUsername);
+app.get('/api/users', readLimiter, handleGetUserByUsername);
 
 // ─── GET /users/:id ────────────────────────────────────────────────────────────
 
-app.get('/users/:id', readLimiter, async (req, res) => {
+async function handleGetUserById(req, res) {
   try {
     const { rows } = await pool.query(
       'SELECT id, username, pfp, pfp_url FROM public.users WHERE id = $1',
@@ -367,7 +371,10 @@ app.get('/users/:id', readLimiter, async (req, res) => {
     console.error('Get user by id error:', err);
     return res.status(500).json({ data: null, error: err.message });
   }
-});
+}
+
+app.get('/users/:id', readLimiter, handleGetUserById);
+app.get('/api/users/:id', readLimiter, handleGetUserById);
 
 // ─── POST /api/db/query ────────────────────────────────────────────────────────
 

@@ -331,11 +331,11 @@ export const api = {
 
   users: {
     getByUsername: async (username) => {
-      return apiFetch(`/users?username=${encodeURIComponent(username)}`);
+      return apiFetch(`/api/users?username=${encodeURIComponent(username)}`);
     },
 
     getById: async (id) => {
-      return apiFetch(`/users/${encodeURIComponent(id)}`);
+      return apiFetch(`/api/users/${encodeURIComponent(id)}`);
     },
   },
 };

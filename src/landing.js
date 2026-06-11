@@ -335,7 +335,10 @@ async function handleSignup() {
 
     // Quick pre-check for a friendlier message (DB unique index is still authoritative).
     const { data: existing, error: lookupErr } = await api.users.getByUsername(username);
-    if (lookupErr) throw new Error(String(lookupErr));
+    if (lookupErr) {
+      // Non-fatal: signup endpoint also validates uniqueness server-side.
+      console.warn('Username pre-check unavailable, continuing with signup:', lookupErr);
+    }
     if (existing) { alert('Username already taken'); return; }
 
     // Step 1: create the account first so we have a userId for the pfp filename.
