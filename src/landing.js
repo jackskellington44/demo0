@@ -44,21 +44,55 @@ function getLandingWorldId() {
 }
 
 function normalizeNextPath(rawNext) {
-  if (!rawNext) return '/';
+  const MAX_REDIRECT_DEPTH = 6;
+  const MAX_NEXT_LENGTH = 2048;
 
-  try {
-    const parsed = new URL(String(rawNext), window.location.origin);
-    if (parsed.origin !== window.location.origin) return '/';
+  const resolveNext = (value, depth = 0) => {
+    if (!value || depth > MAX_REDIRECT_DEPTH) return '/';
 
-    const candidate = `${parsed.pathname || '/'}${parsed.search || ''}${parsed.hash || ''}`;
-    if (!candidate.startsWith('/')) return '/';
-    if (candidate === '/login' || candidate.startsWith('/login?') || candidate.startsWith('/login#')) {
+    let input = String(value).trim();
+    if (!input) return '/';
+    if (input.length > MAX_NEXT_LENGTH) return '/';
+
+    // Decode a few times to collapse nested-encoded next values.
+    for (let i = 0; i < 4; i += 1) {
+      try {
+        const decoded = decodeURIComponent(input);
+        if (decoded === input) break;
+        input = decoded;
+      } catch {
+        break;
+      }
+    }
+
+    try {
+      const parsed = new URL(input, window.location.origin);
+      if (parsed.origin !== window.location.origin) return '/';
+
+      const path = String(parsed.pathname || '/');
+      const canonicalPath = (path === '/index' || path === '/index.html' || path === '/login.html')
+        ? '/login'
+        : (path === '/main' || path === '/main.html' ? '/' : path);
+
+      const candidate = `${canonicalPath}${parsed.search || ''}${parsed.hash || ''}`;
+      if (!candidate.startsWith('/')) return '/';
+
+      const isLoginPath = canonicalPath === '/login';
+      if (isLoginPath) {
+        const nestedNext = new URLSearchParams(parsed.search).get('next');
+        if (nestedNext) {
+          return resolveNext(nestedNext, depth + 1);
+        }
+        return '/';
+      }
+
+      return candidate;
+    } catch {
       return '/';
     }
-    return candidate;
-  } catch {
-    return '/';
-  }
+  };
+
+  return resolveNext(rawNext, 0);
 }
 
 function getPostAuthRedirectTarget() {
@@ -449,6 +483,12 @@ function initializeFormSubmission() {
 // ============================================
 
 document.addEventListener('DOMContentLoaded', () => {
+  const currentPath = String(window.location.pathname || '/');
+  if (currentPath === '/index' || currentPath === '/index.html' || currentPath === '/login.html') {
+    window.location.replace(`/login${window.location.search || ''}${window.location.hash || ''}`);
+    return;
+  }
+
   installPrettyAlerts({ baseUrl: import.meta.env.BASE_URL });
 
   document.documentElement.style.setProperty(

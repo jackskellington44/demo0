@@ -22,6 +22,7 @@ export default defineConfig(({ mode }) => {
     build: {
       rollupOptions: {
         input: {
+          login: resolve(__dirname, "login.html"),
           index: resolve(__dirname, "index.html"),
           main: resolve(__dirname, "main.html"),
         },

@@ -2059,7 +2059,17 @@ async function checkAuth() {
   }
 
   if (!session) {
-    const next = encodeURIComponent(`${window.location.pathname}${window.location.search}${window.location.hash}`);
+    const currentPath = String(window.location.pathname || '/');
+    const shouldAttachNext = !(
+      currentPath === '/login' ||
+      currentPath === '/login.html' ||
+      currentPath === '/index' ||
+      currentPath === '/index.html'
+    );
+    const nextTarget = shouldAttachNext
+      ? `${window.location.pathname}${window.location.search}${window.location.hash}`
+      : '/';
+    const next = encodeURIComponent(nextTarget);
     window.location.replace(`/login?next=${next}`);
     return null;
   }
@@ -2085,7 +2095,7 @@ async function checkAuth() {
 
 function getBootWorldPathSegment() {
   const path = String(window.location.pathname || '/').trim();
-  if (!path || path === '/' || path === '/login') return null;
+  if (!path || path === '/' || path === '/login' || path === '/login.html') return null;
 
   const firstSegment = path.replace(/^\/+/, '').split('/')[0] || '';
   const normalized = decodeURIComponent(firstSegment).trim();
@@ -9270,6 +9280,16 @@ function initializeEventListeners() {
 
 document.addEventListener('DOMContentLoaded', async () => {
   console.log('Main page loaded');
+
+  const canonicalPath = String(window.location.pathname || '/');
+  if (canonicalPath === '/index' || canonicalPath === '/index.html') {
+    window.location.replace(`/login${window.location.search || ''}${window.location.hash || ''}`);
+    return;
+  }
+  if (canonicalPath === '/main' || canonicalPath === '/main.html') {
+    window.location.replace(`/${window.location.search || ''}${window.location.hash || ''}`);
+    return;
+  }
 
   if (animationMode !== 'off') {
     setAutoFreezeActive(!isSuperFastStableConnection());

@@ -1078,7 +1078,8 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
   function setWorldUrl(world) {
     const worldName = String(world?.name || '').trim();
     const worldId = String(world?.id || '').trim();
-    const nextSegment = slugifyWorldPathSegment(worldName) || worldId;
+    const readableBase = slugifyWorldPathSegment(worldName) || slugifyWorldPathSegment(world?.category || '');
+    const nextSegment = readableBase || (worldId ? `world-${worldId}` : 'world');
     if (!nextSegment) return;
 
     const current = new URL(window.location.href);
@@ -1100,7 +1101,8 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
   }
 
   async function loadWorldByPathSegment(pathSegment) {
-    const requestedSegment = slugifyWorldPathSegment(pathSegment);
+    const rawSegment = String(pathSegment || '').trim();
+    const requestedSegment = slugifyWorldPathSegment(rawSegment);
     if (!requestedSegment) return null;
 
     const { data, error } = await supabase
@@ -1118,7 +1120,13 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     const exactSlugMatch = rows.find((row) => slugifyWorldPathSegment(row?.name || '') === requestedSegment);
     if (exactSlugMatch) return exactSlugMatch;
 
-    return rows.find((row) => String(row?.id || '').trim() === String(pathSegment || '').trim()) || null;
+    const worldIdFallback = rawSegment.match(/^world-(.+)$/i)?.[1] || '';
+    if (worldIdFallback) {
+      const fromWorldPrefix = rows.find((row) => String(row?.id || '').trim() === worldIdFallback.trim());
+      if (fromWorldPrefix) return fromWorldPrefix;
+    }
+
+    return rows.find((row) => String(row?.id || '').trim() === rawSegment) || null;
   }
 
   async function loadWorldRowsByIds(worldIds = []) {
