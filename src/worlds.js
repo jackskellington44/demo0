@@ -530,6 +530,22 @@ function slugifyWorldPathSegment(value = '') {
   return slug || '';
 }
 
+function getWorldPathSegment(world = null) {
+  const candidates = [
+    world?.name,
+    world?.category,
+    world?.title,
+    String(world?.description || '').slice(0, 64)
+  ];
+
+  for (const candidate of candidates) {
+    const slug = slugifyWorldPathSegment(candidate || '');
+    if (slug) return slug;
+  }
+
+  return 'world';
+}
+
 function getPfpSrc(user, baseUrl) {
   const fallback = `${baseUrl}images/pfps/default.png`;
   if (!user) return fallback;
@@ -1076,10 +1092,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
   }
 
   function setWorldUrl(world) {
-    const worldName = String(world?.name || '').trim();
-    const worldId = String(world?.id || '').trim();
-    const readableBase = slugifyWorldPathSegment(worldName) || slugifyWorldPathSegment(world?.category || '');
-    const nextSegment = readableBase || (worldId ? `world-${worldId}` : 'world');
+    const nextSegment = getWorldPathSegment(world);
     if (!nextSegment) return;
 
     const current = new URL(window.location.href);
@@ -1117,14 +1130,8 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     }
 
     const rows = data || [];
-    const exactSlugMatch = rows.find((row) => slugifyWorldPathSegment(row?.name || '') === requestedSegment);
+    const exactSlugMatch = rows.find((row) => getWorldPathSegment(row) === requestedSegment);
     if (exactSlugMatch) return exactSlugMatch;
-
-    const worldIdFallback = rawSegment.match(/^world-(.+)$/i)?.[1] || '';
-    if (worldIdFallback) {
-      const fromWorldPrefix = rows.find((row) => String(row?.id || '').trim() === worldIdFallback.trim());
-      if (fromWorldPrefix) return fromWorldPrefix;
-    }
 
     return rows.find((row) => String(row?.id || '').trim() === rawSegment) || null;
   }
@@ -1702,7 +1709,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
 
     const world = await loadWorldByPathSegment(normalizedPath);
     if (!world?.id) {
-      alert('Could not find that world.');
+      window.history.replaceState(window.history.state, '', '/');
       return;
     }
 

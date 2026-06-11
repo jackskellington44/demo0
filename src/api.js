@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const API_BASE = (import.meta.env.VITE_API_URL || '').trim();
 const RETRY_DELAY_MS = 1000;
 const MAX_RETRIES = 1;
 

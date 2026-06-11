@@ -43,62 +43,32 @@ function getLandingWorldId() {
   }
 }
 
-function normalizeNextPath(rawNext) {
-  const MAX_REDIRECT_DEPTH = 6;
-  const MAX_NEXT_LENGTH = 2048;
-
-  const resolveNext = (value, depth = 0) => {
-    if (!value || depth > MAX_REDIRECT_DEPTH) return '/';
-
-    let input = String(value).trim();
-    if (!input) return '/';
-    if (input.length > MAX_NEXT_LENGTH) return '/';
-
-    // Decode a few times to collapse nested-encoded next values.
-    for (let i = 0; i < 4; i += 1) {
-      try {
-        const decoded = decodeURIComponent(input);
-        if (decoded === input) break;
-        input = decoded;
-      } catch {
-        break;
-      }
-    }
-
-    try {
-      const parsed = new URL(input, window.location.origin);
-      if (parsed.origin !== window.location.origin) return '/';
-
-      const path = String(parsed.pathname || '/');
-      const canonicalPath = (path === '/index' || path === '/index.html' || path === '/login.html')
-        ? '/login'
-        : (path === '/main' || path === '/main.html' ? '/' : path);
-
-      const candidate = `${canonicalPath}${parsed.search || ''}${parsed.hash || ''}`;
-      if (!candidate.startsWith('/')) return '/';
-
-      const isLoginPath = canonicalPath === '/login';
-      if (isLoginPath) {
-        const nestedNext = new URLSearchParams(parsed.search).get('next');
-        if (nestedNext) {
-          return resolveNext(nestedNext, depth + 1);
-        }
-        return '/';
-      }
-
-      return candidate;
-    } catch {
-      return '/';
-    }
-  };
-
-  return resolveNext(rawNext, 0);
-}
-
+// Returns the safe post-auth destination from ?next=, or '/' as default.
+// Rules: same-origin only, path-only (no nested next chains), never /login.
 function getPostAuthRedirectTarget() {
   try {
-    const nextParam = new URLSearchParams(window.location.search).get('next');
-    return normalizeNextPath(nextParam);
+    const raw = new URLSearchParams(window.location.search).get('next') || '';
+    if (!raw || raw.length > 256) return '/';
+
+    // Decode once — reject anything that still contains 'next=' after decode
+    // (catches doubly-encoded nested next= values).
+    let decoded;
+    try { decoded = decodeURIComponent(raw); } catch { return '/'; }
+    if (/[?&]next=/i.test(decoded)) return '/';
+
+    const parsed = new URL(decoded, window.location.origin);
+    if (parsed.origin !== window.location.origin) return '/';
+
+    const path = parsed.pathname || '/';
+    // Never send back to /login or legacy html names.
+    if (
+      path === '/login' ||
+      path === '/login.html' ||
+      path === '/index.html' ||
+      path === '/index'
+    ) return '/';
+
+    return path.startsWith('/') ? path : '/';
   } catch {
     return '/';
   }
@@ -347,7 +317,7 @@ async function handleLogin() {
     const { data, error } = await api.auth.signIn({ username, password });
     if (error) throw new Error(String(error));
 
-    window.location.assign(getPostAuthRedirectTarget());
+    window.location.replace(getPostAuthRedirectTarget());
   } catch (error) {
     console.error('Login error:', error.message);
     alert(`Login failed: ${error.message}`);
@@ -444,7 +414,7 @@ async function handleSignup() {
       localStorage.setItem('auth_user', JSON.stringify(storedUser));
     }
 
-    window.location.assign(getPostAuthRedirectTarget());
+    window.location.replace(getPostAuthRedirectTarget());
   } catch (error) {
     await rollbackSignupArtifacts();
     const errorText = error instanceof Error
@@ -483,12 +453,6 @@ function initializeFormSubmission() {
 // ============================================
 
 document.addEventListener('DOMContentLoaded', () => {
-  const currentPath = String(window.location.pathname || '/');
-  if (currentPath === '/index' || currentPath === '/index.html' || currentPath === '/login.html') {
-    window.location.replace(`/login${window.location.search || ''}${window.location.hash || ''}`);
-    return;
-  }
-
   installPrettyAlerts({ baseUrl: import.meta.env.BASE_URL });
 
   document.documentElement.style.setProperty(
@@ -502,14 +466,15 @@ document.addEventListener('DOMContentLoaded', () => {
   initializePFPUpload();
   initializeFormSubmission();
 
+  // If already authenticated, skip the login page entirely.
   supabase.auth.getSession()
     .then(({ data: { session } }) => {
       if (session) {
         window.location.replace(getPostAuthRedirectTarget());
       }
     })
-    .catch((error) => {
-      console.warn('Session check on login page failed:', error);
+    .catch(() => {
+      // Ignore — just show the login form.
     });
 
   applyLandingWorldTheme(getLandingWorldId()).catch((error) => {

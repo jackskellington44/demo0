@@ -35,6 +35,7 @@
 // ============================================
 
 import { supabase } from './supabase-config.js';
+import { api } from './api.js';
 import { installPrettyAlerts } from './ui-alerts.js';
 import { initWorldsFeature } from './worlds.js';
 
@@ -45,6 +46,37 @@ import JSZip from 'jszip';
 import nspell from 'nspell';
 import enAff from './spell/en.aff?raw';
 import enDic from './spell/en.dic?raw';
+
+if (typeof window !== 'undefined') {
+  window.__mainDebug = window.__mainDebug || { events: [], errors: [] };
+  window.__mainDebug.events.push({
+    step: 'module-evaluated',
+    at: Date.now(),
+    path: window.location.pathname
+  });
+
+  window.addEventListener('error', (event) => {
+    try {
+      window.__mainDebug.errors.push({
+        type: 'error',
+        message: String(event?.message || ''),
+        source: String(event?.filename || ''),
+        line: Number(event?.lineno || 0),
+        col: Number(event?.colno || 0)
+      });
+    } catch {}
+  });
+
+  window.addEventListener('unhandledrejection', (event) => {
+    try {
+      const reason = event?.reason;
+      window.__mainDebug.errors.push({
+        type: 'unhandledrejection',
+        message: String(reason?.message || reason || '')
+      });
+    } catch {}
+  });
+}
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -2051,26 +2083,34 @@ async function tryDropPlacement(e) {
 // ============================================
 
 async function checkAuth() {
+  const redirectToLogin = () => {
+    // Build ?next= from current path only — never attach query strings or
+    // login-like paths so we cannot create nested next= chains.
+    const currentPath = window.location.pathname || '/';
+    const safeNext = (currentPath === '/login' || currentPath === '/') ? '' : currentPath;
+    const loginUrl = safeNext
+      ? `/login?next=${encodeURIComponent(safeNext)}`
+      : '/login';
+    window.location.replace(loginUrl);
+  };
+
+  const tokenPresent = Boolean(localStorage.getItem('auth_token'));
+  console.log('[main-debug] checkAuth:start', {
+    path: window.location.pathname,
+    tokenPresent
+  });
+
   const { data: { session }, error } = await supabase.auth.getSession();
 
   if (error) {
     console.error('Failed to get session:', error);
+    await supabase.auth.signOut();
+    redirectToLogin();
     return null;
   }
 
   if (!session) {
-    const currentPath = String(window.location.pathname || '/');
-    const shouldAttachNext = !(
-      currentPath === '/login' ||
-      currentPath === '/login.html' ||
-      currentPath === '/index' ||
-      currentPath === '/index.html'
-    );
-    const nextTarget = shouldAttachNext
-      ? `${window.location.pathname}${window.location.search}${window.location.hash}`
-      : '/';
-    const next = encodeURIComponent(nextTarget);
-    window.location.replace(`/login?next=${next}`);
+    redirectToLogin();
     return null;
   }
 
@@ -2085,22 +2125,28 @@ async function checkAuth() {
 
   if (userError) {
     console.error('Failed to fetch user data:', userError);
+    // Most common local blank-page cause: stale token from another backend.
+    await supabase.auth.signOut();
+    redirectToLogin();
     return null;
   }
 
   currentUserData = data;
   console.log('User data loaded:', currentUserData.username);
+  console.log('[main-debug] checkAuth:user-loaded', {
+    userId: currentUser?.id || null,
+    username: currentUserData?.username || null
+  });
   return session;
 }
 
 function getBootWorldPathSegment() {
-  const path = String(window.location.pathname || '/').trim();
-  if (!path || path === '/' || path === '/login' || path === '/login.html') return null;
-
-  const firstSegment = path.replace(/^\/+/, '').split('/')[0] || '';
-  const normalized = decodeURIComponent(firstSegment).trim();
-  if (!normalized || normalized.toLowerCase() === 'login') return null;
-  return normalized;
+  const path = (window.location.pathname || '/').trim();
+  if (path === '/' || path === '') return null;
+  // Take the first path segment, e.g. /moneytree -> 'moneytree'
+  const segment = path.replace(/^\//, '').split('/')[0];
+  if (!segment || segment.toLowerCase() === 'login') return null;
+  return decodeURIComponent(segment);
 }
 
 // ============================================
@@ -9280,16 +9326,13 @@ function initializeEventListeners() {
 
 document.addEventListener('DOMContentLoaded', async () => {
   console.log('Main page loaded');
-
-  const canonicalPath = String(window.location.pathname || '/');
-  if (canonicalPath === '/index' || canonicalPath === '/index.html') {
-    window.location.replace(`/login${window.location.search || ''}${window.location.hash || ''}`);
-    return;
-  }
-  if (canonicalPath === '/main' || canonicalPath === '/main.html') {
-    window.location.replace(`/${window.location.search || ''}${window.location.hash || ''}`);
-    return;
-  }
+  console.log('[main-debug] startup', {
+    path: window.location.pathname,
+    hasMainPageContainer: Boolean(mainPageContainer),
+    hasCanvasViewport: Boolean(document.getElementById('canvasViewport')),
+    hasPostCanvas: Boolean(postCanvas),
+    authTokenPresent: Boolean(localStorage.getItem('auth_token'))
+  });
 
   if (animationMode !== 'off') {
     setAutoFreezeActive(!isSuperFastStableConnection());
@@ -9314,7 +9357,19 @@ document.addEventListener('DOMContentLoaded', async () => {
   applyBackgroundImage(DEFAULT_BG_URL);
 
   const session = await checkAuth();
+  console.log('[main-debug] after-checkAuth', {
+    hasSession: Boolean(session),
+    sessionUserId: session?.user?.id || null,
+    cachedUserId: currentUser?.id || null
+  });
   if (!session) return;
+
+  const meProbe = await api.auth.getUser();
+  console.log('[main-debug] auth-me-probe', {
+    ok: !meProbe?.error,
+    error: meProbe?.error || null,
+    userId: meProbe?.data?.user?.id || null
+  });
 
   await loadMentionUserMap();
 
@@ -9392,6 +9447,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   const bootWorldPathSegment = getBootWorldPathSegment();
   const legacyBootWorldId = new URLSearchParams(window.location.search).get('world');
+  console.log('[main-debug] before-render-feed', {
+    activeUserFilter,
+    activeCategoryFilter,
+    activeWorldId: activeWorldContext?.world?.id || null
+  });
   await loadPosts();
 
   if (canvasViewport) {
