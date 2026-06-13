@@ -34,14 +34,20 @@ let isShuffled = false;
 const LOOP_MODE_OFF = 'off';
 const LOOP_MODE_TRACK = 'track';
 const LOOP_MODE_PLAYLIST = 'playlist';
-let loopMode = LOOP_MODE_OFF;
+let loopMode = LOOP_MODE_PLAYLIST;
 let isMusicEditMode = false;
 let isMusicInitialized = false;
 let scWidget = null;
 let scWidgetIframe = null;
 let scWidgetReady = false;
+let scWidgetReadyPromise = null;
+let scWidgetReadyResolver = null;
 let scApiLoaded = false;
 let scPendingAutoPlay = false;
+let scLoadInProgress = null;
+let scIframeFallback = null;
+let scUsingIframeFallback = false;
+let scWidgetLoadFailed = false;
 let isUsingSoundCloudWidget = false;
 let suppressAudioEnded = false;
 let scCurrentDurationMs = 0;
@@ -51,6 +57,7 @@ let activeWorldId = null;
 let activeWorldName = '';
 let canModifyCurrentPlaylist = true;
 let supportsWorldScopedPlaylists = true;
+let isTracksLoading = false;
 let crossfadeInProgress = false;
 let nativeOverlapMonitorId = null;
 let soundCloudOverlapMonitorId = null;
@@ -59,7 +66,6 @@ let crossfadePrimedTrackId = '';
 let preloadedNativeTrackId = '';
 let autoplayRetryArmed = false;
 
-const MUSIC_DBLCLICK_MS = 400;
 const MUSIC_DEFAULT_VOLUME = 0.8;
 const MUSIC_CROSSFADE_MS = 2200;
 const MUSIC_CROSSFADE_OVERLAP_MS = 4200;
@@ -88,11 +94,13 @@ function getInactiveAudio() {
 // ============================================
 let musicBar, musicBarPfp, musicBarUsername, musicBarTitle, musicBarArtist, musicBarSep;
 let musicPrev, musicPlayPause, musicNext, musicOpenPanel;
-let musicPanelOverlay, musicPanelTitle, musicTrackList, musicDropZone;
-let musicDownloadPlaylist, musicClosePanel;
+let musicPanelOverlay, musicTrackList;
+let musicPanelTopControls, musicDownloadPlaylist;
+let musicAddTrackBtn, musicSearchBtn, musicEditBtn;
 let musicShuffle, musicLoop;
 let musicVolumeWrap, musicVolumeBtn, musicVolumeSlider;
-let musicAddBtn, musicAddInput;
+let musicAddInput;
+let musicDebugStatus = null;
 
 // ============================================
 // 4. HELPERS
@@ -119,15 +127,25 @@ function userCanModifyWorldPlaylist(world) {
 }
 
 function updatePlaylistAccessUi() {
-  if (musicDropZone) {
-    musicDropZone.classList.toggle('is-readonly', !canModifyCurrentPlaylist);
-  }
-
-  if (musicAddBtn) {
-    musicAddBtn.disabled = !canModifyCurrentPlaylist;
-    musicAddBtn.title = canModifyCurrentPlaylist
+  if (musicAddTrackBtn) {
+    musicAddTrackBtn.disabled = !canModifyCurrentPlaylist;
+    musicAddTrackBtn.title = canModifyCurrentPlaylist
       ? `add track to ${getActivePlaylistScopeLabel()}`
       : 'you cannot add tracks in this world';
+  }
+
+  if (musicSearchBtn) {
+    musicSearchBtn.disabled = !canModifyCurrentPlaylist;
+    musicSearchBtn.title = canModifyCurrentPlaylist
+      ? 'search soundcloud'
+      : 'you cannot add tracks in this world';
+  }
+
+  if (musicEditBtn) {
+    musicEditBtn.disabled = !canModifyCurrentPlaylist;
+    musicEditBtn.title = canModifyCurrentPlaylist
+      ? `edit tracks in ${getActivePlaylistScopeLabel()}`
+      : 'you cannot edit this world playlist';
   }
 
   if (musicAddInput) {
@@ -135,6 +153,43 @@ function updatePlaylistAccessUi() {
     musicAddInput.placeholder = canModifyCurrentPlaylist
       ? 'paste soundcloud link + enter'
       : 'you do not have posting access in this world';
+  }
+}
+
+function setMusicDebugStatus(message = '') {
+  if (!musicDebugStatus) return;
+  musicDebugStatus.textContent = message ? `debug: ${message}` : '';
+  musicDebugStatus.style.display = message ? 'block' : 'none';
+}
+
+function syncMusicBreadcrumb(isOpen) {
+  const crumbs = document.getElementById('worldModeTabs');
+  if (!crumbs) return;
+
+  crumbs.querySelectorAll('[data-music-crumb="1"]').forEach((node) => node.remove());
+
+  if (!isOpen) return;
+
+  const label = document.createElement('span');
+  label.className = 'world-mode-breadcrumb world-mode-breadcrumb-music';
+  label.setAttribute('aria-current', 'page');
+  label.setAttribute('data-music-crumb', '1');
+  label.textContent = 'music';
+
+  crumbs.appendChild(document.createTextNode(' '));
+  crumbs.appendChild(label);
+}
+
+function setMusicPanelOpen(isOpen) {
+  musicPanelOverlay.classList.toggle('open', isOpen);
+  document.body.classList.toggle('music-panel-open', isOpen);
+  if (isOpen) {
+    window.dispatchEvent(new CustomEvent('music-panel-open'));
+  }
+  syncMusicBreadcrumb(isOpen);
+
+  if (!isOpen && isMusicEditMode) {
+    void exitMusicEditMode();
   }
 }
 
@@ -302,6 +357,14 @@ function clearPreloadedNativeTrack() {
   standby.src = '';
 }
 
+function clearSoundCloudIframeFallback() {
+  if (scIframeFallback) {
+    scIframeFallback.remove();
+    scIframeFallback = null;
+  }
+  scUsingIframeFallback = false;
+}
+
 function clearCrossfadeInterval() {
   if (crossfadeIntervalId) {
     window.clearInterval(crossfadeIntervalId);
@@ -315,6 +378,7 @@ function armAutoplayRetry() {
 
   const resume = async () => {
     if (!autoplayRetryArmed) return;
+    if (scLoadInProgress) return;
     autoplayRetryArmed = false;
     if (tracks.length === 0 || currentIndex < 0 || isPlaying) return;
     try {
@@ -566,61 +630,100 @@ async function advanceToNextTrack({ fromEnded = false, preferCrossfade = false }
 
 function updatePlaybackModeButtons() {
   if (musicShuffle) {
-    musicShuffle.classList.toggle('active', isShuffled);
-    musicShuffle.title = isShuffled ? 'shuffle: on' : 'shuffle: off';
+    // Two modes: shuffle (⇄) or in-order repeat (↺)
+    // isShuffled = shuffle mode; otherwise = in-order with playlist repeat
+    musicShuffle.textContent = isShuffled ? '⇄' : '↺';
+    musicShuffle.title = isShuffled ? 'mode: shuffle' : 'mode: in order (repeat)';
     musicShuffle.setAttribute('aria-label', musicShuffle.title);
+    // active state only when shuffled so the icon alone conveys mode
+    musicShuffle.classList.toggle('active', isShuffled);
+  }
+  // musicLoop is hidden — kept in DOM for JS compat only
+}
+
+function waitForSoundCloudWidgetReady(timeoutMs = 10000) {
+  if (scWidgetReady) return Promise.resolve();
+  if (!scWidget) return Promise.reject(new Error('SoundCloud widget instance is unavailable'));
+
+  if (!scWidgetReadyPromise) {
+    scWidgetReadyPromise = new Promise((resolve) => {
+      scWidgetReadyResolver = resolve;
+    });
   }
 
-  if (musicLoop) {
-    const isRepeatOn = loopMode !== LOOP_MODE_OFF;
-    musicLoop.classList.toggle('active', isRepeatOn);
+  return new Promise((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      reject(new Error('Timed out waiting for SoundCloud widget to become ready'));
+    }, timeoutMs);
 
-    if (loopMode === LOOP_MODE_TRACK) {
-      musicLoop.textContent = '↺1';
-      musicLoop.title = 'repeat: song';
-    } else if (loopMode === LOOP_MODE_PLAYLIST) {
-      musicLoop.textContent = '↺all';
-      musicLoop.title = 'repeat: playlist';
-    } else {
-      musicLoop.textContent = '↺';
-      musicLoop.title = 'repeat: off';
-    }
-
-    musicLoop.setAttribute('aria-label', musicLoop.title);
-  }
+    scWidgetReadyPromise
+      .then(() => {
+        window.clearTimeout(timeoutId);
+        resolve();
+      })
+      .catch((err) => {
+        window.clearTimeout(timeoutId);
+        reject(err);
+      });
+  });
 }
 
 function loadSoundCloudApi() {
   if (scApiLoaded && window.SC?.Widget) return Promise.resolve();
+  if (scLoadInProgress) return scLoadInProgress;
 
-  return new Promise((resolve, reject) => {
+  scLoadInProgress = new Promise((resolve, reject) => {
     const existing = document.querySelector('script[data-soundcloud-widget="1"]');
     if (existing) {
-      existing.addEventListener('load', () => {
+      if (window.SC?.Widget) {
         scApiLoaded = true;
+        scLoadInProgress = null;
         resolve();
-      }, { once: true });
-      existing.addEventListener('error', () => reject(new Error('Failed to load SoundCloud Widget API')), { once: true });
-      return;
+        return;
+      }
+
+      // Always replace stale script nodes when SC.Widget is still missing.
+      existing.remove();
     }
 
     const script = document.createElement('script');
-    script.src = 'https://w.soundcloud.com/player/api.js';
+    script.src = `https://w.soundcloud.com/player/api.js?cb=${Date.now()}`;
     script.async = true;
     script.dataset.soundcloudWidget = '1';
+    const timeoutId = window.setTimeout(() => {
+      script.remove();
+      reject(new Error('Timed out while loading SoundCloud Widget API'));
+    }, 12000);
     script.onload = () => {
-      scApiLoaded = true;
-      resolve();
+      window.clearTimeout(timeoutId);
+      if (window.SC?.Widget) {
+        scApiLoaded = true;
+        scLoadInProgress = null;
+        resolve();
+        return;
+      }
+      scLoadInProgress = null;
+      reject(new Error('SoundCloud Widget API loaded but SC.Widget is unavailable'));
     };
-    script.onerror = () => reject(new Error('Failed to load SoundCloud Widget API'));
+    script.onerror = () => {
+      window.clearTimeout(timeoutId);
+      scLoadInProgress = null;
+      reject(new Error('Failed to load SoundCloud Widget API'));
+    };
     document.head.appendChild(script);
   });
+
+  return scLoadInProgress;
 }
 
 async function ensureSoundCloudWidget() {
   if (scWidget && scWidgetReady) return;
 
   await loadSoundCloudApi();
+
+  if (!window.SC?.Widget) {
+    throw new Error('SoundCloud Widget API unavailable (possibly blocked by browser privacy settings or an extension)');
+  }
 
   if (!scWidgetIframe) {
     const bootstrapTrack = 'https://soundcloud.com/forss/flickermood';
@@ -640,8 +743,16 @@ async function ensureSoundCloudWidget() {
 
   if (!scWidget) {
     scWidget = window.SC.Widget(scWidgetIframe);
+    scWidgetReady = false;
+    scWidgetReadyPromise = new Promise((resolve) => {
+      scWidgetReadyResolver = resolve;
+    });
     scWidget.bind(window.SC.Widget.Events.READY, () => {
       scWidgetReady = true;
+      if (scWidgetReadyResolver) {
+        scWidgetReadyResolver();
+        scWidgetReadyResolver = null;
+      }
       setPlaybackVolume(currentVolume, { persist: false });
       if (scPendingAutoPlay) {
         scPendingAutoPlay = false;
@@ -677,33 +788,123 @@ async function ensureSoundCloudWidget() {
       alert('SoundCloud could not play this track. Try another link.');
     });
   }
+
+  await waitForSoundCloudWidgetReady();
+}
+
+async function playSoundCloudIframeFallback(soundcloudUrl) {
+  clearSoundCloudIframeFallback();
+
+  const normalizedUrl = normalizeSoundCloudUrl(soundcloudUrl);
+  if (!normalizedUrl) {
+    throw new Error('SoundCloud URL is empty after normalization');
+  }
+
+  const iframe = document.createElement('iframe');
+  iframe.id = 'musicSoundCloudFallbackWidget';
+  iframe.title = 'SoundCloud fallback player';
+  iframe.width = '1';
+  iframe.height = '1';
+  iframe.allow = 'autoplay; encrypted-media';
+  iframe.style.position = 'fixed';
+  iframe.style.left = '-9999px';
+  iframe.style.top = '-9999px';
+  iframe.style.border = '0';
+  iframe.src = `https://w.soundcloud.com/player/?url=${encodeURIComponent(normalizedUrl)}&auto_play=true&buying=false&sharing=false&download=false&show_artwork=false&show_comments=false&show_playcount=false&show_user=false&visual=false`;
+  document.body.appendChild(iframe);
+
+  scIframeFallback = iframe;
+  scUsingIframeFallback = true;
+  setMusicDebugStatus('SoundCloud iframe fallback active');
 }
 
 async function playSoundCloudTrack(soundcloudUrl) {
   if (!soundcloudUrl) throw new Error('Missing SoundCloud URL');
   const normalizedUrl = normalizeSoundCloudUrl(soundcloudUrl);
-  await ensureSoundCloudWidget();
-  scWidgetReady = false;
+  if (!normalizedUrl) {
+    throw new Error('SoundCloud URL is empty after normalization');
+  }
+
+  try {
+    const parsed = new URL(normalizedUrl);
+    const host = parsed.hostname.toLowerCase();
+    const isSoundCloudHost = host === 'soundcloud.com'
+      || host.endsWith('.soundcloud.com')
+      || host === 'snd.sc';
+    if (!isSoundCloudHost) {
+      throw new Error('Only SoundCloud links are supported in this playlist');
+    }
+  } catch (err) {
+    if (err instanceof Error) {
+      throw err;
+    }
+    throw new Error('Invalid SoundCloud URL');
+  }
+
   scCurrentDurationMs = 0;
-  scPendingAutoPlay = true;
-  scWidget.load(normalizedUrl, {
-    auto_play: true,
-    buying: false,
-    sharing: false,
-    download: false,
-    show_artwork: false,
-    show_comments: false,
-    show_playcount: false,
-    show_user: false,
-    visual: false
-  });
-  syncCurrentVolumeToPlayers();
+
+  try {
+    await ensureSoundCloudWidget();
+    clearSoundCloudIframeFallback();
+    scUsingIframeFallback = false;
+    scWidgetLoadFailed = false;
+
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeoutId);
+        resolve();
+      };
+      const fail = (err) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeoutId);
+        reject(err instanceof Error ? err : new Error(String(err || 'SoundCloud widget load failed')));
+      };
+
+      const timeoutId = window.setTimeout(() => {
+        fail(new Error('Timed out while loading SoundCloud track in widget'));
+      }, 12000);
+
+      try {
+        scWidget.load(normalizedUrl, {
+          auto_play: true,
+          buying: false,
+          sharing: false,
+          download: false,
+          show_artwork: false,
+          show_comments: false,
+          show_playcount: false,
+          show_user: false,
+          visual: false,
+          callback: done
+        });
+      } catch (err) {
+        fail(err);
+      }
+    });
+
+    setPlaybackVolume(currentVolume, { persist: false });
+    scPendingAutoPlay = false;
+    scWidget.play();
+    isUsingSoundCloudWidget = true;
+    setMusicDebugStatus('SoundCloud widget playback started');
+    return;
+  } catch (err) {
+    console.warn('SoundCloud widget path failed, falling back to iframe player:', err);
+    scWidgetLoadFailed = true;
+    scUsingIframeFallback = true;
+    await playSoundCloudIframeFallback(normalizedUrl);
+  }
 }
 
 function stopAllPlayback() {
   clearOverlapMonitors();
   clearCrossfadeInterval();
   preloadedNativeTrackId = '';
+  clearSoundCloudIframeFallback();
 
   if (isUsingSoundCloudWidget && scWidget) {
     scWidget.pause();
@@ -727,50 +928,63 @@ export async function loadTracks(options = {}) {
 
   const previousTrackId = tracks[currentIndex]?.id || null;
 
-  let query = supabase
-    .from('music_tracks')
-    .select('*')
-    .eq('group_id', 'group0')
-    .order('created_at', { ascending: true });
+  isTracksLoading = true;
+  renderTrackList();
+  updateBarDisplay();
 
-  if (supportsWorldScopedPlaylists) {
-    if (activeWorldId) {
-      query = query.eq('world_id', activeWorldId);
-    } else {
-      query = query.is('world_id', null);
-    }
-  }
-
-  const { data, error } = await query;
-
-  if (error && /world_id|column/i.test(String(error.message || ''))) {
-    // Backward-compat: fallback to legacy global playlist if migration is not applied yet.
-    supportsWorldScopedPlaylists = false;
-    const fallback = await supabase
+  try {
+    let query = supabase
       .from('music_tracks')
       .select('*')
       .eq('group_id', 'group0')
       .order('created_at', { ascending: true });
 
-    if (fallback.error) {
-      console.error('Failed to load tracks:', fallback.error);
+    if (supportsWorldScopedPlaylists) {
+      if (activeWorldId) {
+        query = query.eq('world_id', activeWorldId);
+      } else {
+        query = query.is('world_id', null);
+      }
+    }
+
+    const { data, error } = await query;
+
+    if (error && /world_id|column/i.test(String(error.message || ''))) {
+      // Backward-compat: fallback to legacy global playlist if migration is not applied yet.
+      supportsWorldScopedPlaylists = false;
+      const fallback = await supabase
+        .from('music_tracks')
+        .select('*')
+        .eq('group_id', 'group0')
+        .order('created_at', { ascending: true });
+
+      if (fallback.error) {
+        console.error('Failed to load tracks:', fallback.error);
+        return;
+      }
+
+      return loadTracksFromRows(fallback.data || [], {
+        autoplay,
+        forceRestart,
+        previousTrackId
+      });
+    }
+
+    if (error) {
+      console.error('Failed to load tracks:', error);
       return;
     }
 
-    return loadTracksFromRows(fallback.data || [], {
+    await loadTracksFromRows(data || [], {
       autoplay,
       forceRestart,
       previousTrackId
     });
+  } finally {
+    isTracksLoading = false;
+    renderTrackList();
+    updateBarDisplay();
   }
-
-  if (error) { console.error('Failed to load tracks:', error); return; }
-
-  await loadTracksFromRows(data || [], {
-    autoplay,
-    forceRestart,
-    previousTrackId
-  });
 }
 
 async function loadTracksFromRows(rows, options = {}) {
@@ -821,7 +1035,6 @@ async function loadTracksFromRows(rows, options = {}) {
     }
   }
 
-  musicPanelTitle.textContent = getPlaylistTitle();
   updatePlaylistAccessUi();
   renderTrackList();
   updateBarDisplay();
@@ -834,9 +1047,13 @@ function renderTrackList() {
   if (!musicTrackList) return;
   musicTrackList.innerHTML = '';
 
+  if (isTracksLoading) {
+    return;
+  }
+
   // In edit mode only show the signed-in user's own tracks
   const visibleTracks = (isMusicEditMode && canModifyCurrentPlaylist)
-    ? tracks.filter(t => currentUserData?.is_admin || t.user_id === currentUser?.id)
+    ? tracks.filter(t => t.user_id === currentUser?.id)
     : tracks;
 
   if (visibleTracks.length === 0) {
@@ -852,6 +1069,10 @@ function renderTrackList() {
     const idx      = tracks.indexOf(track);
     const isActive = idx === currentIndex;
     const displayMeta = getTrackDisplayMeta(track);
+    const posterName = track.users?.username || '—';
+    const songLabel = displayMeta.artist
+      ? `${escAttr(displayMeta.title)} / ${escAttr(displayMeta.artist)}`
+      : escAttr(displayMeta.title);
 
     const row = document.createElement('div');
     row.className   = `music-track-row${isActive ? ' active' : ''}${isMusicEditMode ? ' edit-mode' : ''}`;
@@ -861,13 +1082,11 @@ function renderTrackList() {
     if (isMusicEditMode) {
       // ── Edit-mode row: delete button only (no rename) ──
       row.innerHTML = `
-        <img class="music-track-pfp" src="${pfpSrcFor(track.users)}" alt="">
-        <div class="music-track-info">
-          <span class="music-track-title">${escAttr(displayMeta.title)}</span>
-          ${displayMeta.artist ? `<span class="music-track-artist">${escAttr(displayMeta.artist)}</span>` : ''}
+        <div class="music-track-meta-left">
+          <span class="music-track-song" style="opacity:0.7;">${songLabel}</span>
         </div>
-        <div class="music-track-actions">
-          <button class="music-track-btn music-delete-btn">delete</button>
+        <div class="music-track-right">
+          <button class="music-track-btn music-delete-btn" aria-label="delete track">x</button>
         </div>
       `;
 
@@ -882,10 +1101,12 @@ function renderTrackList() {
     } else {
       // ── Normal row: pfp + title/artist, click to play ──
       row.innerHTML = `
-        <img class="music-track-pfp" src="${pfpSrcFor(track.users)}" alt="">
-        <div class="music-track-info">
-          <span class="music-track-title">${escAttr(displayMeta.title)}</span>
-          ${displayMeta.artist ? `<span class="music-track-artist">${escAttr(displayMeta.artist)}</span>` : ''}
+        <div class="music-track-meta-left">
+          <span class="music-track-song" style="opacity:0.7;">${songLabel}</span>
+        </div>
+        <div class="music-track-right">
+          <img class="music-track-pfp" src="${pfpSrcFor(track.users)}" alt="">
+          <span class="music-track-poster" style="opacity:0.7;">${escAttr(posterName)}</span>
         </div>
       `;
 
@@ -904,7 +1125,9 @@ async function exitMusicEditMode() {
   isMusicEditMode = false;
   const musicPanel = document.querySelector('.music-panel');
   if (musicPanel) musicPanel.classList.remove('edit-mode');
-  musicPanelTitle.textContent = getPlaylistTitle();
+  if (musicEditBtn) {
+    musicEditBtn.textContent = 'edit';
+  }
   renderTrackList();
   updateBarDisplay();
 }
@@ -927,19 +1150,25 @@ async function playTrack(idx) {
       audioSecondary.pause();
       audioPrimary.src = '';
       audioSecondary.src = '';
+      setMusicDebugStatus('loading SoundCloud track');
       await playSoundCloudTrack(track.soundcloud_url);
-      isUsingSoundCloudWidget = true;
+      isUsingSoundCloudWidget = false;
       isPlaying = true;
+      setMusicDebugStatus('SoundCloud iframe playback started');
       startSoundCloudOverlapMonitor();
     } catch (err) {
       console.error('SoundCloud playback error:', err);
       isUsingSoundCloudWidget = false;
       isPlaying = false;
       armAutoplayRetry();
-      alert('Could not start SoundCloud playback.');
+      const details = err instanceof Error ? err.message : String(err || 'unknown error');
+      setMusicDebugStatus(details);
+      alert(`Could not start SoundCloud playback.\n${details}`);
     }
   } else if (track.stream_url || track.file_url) {
+    setMusicDebugStatus('');
     isUsingSoundCloudWidget = false;
+    scWidgetLoadFailed = false;
     activeAudio = getActiveAudio() || audioPrimary;
     const player = getActiveAudio();
     const standby = getInactiveAudio();
@@ -970,24 +1199,39 @@ async function playTrack(idx) {
 
 function updateBarDisplay() {
   if (!musicBarTitle) return;
+
+  const playPauseIcon = musicPlayPause?.querySelector('.music-playpause-icon');
+
+  if (isTracksLoading) {
+    musicBarTitle.textContent = '';
+    musicBarArtist.textContent = '';
+    musicBarSep.style.display = 'none';
+    musicBarUsername.textContent = '';
+    if (playPauseIcon) playPauseIcon.textContent = isPlaying ? '▌▐' : '▶';
+    musicPlayPause.dataset.state = isPlaying ? 'pause' : 'play';
+    return;
+  }
+
   const track = tracks[currentIndex];
 
   if (track) {
     const displayMeta = getTrackDisplayMeta(track);
     musicBarTitle.textContent    = displayMeta.title;
     musicBarArtist.textContent   = displayMeta.artist;
-    musicBarSep.style.display    = displayMeta.artist ? 'inline' : 'none';
+    musicBarSep.style.display    = 'inline';
     musicBarPfp.src              = pfpSrcFor(track.users);
     musicBarUsername.textContent = track.users?.username || '—';
+    musicBarUsername.dataset.userId = track.user_id || '';
   } else {
-    musicBarTitle.textContent    = 'no track';
+    musicBarTitle.textContent    = '';
     musicBarArtist.textContent   = '';
     musicBarSep.style.display    = 'none';
     musicBarPfp.src              = './images/pfps/default.png';
-    musicBarUsername.textContent = '—';
+    musicBarUsername.textContent = '';
   }
 
-  musicPlayPause.textContent = isPlaying ? '||' : '▶';
+  if (playPauseIcon) playPauseIcon.textContent = isPlaying ? '▌▐' : '▶';
+  musicPlayPause.dataset.state = isPlaying ? 'pause' : 'play';
 }
 
 // ============================================
@@ -1154,7 +1398,7 @@ async function downloadPlaylistAsCSV() {
     console.error('CSV export error:', err);
     alert(`Export failed: ${err.message || err}`);
   } finally {
-    btn.textContent = '⤓ playlist';
+    btn.textContent = 'download csv';
     btn.disabled = false;
   }
 }
@@ -1182,11 +1426,12 @@ export async function initMusic(user, userData) {
   musicNext             = document.getElementById('musicNext');
   musicOpenPanel        = document.getElementById('musicOpenPanel');
   musicPanelOverlay     = document.getElementById('musicPanelOverlay');
-  musicPanelTitle       = document.getElementById('musicPanelTitle');
+  musicPanelTopControls = document.getElementById('musicPanelTopControls');
   musicTrackList        = document.getElementById('musicTrackList');
-  musicDropZone         = document.getElementById('musicDropZone');
+  musicAddTrackBtn      = document.getElementById('musicAddTrackBtn');
   musicDownloadPlaylist = document.getElementById('musicDownloadPlaylist');
-  musicClosePanel       = document.getElementById('musicClosePanel');
+  musicSearchBtn        = document.getElementById('musicSearchBtn');
+  musicEditBtn          = document.getElementById('musicEditBtn');
   musicShuffle = document.getElementById('musicShuffle');
   musicLoop    = document.getElementById('musicLoop');
   const musicPanel = document.querySelector('.music-panel');
@@ -1203,11 +1448,12 @@ export async function initMusic(user, userData) {
     musicNext,
     musicOpenPanel,
     musicPanelOverlay,
-    musicPanelTitle,
+    musicPanelTopControls,
     musicTrackList,
-    musicDropZone,
+    musicAddTrackBtn,
     musicDownloadPlaylist,
-    musicClosePanel,
+    musicSearchBtn,
+    musicEditBtn,
     musicShuffle,
     musicLoop,
     musicPanel
@@ -1219,8 +1465,6 @@ export async function initMusic(user, userData) {
   }
 
   isMusicInitialized = true;
-
-  musicPanelTitle.textContent = getPlaylistTitle();
   applyBarPosition();
 
   currentVolume = clampVolume(currentVolume);
@@ -1260,29 +1504,6 @@ export async function initMusic(user, userData) {
       setPlaybackVolume(lastNonZeroVolume || MUSIC_DEFAULT_VOLUME);
     } else {
       setPlaybackVolume(0);
-    }
-  });
-
-  // ── Double right-click on music panel toggles edit mode ──
-  let lastMusicRightClick = 0;
-
-  musicPanel.addEventListener('contextmenu', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-
-    const now = Date.now();
-    if (now - lastMusicRightClick < MUSIC_DBLCLICK_MS) {
-      lastMusicRightClick = 0;
-      if (isMusicEditMode) {
-        exitMusicEditMode();
-      } else {
-        isMusicEditMode = true;
-        musicPanel.classList.add('edit-mode');
-        musicPanelTitle.textContent = getPlaylistTitle() + ' · editing';
-        renderTrackList();
-      }
-    } else {
-      lastMusicRightClick = now;
     }
   });
 
@@ -1334,7 +1555,12 @@ export async function initMusic(user, userData) {
     const isCurrentTrackSoundCloud = !!currentTrack?.soundcloud_url;
 
     if (isPlaying) {
-      if (isCurrentTrackSoundCloud && scWidget) {
+      if (isCurrentTrackSoundCloud && scUsingIframeFallback) {
+        clearSoundCloudIframeFallback();
+        clearOverlapMonitors();
+        isPlaying = false;
+        updateBarDisplay();
+      } else if (isCurrentTrackSoundCloud && scWidget) {
         scWidget.pause();
       } else {
         getActiveAudio().pause();
@@ -1343,11 +1569,7 @@ export async function initMusic(user, userData) {
     }
 
     if (isCurrentTrackSoundCloud) {
-      if (scWidget && isUsingSoundCloudWidget) {
-        scWidget.play();
-      } else {
-        playTrack(currentIndex);
-      }
+      playTrack(currentIndex);
       return;
     }
 
@@ -1365,75 +1587,55 @@ export async function initMusic(user, userData) {
 
   musicOpenPanel.addEventListener('click', () => {
     if (musicPanelOverlay.classList.contains('open')) {
-      if (isMusicEditMode) exitMusicEditMode();
-      musicPanelOverlay.classList.remove('open');
+      setMusicPanelOpen(false);
     } else {
-      musicPanelOverlay.classList.add('open');
+      setMusicPanelOpen(true);
     }
-  });
-  musicClosePanel.addEventListener('click', () => {
-    if (isMusicEditMode) exitMusicEditMode();
-    musicPanelOverlay.classList.remove('open');
   });
   musicPanelOverlay.addEventListener('click', (e) => {
     if (e.target === musicPanelOverlay) {
-      if (isMusicEditMode) exitMusicEditMode();
-      musicPanelOverlay.classList.remove('open');
+      setMusicPanelOpen(false);
     }
   });
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && musicPanelOverlay.classList.contains('open')) {
-      if (isMusicEditMode) exitMusicEditMode();
-      musicPanelOverlay.classList.remove('open');
+      setMusicPanelOpen(false);
     }
   });
 
   musicDownloadPlaylist.addEventListener('click', downloadPlaylistAsCSV);
 
   // ── SoundCloud quick controls ──
-  const buttonRow = document.createElement('div');
-  buttonRow.className = 'music-link-controls';
-
-  const addBtn = document.createElement('button');
-  addBtn.type = 'button';
-  addBtn.className = 'music-link-btn';
-  addBtn.textContent = 'add track';
-
   const addInput = document.createElement('input');
   addInput.type = 'text';
   addInput.className = 'music-link-inline-input';
   addInput.placeholder = 'paste soundcloud link + enter';
-
-  const searchBtn = document.createElement('button');
-  searchBtn.type = 'button';
-  searchBtn.className = 'music-link-btn';
-  searchBtn.textContent = 'search';
-
-  buttonRow.appendChild(addBtn);
-  buttonRow.appendChild(addInput);
-  buttonRow.appendChild(searchBtn);
-
-  musicAddBtn = addBtn;
   musicAddInput = addInput;
+  musicPanelTopControls.insertBefore(addInput, musicSearchBtn);
+
+  musicDebugStatus = document.createElement('div');
+  musicDebugStatus.className = 'music-debug-status';
+  musicDebugStatus.style.display = 'none';
+  musicDebugStatus.style.fontSize = '12px';
+  musicDebugStatus.style.lineHeight = '1.3';
+  musicDebugStatus.style.opacity = '0.75';
+  musicDebugStatus.style.marginTop = '6px';
+  musicDebugStatus.style.letterSpacing = '0.02em';
+  musicPanelTopControls.appendChild(musicDebugStatus);
 
   function showAddInput() {
-    addBtn.classList.add('hidden');
-    addInput.classList.add('is-visible');
+    if (!canModifyCurrentPlaylist) return;
+    musicPanelTopControls.classList.add('is-adding');
     addInput.focus();
   }
 
   function hideAddInput() {
     addInput.value = '';
-    addInput.classList.remove('is-visible');
-    addBtn.classList.remove('hidden');
+    musicPanelTopControls.classList.remove('is-adding');
   }
 
-  // Replace drop zone content with quick controls
-  musicDropZone.innerHTML = '';
-  musicDropZone.appendChild(buttonRow);
-
-  addBtn.addEventListener('click', () => {
+  musicAddTrackBtn.addEventListener('click', () => {
     showAddInput();
   });
 
@@ -1459,29 +1661,36 @@ export async function initMusic(user, userData) {
     }
   });
 
-  searchBtn.addEventListener('click', () => {
-    const query = addInput.classList.contains('is-visible')
+  musicSearchBtn.addEventListener('click', () => {
+    if (!canModifyCurrentPlaylist) return;
+    const query = musicPanelTopControls.classList.contains('is-adding')
       ? (addInput.value.trim() || 'music')
       : 'music';
     window.open(`https://soundcloud.com/search?q=${encodeURIComponent(query)}`, '_blank');
   });
 
-  musicShuffle.addEventListener('click', () => {
-    isShuffled = !isShuffled;
-    updatePlaybackModeButtons();
-  });
-
-  musicLoop.addEventListener('click', () => {
-    if (loopMode === LOOP_MODE_OFF) {
-      loopMode = LOOP_MODE_TRACK;
-    } else if (loopMode === LOOP_MODE_TRACK) {
-      loopMode = LOOP_MODE_PLAYLIST;
-    } else {
-      loopMode = LOOP_MODE_OFF;
+  musicEditBtn.addEventListener('click', () => {
+    if (!canModifyCurrentPlaylist) return;
+    if (isMusicEditMode) {
+      exitMusicEditMode();
+      return;
     }
+    isMusicEditMode = true;
+    musicPanel.classList.add('edit-mode');
+    musicEditBtn.textContent = 'exit edit';
+    renderTrackList();
+  });
 
+  musicShuffle.addEventListener('click', () => {
+    // Toggle between in-order-repeat and shuffle
+    isShuffled = !isShuffled;
+    // In-order mode always repeats the playlist; shuffle mode also loops
+    loopMode = LOOP_MODE_PLAYLIST;
     updatePlaybackModeButtons();
   });
+
+  // musicLoop click retained for compat but does nothing visible
+  musicLoop.addEventListener('click', () => {});
 
   updatePlaylistAccessUi();
   await loadTracks({ autoplay: true, forceRestart: true });

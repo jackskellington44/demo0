@@ -2,6 +2,7 @@ import JSZip from 'jszip';
 
 const WORLD_TRIGGER = 'world';
 const WORLD_BUCKET = 'worlds';
+const WORLD_QUERY_PARAM = 'world';
 const MY_WORLDS_STORAGE_PREFIX = 'demo0-my-worlds-v1';
 const WORLD_GUEST_ACCESS_STORAGE_PREFIX = 'demo0-world-guest-access-v1';
 const MY_WORLDS_LIMIT = 48;
@@ -516,36 +517,6 @@ function getDefaultBackgroundUrl(baseUrl) {
   return `${baseUrl}images/background.jpg`;
 }
 
-function slugifyWorldPathSegment(value = '') {
-  const normalized = String(value || '')
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .trim();
-
-  const slug = normalized
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-
-  return slug || '';
-}
-
-function getWorldPathSegment(world = null) {
-  const candidates = [
-    world?.name,
-    world?.category,
-    world?.title,
-    String(world?.description || '').slice(0, 64)
-  ];
-
-  for (const candidate of candidates) {
-    const slug = slugifyWorldPathSegment(candidate || '');
-    if (slug) return slug;
-  }
-
-  return 'world';
-}
-
 function getPfpSrc(user, baseUrl) {
   const fallback = `${baseUrl}images/pfps/default.png`;
   if (!user) return fallback;
@@ -624,42 +595,50 @@ function createWorldsDom(baseUrl) {
                 <span>category</span>
                 <select id="worldPlugCategory"></select>
               </label>
-              <label class="world-maker-field">
-                <span>font choice</span>
-                <select id="worldPlugFont"></select>
-              </label>
-              <label class="world-maker-field">
-                <span>font color</span>
-                <input type="color" id="worldPlugFontColor" value="#f5f5f5">
-              </label>
-              <label class="world-maker-field">
+              <div class="world-maker-field world-maker-field--wide world-maker-inline-row world-maker-inline-row--style">
+                <label class="world-maker-inline-control world-maker-inline-control--font" for="worldPlugFont">
+                  <select id="worldPlugFont" aria-label="font choice"></select>
+                  <span class="world-maker-inline-label">font</span>
+                </label>
+                <label class="world-maker-inline-control world-maker-inline-control--color" for="worldPlugFontColor">
+                  <input type="color" id="worldPlugFontColor" value="#f5f5f5" aria-label="font color">
+                  <span class="world-maker-inline-label">font color</span>
+                </label>
+                <label class="world-maker-inline-control world-maker-inline-control--color" for="worldPlugBgColor">
+                  <input type="color" id="worldPlugBgColor" value="#cfd8e3" aria-label="background color">
+                  <span class="world-maker-inline-label">bg color</span>
+                </label>
+              </div>
+              <label class="world-maker-field world-maker-field--upload">
                 <span>world cover</span>
-                <label class="world-maker-upload">
+                <label class="world-maker-upload world-maker-upload--compact">
                   <span id="worldPlugCoverLabel">use world background as cover</span>
                   <input type="file" id="worldPlugCover" accept="image/jpeg,image/png,image/gif,image/webp,image/heic,image/heif,.heic,.heif">
                 </label>
               </label>
-              <label class="world-maker-field">
+              <label class="world-maker-field world-maker-field--upload">
                 <span>background image</span>
-                <label class="world-maker-upload">
+                <label class="world-maker-upload world-maker-upload--compact">
                   <span id="worldPlugBackgroundLabel">use site background</span>
                   <input type="file" id="worldPlugBackground" accept="image/jpeg,image/png,image/gif,image/webp,image/heic,image/heif,.heic,.heif">
                 </label>
               </label>
-              <label class="world-maker-field">
-                <span>who can view</span>
-                <select id="worldPlugVisibility">
-                  <option value="true">public — anyone</option>
-                  <option value="false">private — only me</option>
-                </select>
-              </label>
-              <label class="world-maker-field">
-                <span>who can post</span>
-                <select id="worldPlugEditing">
-                  <option value="true">public — anyone</option>
-                  <option value="false">private — only me</option>
-                </select>
-              </label>
+              <div class="world-maker-field world-maker-field--wide world-maker-inline-row world-maker-inline-row--modes">
+                <label class="world-maker-inline-control world-maker-inline-control--font" for="worldPlugVisibility">
+                  <select id="worldPlugVisibility" aria-label="view mode">
+                    <option value="true">public — anyone</option>
+                    <option value="false">private — only me</option>
+                  </select>
+                  <span class="world-maker-inline-label">view mode</span>
+                </label>
+                <label class="world-maker-inline-control world-maker-inline-control--font" for="worldPlugEditing">
+                  <select id="worldPlugEditing" aria-label="edit mode">
+                    <option value="true">public — anyone</option>
+                    <option value="false">private — only me</option>
+                  </select>
+                  <span class="world-maker-inline-label">edit mode</span>
+                </label>
+              </div>
               <label class="world-maker-field">
                 <span>world password</span>
                 <input type="password" id="worldPlugPassword" autocomplete="new-password" placeholder="optional">
@@ -808,6 +787,7 @@ function createWorldsDom(baseUrl) {
     plugCategory: host.querySelector('#worldPlugCategory'),
     plugFont: host.querySelector('#worldPlugFont'),
     plugFontColor: host.querySelector('#worldPlugFontColor'),
+    plugBgColor: host.querySelector('#worldPlugBgColor'),
     plugCover: host.querySelector('#worldPlugCover'),
     plugCoverLabel: host.querySelector('#worldPlugCoverLabel'),
     plugBackground: host.querySelector('#worldPlugBackground'),
@@ -1091,49 +1071,25 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     }
   }
 
-  function setWorldUrl(world) {
-    const nextSegment = getWorldPathSegment(world);
-    if (!nextSegment) return;
-
+  function setWorldUrl(worldId) {
+    const nextId = String(worldId || '').trim();
+    if (!nextId) return;
     const current = new URL(window.location.href);
-    const currentSegment = decodeURIComponent(current.pathname.replace(/^\/+/, '').split('/')[0] || '');
-    if (currentSegment === nextSegment) return;
+    if (current.searchParams.get(WORLD_QUERY_PARAM) === nextId) return;
 
     const next = new URL(window.location.href);
-    next.pathname = `/${encodeURIComponent(nextSegment)}`;
+    next.search = '';
+    next.searchParams.set(WORLD_QUERY_PARAM, nextId);
     window.history.replaceState(window.history.state, '', `${next.pathname}${next.search}${next.hash}`);
   }
 
   function clearWorldUrl() {
     const current = new URL(window.location.href);
-    if (current.pathname === '/') return;
+    if (!current.searchParams.has(WORLD_QUERY_PARAM)) return;
 
     const next = new URL(window.location.href);
-    next.pathname = '/';
-    window.history.replaceState(window.history.state, '', `${next.pathname}${next.search}${next.hash}`);
-  }
-
-  async function loadWorldByPathSegment(pathSegment) {
-    const rawSegment = String(pathSegment || '').trim();
-    const requestedSegment = slugifyWorldPathSegment(rawSegment);
-    if (!requestedSegment) return null;
-
-    const { data, error } = await supabase
-      .from('worlds')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(800);
-
-    if (error) {
-      console.error('Failed to load worlds for path lookup:', error);
-      return null;
-    }
-
-    const rows = data || [];
-    const exactSlugMatch = rows.find((row) => getWorldPathSegment(row) === requestedSegment);
-    if (exactSlugMatch) return exactSlugMatch;
-
-    return rows.find((row) => String(row?.id || '').trim() === rawSegment) || null;
+    next.search = '';
+    window.history.replaceState(window.history.state, '', `${next.pathname}${next.hash}`);
   }
 
   async function loadWorldRowsByIds(worldIds = []) {
@@ -1345,6 +1301,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     dom.plugDescription.value = '';
     dom.plugFont.value = '';
     dom.plugFontColor.value = '#f5f5f5';
+    dom.plugBgColor.value = DEFAULT_UI_COLOR;
     dom.plugCover.value = '';
     dom.plugCoverLabel.textContent = 'use world background as cover';
     dom.plugBackground.value = '';
@@ -1392,6 +1349,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     dom.plugCategory.value = world.category || dom.plugCategory.value;
     dom.plugFont.value = world.font_family || '';
     dom.plugFontColor.value = world.font_color || '#f5f5f5';
+    dom.plugBgColor.value = world.ui_color || world.font_color || DEFAULT_UI_COLOR;
     dom.plugCover.value = '';
     dom.plugCoverLabel.textContent = world.cover_url
       ? 'keep current world cover (choose file to replace)'
@@ -1703,19 +1661,6 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     await openWorldMode(nextWorld, nextCreator);
   }
 
-  async function openWorldByPathSegment(pathSegment) {
-    const normalizedPath = String(pathSegment || '').trim();
-    if (!normalizedPath) return;
-
-    const world = await loadWorldByPathSegment(normalizedPath);
-    if (!world?.id) {
-      window.history.replaceState(window.history.state, '', '/');
-      return;
-    }
-
-    await openWorldById(world.id, { world });
-  }
-
   function clearWorldModeChrome() {
     dom.modeChrome.style.display = 'none';
     dom.modeChrome.style.removeProperty('--world-mode-font-family');
@@ -1950,7 +1895,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       updateWorldNavStack(world);
       await hydrateMyWorlds();
       await rememberWorld(world);
-      setWorldUrl(world);
+      setWorldUrl(world.id);
 
       populateWorldLoader(world, activeWorldCreator, {
         mode: 'loading',
@@ -2257,7 +2202,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     dom.plugPublish.textContent = isEdit ? 'updating...' : 'publishing...';
 
     try {
-      const uiColor = dom.plugFontColor.value || DEFAULT_UI_COLOR;
+      const uiColor = dom.plugBgColor.value || DEFAULT_UI_COLOR;
       const draft = {
         name,
         description,
@@ -3113,7 +3058,6 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     isMakerOpen,
     isInWorldMode,
     openWorldById,
-    openWorldByPathSegment,
     optimizeExistingWorldBackgrounds,
     optimizeExistingWorldCovers,
     refreshActiveWorldChrome: async (nextWorld = null) => {

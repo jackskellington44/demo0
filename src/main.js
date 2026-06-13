@@ -101,6 +101,7 @@ const postTitle = document.getElementById('postTitle');
 const postCategory = document.getElementById('postCategory');
 const postCategoryDisplay = document.getElementById('postCategoryDisplay');
 const postCategoryDisplayText = document.getElementById('postCategoryDisplayText');
+const postCategoryDropdownToggle = document.getElementById('postCategoryDropdownToggle');
 const postCategoryDropdown = document.getElementById('postCategoryDropdown');
 const postCategoryInput = document.getElementById('postCategoryInput');
 const addCategoryToggle = document.getElementById('addCategoryToggle');
@@ -132,7 +133,6 @@ const commentInput = document.getElementById('commentInput');
 const commentSubmitBtn = document.getElementById('commentSubmitBtn');
 
 // Notification panel
-const notifBar   = document.getElementById('notifBar');
 const notifPanel = document.getElementById('notifPanel');
 const notifList  = document.getElementById('notifList');
 
@@ -146,6 +146,8 @@ const profileOverlay = document.getElementById('profileOverlay');
 
 let currentUser = null;
 let currentUserData = null;
+let authCheckInFlightPromise = null;
+let authCheckCachedResult = undefined;
 let mentionUserMapCache = null;
 let mentionUserMapPromise = null;
 let mentionAliasMapCache = null;
@@ -197,6 +199,7 @@ let editingPost     = null; // full original post row, used to preserve untouche
 let categoryRecords = [];
 let editingCategoryName = null;
 let categoryColorColumn = null;
+let categoryOwnerColumn = null;
 let categoryColorPickerElements = null;
 let categoryColorPickerState = {
   categoryName: null,
@@ -214,6 +217,13 @@ const CATEGORY_COLOR_COLUMN_CANDIDATES = [
   'color',
   'line_color',
   'network_color'
+];
+
+const CATEGORY_OWNER_COLUMN_CANDIDATES = [
+  'user_id',
+  'owner_user_id',
+  'created_by',
+  'created_by_user_id'
 ];
 
 // Filters (normal mode only)
@@ -237,9 +247,9 @@ let activeLinkTreeRootPostId = null; // any post id inside the selected connecte
 
 // Profile modal state
 let profileEditMode       = false;
-let newProfileCoverFile   = null;
 let newProfilePfpFile     = null;
 let currentProfileUserId  = null;
+let currentProfileUserRow = null;
 
 // Post detail 3-col layout state
 let pdColWidths   = { visual: 50, text: 30, comments: 20 };
@@ -267,7 +277,6 @@ const UI_STATE_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 3;
 const DEFAULT_BOOT_SCALE = 0.14;
 const DEFAULT_BG_URL = `${import.meta.env.BASE_URL}images/background.jpg`;
 const DEFAULT_PFP_URL = `${import.meta.env.BASE_URL}images/pfps/default.png`;
-const USE_DEFAULT_FOR_SUPABASE_PFP = true;
 
 let restoredUiState = null;
 let restoreInFlight = false;
@@ -633,9 +642,6 @@ async function getPostRecordById(postId, { fallbackPost = null } = {}) {
 function resolvePfpUrl(user = null) {
   const rawPfpUrl = String(user?.pfp_url || '').trim();
   if (rawPfpUrl) {
-    if (USE_DEFAULT_FOR_SUPABASE_PFP && /supabase\.co/i.test(rawPfpUrl)) {
-      return DEFAULT_PFP_URL;
-    }
     return rawPfpUrl;
   }
 
@@ -645,6 +651,14 @@ function resolvePfpUrl(user = null) {
   }
 
   return DEFAULT_PFP_URL;
+}
+
+function updateToolbarProfileAvatar() {
+  const toolbarBtn = document.getElementById('toolbarProfileBtn');
+  if (!toolbarBtn) return;
+
+  document.getElementById('toolbarProfileImg')?.remove();
+  toolbarBtn.textContent = '◌';
 }
 
 function applyImageRuntimeDefaults(rootEl) {
@@ -759,6 +773,41 @@ function getCategoryColorValue(record) {
   }
 
   return '';
+}
+
+function inferCategoryOwnerColumn(records = []) {
+  for (const column of CATEGORY_OWNER_COLUMN_CANDIDATES) {
+    if (records.some((row) => Object.prototype.hasOwnProperty.call(row || {}, column))) {
+      return column;
+    }
+  }
+  return null;
+}
+
+function getCategoryOwnerId(record) {
+  if (!record) return '';
+
+  const preferredValue = categoryOwnerColumn
+    ? String(record[categoryOwnerColumn] || '').trim()
+    : '';
+  if (preferredValue) return preferredValue;
+
+  for (const column of CATEGORY_OWNER_COLUMN_CANDIDATES) {
+    const value = String(record[column] || '').trim();
+    if (value) return value;
+  }
+
+  return '';
+}
+
+function canCurrentUserEditCategory(record) {
+  if (!record || !currentUser) return false;
+  if (currentUserData?.is_admin) return true;
+
+  const ownerId = getCategoryOwnerId(record);
+  if (!ownerId) return false;
+
+  return ownerId === String(currentUser.id);
 }
 
 function toHexColor(value, fallback = '#a6b8d4') {
@@ -1024,11 +1073,17 @@ async function updateCategoryColorInDb(categoryName, colorValue) {
   let lastError = null;
 
   for (const column of candidates) {
-    const { error } = await supabase
+    let colorUpdateQuery = supabase
       .from('categories')
       .update({ [column]: colorValue })
       .eq('group_id', 'group0')
       .eq('name', categoryName);
+
+    if (categoryOwnerColumn && !currentUserData?.is_admin) {
+      colorUpdateQuery = colorUpdateQuery.eq(categoryOwnerColumn, currentUser.id);
+    }
+
+    const { error } = await colorUpdateQuery;
 
     if (!error) {
       categoryColorColumn = column;
@@ -1421,21 +1476,29 @@ function applyAnimationMode(mode, { persist = true } = {}) {
   document.body.classList.toggle('anim-auto-freeze', autoFreezeActive);
   document.body.classList.toggle('anim-hard-freeze', shouldHardFreezeMotion());
 
-  const btn = document.getElementById('animModeBtn');
+  const btn = document.getElementById('animModeBtn'); // legacy
   if (btn) {
-    const icons = { full: '͙͘͡★', reduced: '͙͘͡★', off: '˚✰' };
+    const icons = { full: '೙೘ೡ★', reduced: '೙೘ೡ★', off: '˚✰' };
     const titles = {
       full: 'animations: full',
       reduced: 'animations: reduced (near only)',
       off: autoFreezeActive ? 'animations: auto freeze (boot)' : 'animations: off'
     };
-    btn.textContent = icons[effectiveMode] || '͙͘͡★';
+    btn.textContent = icons[effectiveMode] || '೙೘ೡ★';
     btn.title = titles[effectiveMode] || '';
     btn.setAttribute('aria-label', titles[effectiveMode] || '');
     btn.classList.toggle('active', effectiveMode !== 'full');
   }
 
-  enforceFrozenMediaState();
+  // Sync settings panel anim button
+  const settingsAnimBtn = document.getElementById('settingsAnimBtn');
+  if (settingsAnimBtn) {
+    const movementOn = effectiveMode !== 'off';
+    settingsAnimBtn.textContent = movementOn ? '͙͘͡★' : '⚠︎';
+    settingsAnimBtn.classList.toggle('active', movementOn);
+  }
+
+    enforceFrozenMediaState();
 
   // Sync preview playback states now that mode changed.
   refreshCardLodStates();
@@ -1445,36 +1508,14 @@ function applyAnimationMode(mode, { persist = true } = {}) {
 }
 
 function initAnimToggle() {
-  const leftGroup = document.getElementById('musicBarLeft');
-  const bar = document.getElementById('musicBar');
-  const openPanel = document.getElementById('musicOpenPanel');
-  if (!bar) return;
-
-  const btn = document.createElement('button');
-  btn.id = 'animModeBtn';
-  btn.type = 'button';
-  btn.className = 'music-ctrl-btn anim-mode-btn';
-
-  if (leftGroup) {
-    leftGroup.appendChild(btn);
-  } else {
-    bar.insertBefore(btn, openPanel);
-  }
-  // Sets icon, title, and body class
+  // Animation mode toggle — now lives in settings panel (#settingsAnimBtn).
+  // This function only applies the initial mode; the button is wired in initSettingsPanel.
   applyAnimationMode(animationMode);
-
-  btn.addEventListener('click', () => {
-    const baseMode = getEffectiveAnimationMode();
-    if (autoFreezeActive) {
-      setAutoFreezeActive(false);
-    }
-    const next = ANIM_MODES[(ANIM_MODES.indexOf(baseMode) + 1) % ANIM_MODES.length];
-    applyAnimationMode(next);
-  });
 }
 
 function initThemeColorPicker() {
-  // Restore saved tint
+  // Kept for backward compat — new theme is handled by initSystemTheme / initSettingsPanel
+  // Restore saved tint (still applied for --ui-tint-bg backward compat)
   try {
     const saved = JSON.parse(localStorage.getItem(THEME_COLOR_KEY) || 'null');
     if (saved && typeof saved.h === 'number') {
@@ -1484,109 +1525,124 @@ function initThemeColorPicker() {
     }
   } catch {}
   applyUiTint(false);
+  // Anim toggle now lives in settings panel — initAnimToggle handles it
+}
 
-  const leftGroup = document.getElementById('musicBarLeft');
-  if (!leftGroup) return;
+// ============================================
+// SYSTEM THEME — applies --sys-bg, --sys-fg, --sys-font
+// ============================================
+const SYS_THEME_KEY = 'demo4-sys-theme-v1';
 
-  // Trigger button
-  const btn = document.createElement('button');
-  btn.id = 'tintPickerBtn';
-  btn.type = 'button';
-  btn.className = 'music-ctrl-btn tint-picker-btn';
-  btn.textContent = '\u25c8';
-  btn.title = 'ui color';
-  btn.setAttribute('aria-label', 'pick ui tint color');
-  // Insert before animModeBtn so color picker is leftmost
-  const animBtn = leftGroup.querySelector('#animModeBtn');
-  if (animBtn) {
-    leftGroup.insertBefore(btn, animBtn);
-  } else {
-    leftGroup.appendChild(btn);
+function applySysTheme({ bg, fg, font } = {}) {
+  const root = document.documentElement;
+  if (bg)   root.style.setProperty('--sys-bg',   bg);
+  if (fg)   root.style.setProperty('--sys-fg',   fg);
+  if (font) root.style.setProperty('--sys-font', font);
+}
+
+function loadSysTheme() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SYS_THEME_KEY) || 'null');
+    if (saved) applySysTheme(saved);
+  } catch {}
+}
+
+function saveSysTheme() {
+  try {
+    const root = document.documentElement;
+    const bg   = root.style.getPropertyValue('--sys-bg').trim()   || '#ffffff';
+    const fg   = root.style.getPropertyValue('--sys-fg').trim()   || '#000000';
+    const font = root.style.getPropertyValue('--sys-font').trim() || 'inherit';
+    localStorage.setItem(SYS_THEME_KEY, JSON.stringify({ bg, fg, font }));
+  } catch {}
+}
+
+function initSettingsPanel() {
+  loadSysTheme();
+
+  const bgSwatch = document.getElementById('settingsBgColor');
+  const bgHex    = document.getElementById('settingsBgHex');
+  const fgSwatch = document.getElementById('settingsFgColor');
+  const fgHex    = document.getElementById('settingsFgHex');
+  const fontSel  = document.getElementById('settingsFontSelect');
+  const animBtn  = document.getElementById('settingsAnimBtn');
+
+  if (!bgSwatch || !fgSwatch || !fontSel || !animBtn) return;
+
+  // Sync initial values from CSS
+  const root = document.documentElement;
+  const curBg   = root.style.getPropertyValue('--sys-bg').trim()   || '#ffffff';
+  const curFg   = root.style.getPropertyValue('--sys-fg').trim()   || '#000000';
+  const curFont = root.style.getPropertyValue('--sys-font').trim() || 'Arial, Helvetica, sans-serif';
+
+  bgSwatch.value = curBg;
+  if (bgHex) bgHex.value = curBg;
+  fgSwatch.value = curFg;
+  if (fgHex) fgHex.value = curFg;
+
+  // Select matching font option
+  const fontOpts = Array.from(fontSel.options);
+  const matchFont = fontOpts.find(o => o.value === curFont);
+  if (matchFont) fontSel.value = curFont;
+
+  const applyAndSave = () => {
+    applySysTheme({
+      bg:   bgSwatch.value,
+      fg:   fgSwatch.value,
+      font: fontSel.value
+    });
+    saveSysTheme();
+  };
+
+  bgSwatch.addEventListener('input', () => {
+    if (bgHex) bgHex.value = bgSwatch.value;
+    applyAndSave();
+  });
+
+  if (bgHex) {
+    bgHex.addEventListener('change', () => {
+      const v = bgHex.value.trim();
+      if (/^#[0-9a-fA-F]{3,8}$/.test(v)) {
+        bgSwatch.value = v;
+        applyAndSave();
+      }
+    });
   }
 
-  // Floating picker popup — reuses category picker inner element CSS classes
-  const popup = document.createElement('div');
-  popup.id = 'tintPickerPopup';
-  popup.className = 'music-tint-picker';
-  popup.innerHTML = `
-    <div class="post-form-category-picker-sv" data-role="sv">
-      <div class="post-form-category-picker-sv-cursor" data-role="sv-cursor"></div>
-    </div>
-    <input type="range" min="0" max="360" step="1" class="post-form-category-picker-hue" data-role="hue" aria-label="ui tint hue">
-    <button type="button" class="post-form-category-picker-submit" data-role="submit" title="apply color">\u2713</button>
-  `;
-  document.body.appendChild(popup);
+  fgSwatch.addEventListener('input', () => {
+    if (fgHex) fgHex.value = fgSwatch.value;
+    applyAndSave();
+  });
 
-  const sv       = popup.querySelector('[data-role="sv"]');
-  const svCursor = popup.querySelector('[data-role="sv-cursor"]');
-  const hueInput = popup.querySelector('[data-role="hue"]');
-  const submitBtn = popup.querySelector('[data-role="submit"]');
+  if (fgHex) {
+    fgHex.addEventListener('change', () => {
+      const v = fgHex.value.trim();
+      if (/^#[0-9a-fA-F]{3,8}$/.test(v)) {
+        fgSwatch.value = v;
+        applyAndSave();
+      }
+    });
+  }
 
-  let snapshot = { h: 0, s: 0, v: 0 };
+  fontSel.addEventListener('change', applyAndSave);
 
-  const syncPickerUi = () => {
-    sv.style.setProperty('--picker-hue', String(Math.round(themeColorState.h)));
-    svCursor.style.left = `${themeColorState.s * 100}%`;
-    svCursor.style.top  = `${(1 - themeColorState.v) * 100}%`;
-    hueInput.value = String(Math.round(themeColorState.h));
-    submitBtn.style.background = getThemePickerHexColor();
-    applyUiTint(false); // live preview without persisting
+  // Movement toggle in settings panel (mapped to animation on/off)
+  const updateSettingsAnimBtn = () => {
+    if (!animBtn) return;
+    const movementOn = getEffectiveAnimationMode() !== 'off';
+    animBtn.textContent = movementOn ? '͙͘͡★' : '⚠︎';
+    animBtn.classList.toggle('active', movementOn);
   };
 
-  const setSvFromPointer = (evt) => {
-    const rect = sv.getBoundingClientRect();
-    const x = Math.max(0, Math.min(evt.clientX - rect.left, rect.width));
-    const y = Math.max(0, Math.min(evt.clientY - rect.top, rect.height));
-    themeColorState.s = rect.width  > 0 ? x / rect.width  : 0;
-    themeColorState.v = rect.height > 0 ? 1 - y / rect.height : 0;
-    syncPickerUi();
-  };
-
-  let isDragging = false;
-  sv.addEventListener('pointerdown',  (e) => { isDragging = true; sv.setPointerCapture(e.pointerId); setSvFromPointer(e); });
-  sv.addEventListener('pointermove',  (e) => { if (isDragging) setSvFromPointer(e); });
-  sv.addEventListener('pointerup',    () =>  { isDragging = false; });
-  sv.addEventListener('pointercancel',() =>  { isDragging = false; });
-
-  hueInput.addEventListener('input', () => {
-    themeColorState.h = Number(hueInput.value || 0);
-    syncPickerUi();
+  animBtn.addEventListener('click', () => {
+    if (autoFreezeActive) setAutoFreezeActive(false);
+    const movementOn = getEffectiveAnimationMode() !== 'off';
+    const next = movementOn ? 'off' : 'full';
+    applyAnimationMode(next);
+    updateSettingsAnimBtn();
   });
 
-  submitBtn.addEventListener('click', () => {
-    applyUiTint(true); // persist
-    popup.classList.remove('open');
-    themePickerOpen = false;
-  });
-
-  const revertAndClose = () => {
-    themeColorState = { ...snapshot };
-    applyUiTint(false);
-    popup.classList.remove('open');
-    themePickerOpen = false;
-  };
-
-  btn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (themePickerOpen) {
-      revertAndClose();
-    } else {
-      snapshot = { ...themeColorState };
-      themePickerOpen = true;
-      popup.classList.add('open');
-      syncPickerUi();
-    }
-  });
-
-  document.addEventListener('click', (e) => {
-    if (!themePickerOpen) return;
-    if (popup.contains(e.target) || e.target === btn) return;
-    revertAndClose();
-  }, true);
-
-  document.addEventListener('keydown', (e) => {
-    if (themePickerOpen && e.key === 'Escape') revertAndClose();
-  });
+  updateSettingsAnimBtn();
 }
 
 function clampPostScale(value) {
@@ -2082,62 +2138,205 @@ async function tryDropPlacement(e) {
 // 6. AUTH + USER BOOTSTRAP
 // ============================================
 
+function normalizeAuthPathname(pathname = '/') {
+  const rawPath = String(pathname || '/').trim() || '/';
+  const basePath = rawPath.startsWith('/') ? rawPath : `/${rawPath}`;
+
+  if (basePath === '/main.html') return '/';
+  if (basePath === '/index.html' || basePath === '/login.html') return '/login';
+  return basePath;
+}
+
+function isAuthRateLimitedError(error) {
+  const message = String(error || '').toLowerCase();
+  return message.includes('too many requests')
+    || message.includes('rate limit')
+    || message.includes('status=429')
+    || message.includes('status 429')
+    || message.includes('429');
+}
+
+function isAuthInvalidTokenError(error) {
+  const message = String(error || '').toLowerCase();
+  return message.includes('status=401')
+    || message.includes('status 401')
+    || message.includes('status=403')
+    || message.includes('status 403')
+    || message.includes('unauthorized')
+    || message.includes('forbidden')
+    || message.includes('invalid token');
+}
+
+function getCachedAuthUser() {
+  const cachedAuthUserRaw = localStorage.getItem('auth_user') || '';
+  if (cachedAuthUserRaw) {
+    try {
+      const cachedAuthUser = JSON.parse(cachedAuthUserRaw);
+      if (cachedAuthUser && typeof cachedAuthUser === 'object') {
+        return cachedAuthUser;
+      }
+    } catch {
+      // Ignore parse failures and fall back to token decoding.
+    }
+  }
+
+  const token = localStorage.getItem('auth_token') || '';
+  if (!token) return null;
+
+  try {
+    const payloadPart = token.split('.')[1] || '';
+    const normalizedPayload = payloadPart.replace(/-/g, '+').replace(/_/g, '/');
+    const paddedPayload = normalizedPayload + '='.repeat((4 - (normalizedPayload.length % 4 || 4)) % 4);
+    const decodedPayload = JSON.parse(atob(paddedPayload));
+    if (!decodedPayload || typeof decodedPayload !== 'object') return null;
+    return {
+      id: decodedPayload.id || null,
+      username: decodedPayload.username || null
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function checkAuth() {
-  const redirectToLogin = () => {
-    // Build ?next= from current path only — never attach query strings or
-    // login-like paths so we cannot create nested next= chains.
-    const currentPath = window.location.pathname || '/';
-    const safeNext = (currentPath === '/login' || currentPath === '/') ? '' : currentPath;
-    const loginUrl = safeNext
-      ? `/login?next=${encodeURIComponent(safeNext)}`
-      : '/login';
-    window.location.replace(loginUrl);
-  };
-
-  const tokenPresent = Boolean(localStorage.getItem('auth_token'));
-  console.log('[main-debug] checkAuth:start', {
-    path: window.location.pathname,
-    tokenPresent
-  });
-
-  const { data: { session }, error } = await supabase.auth.getSession();
-
-  if (error) {
-    console.error('Failed to get session:', error);
-    await supabase.auth.signOut();
-    redirectToLogin();
-    return null;
+  if (authCheckCachedResult !== undefined) {
+    return authCheckCachedResult;
   }
 
-  if (!session) {
-    redirectToLogin();
-    return null;
+  if (authCheckInFlightPromise) {
+    return authCheckInFlightPromise;
   }
 
-  currentUser = session.user;
-  console.log('Logged in as:', currentUser.id);
+  authCheckInFlightPromise = (async () => {
+    let authMeResult = null;
+    let authMeError = null;
+    const currentPath = normalizeAuthPathname(window.location.pathname || '/');
 
-  const { data, error: userError } = await supabase
-    .from('users')
-    .select('*')
-    .eq('id', currentUser.id)
-    .single();
+    const redirectToLogin = () => {
+      console.log('[checkAuth before redirect]', {
+        path: location.pathname,
+        token: localStorage.getItem('auth_token'),
+        authUser: localStorage.getItem('auth_user'),
+        authMeResult,
+        authMeError
+      });
 
-  if (userError) {
-    console.error('Failed to fetch user data:', userError);
-    // Most common local blank-page cause: stale token from another backend.
-    await supabase.auth.signOut();
-    redirectToLogin();
-    return null;
+      const safeNext = (currentPath === '/login' || currentPath === '/') ? '' : currentPath;
+      const loginUrl = safeNext
+        ? `/login?next=${encodeURIComponent(safeNext)}`
+        : '/login';
+      window.location.replace(loginUrl);
+    };
+
+    const tokenPresent = Boolean(localStorage.getItem('auth_token'));
+    console.log('[main-debug] checkAuth:start', {
+      path: window.location.pathname,
+      tokenPresent
+    });
+
+    if (!tokenPresent) {
+      authMeError = 'Missing auth_token in localStorage';
+      redirectToLogin();
+      authCheckCachedResult = null;
+      return authCheckCachedResult;
+    }
+
+    const meProbe = await api.auth.getUser();
+    authMeResult = meProbe?.data || null;
+    authMeError = meProbe?.error || null;
+
+    if (authMeError || !authMeResult?.user?.id) {
+      const cachedAuthUser = getCachedAuthUser();
+
+      if (isAuthRateLimitedError(authMeError)) {
+        console.warn('[auth/me rate limited; using cached user]');
+        if (cachedAuthUser?.id) {
+          currentUser = cachedAuthUser;
+          currentUserData = {
+            ...cachedAuthUser,
+            is_admin: false
+          };
+          authCheckCachedResult = {
+            user: currentUser,
+            cachedAuth: true,
+            authMeError
+          };
+          return authCheckCachedResult;
+        }
+
+        currentUser = cachedAuthUser;
+        currentUserData = cachedAuthUser ? { ...cachedAuthUser, is_admin: false } : null;
+        authCheckCachedResult = {
+          user: currentUser,
+          cachedAuth: Boolean(cachedAuthUser),
+          authMeError
+        };
+        return authCheckCachedResult;
+      }
+
+      if (isAuthInvalidTokenError(authMeError)) {
+        console.warn('Auth probe failed:', authMeError || 'Invalid token');
+        redirectToLogin();
+        authCheckCachedResult = null;
+        return authCheckCachedResult;
+      }
+
+      console.warn('Auth probe failed (non-fatal):', authMeError || 'Missing user payload from /auth/me');
+      if (cachedAuthUser?.id) {
+        currentUser = cachedAuthUser;
+        currentUserData = {
+          ...cachedAuthUser,
+          is_admin: false
+        };
+        authCheckCachedResult = {
+          user: currentUser,
+          cachedAuth: true,
+          authMeError
+        };
+        return authCheckCachedResult;
+      }
+
+      authCheckCachedResult = null;
+      return authCheckCachedResult;
+    }
+
+    currentUser = authMeResult.user;
+    console.log('Logged in as:', currentUser.id);
+
+    const { data, error: userError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', currentUser.id)
+      .single();
+
+    if (userError) {
+      console.warn('Failed to fetch user data:', userError);
+      currentUserData = {
+        ...authMeResult.user,
+        is_admin: false
+      };
+    } else {
+      currentUserData = data;
+    }
+
+    updateToolbarProfileAvatar();
+    console.log('User data loaded:', currentUserData.username);
+    console.log('[main-debug] checkAuth:user-loaded', {
+      userId: currentUser?.id || null,
+      username: currentUserData?.username || null
+    });
+    authCheckCachedResult = {
+      user: currentUser,
+      authMeError: null
+    };
+    return authCheckCachedResult;
+  })();
+
+  try {
+    return await authCheckInFlightPromise;
+  } finally {
+    authCheckInFlightPromise = null;
   }
-
-  currentUserData = data;
-  console.log('User data loaded:', currentUserData.username);
-  console.log('[main-debug] checkAuth:user-loaded', {
-    userId: currentUser?.id || null,
-    username: currentUserData?.username || null
-  });
-  return session;
 }
 
 function getBootWorldPathSegment() {
@@ -2448,11 +2647,13 @@ function applyWorldFormCategoryLock() {
   const inWorldMode = Boolean(activeWorldContext?.world?.category);
 
   postCategoryDisplay?.classList.toggle('is-disabled', inWorldMode);
+  postCategoryDropdownToggle?.classList.toggle('is-disabled', inWorldMode);
   addCategoryToggle?.classList.toggle('is-disabled', inWorldMode);
 
   if (inWorldMode) {
     setCategoryValue(activeWorldContext.world.category);
     addCategoryToggle.disabled = true;
+    if (postCategoryDropdownToggle) postCategoryDropdownToggle.disabled = true;
     postCategoryDisplay?.setAttribute('aria-disabled', 'true');
     closeCategorySelectDropdown();
     closeCategoryEditorPanel();
@@ -2460,7 +2661,35 @@ function applyWorldFormCategoryLock() {
   }
 
   addCategoryToggle.disabled = false;
+  if (postCategoryDropdownToggle) postCategoryDropdownToggle.disabled = false;
   postCategoryDisplay?.removeAttribute('aria-disabled');
+}
+
+function applyOverlayThemeVars() {
+  const root = document.documentElement;
+  const world = activeWorldContext?.world || null;
+
+  const worldFont = String(world?.font_family || '').trim();
+  const worldColor = String(world?.font_color || '').trim();
+  const worldUi = String(world?.ui_color || '').trim();
+
+  if (worldFont) {
+    root.style.setProperty('--post-overlay-font', worldFont);
+  } else {
+    root.style.removeProperty('--post-overlay-font');
+  }
+
+  if (worldColor) {
+    root.style.setProperty('--post-overlay-color', worldColor);
+  } else {
+    root.style.removeProperty('--post-overlay-color');
+  }
+
+  if (worldUi) {
+    root.style.setProperty('--post-overlay-bg', worldUi);
+  } else {
+    root.style.removeProperty('--post-overlay-bg');
+  }
 }
 
 function clearVisibleCanvasContent() {
@@ -2621,6 +2850,7 @@ function scheduleWorldModeReload(mode, worldPayload = null, delayMs = 0) {
         } else {
           await exitWorldMode();
         }
+        applyOverlayThemeVars();
         resolve(true);
       } catch (err) {
         console.error('World mode reload failed:', err);
@@ -2644,8 +2874,12 @@ function openPostForm() {
       return;
     }
   }
+  closeToolbarPanels('post');
+  applyOverlayThemeVars();
   postFileInput.multiple = true;
   postFormOverlay.style.display = 'flex';
+  document.getElementById('toolbarPostBtn')?.classList.add('active');
+  updateToolbarModalLockState();
   schedulePostTextMentionRefresh();
   renderPlainFieldSpellDecoration(postTitle);
   renderPlainFieldSpellDecoration(postCategoryInput);
@@ -2663,21 +2897,26 @@ function setCategoryValue(val) {
 
 function openCategorySelectDropdown() {
   if (!postCategoryDropdown) return;
+  closeCategoryEditorPanel();
   postCategoryDropdown.style.display = 'flex';
   postCategoryDisplay?.classList.add('is-open');
+  postCategoryDropdownToggle?.classList.add('is-open');
 }
 
 function closeCategorySelectDropdown() {
   if (!postCategoryDropdown) return;
   postCategoryDropdown.style.display = 'none';
   postCategoryDisplay?.classList.remove('is-open');
+  postCategoryDropdownToggle?.classList.remove('is-open');
 }
 
 function openCategoryEditorPanel() {
   editingCategoryName = null;
+  closeCategorySelectDropdown();
   closeCategoryColorPicker();
   renderCategoryEditor();
   postCategoryPanel.style.display = 'flex';
+  postCategoryPanel.classList.add('is-open');
   addCategoryToggle.classList.add('is-open');
 }
 
@@ -2686,6 +2925,7 @@ function closeCategoryEditorPanel() {
   closeCategoryColorPicker();
   renderCategoryEditor();
   postCategoryPanel.style.display = 'none';
+  postCategoryPanel.classList.remove('is-open');
   addCategoryToggle.classList.remove('is-open');
 }
 
@@ -2712,6 +2952,8 @@ function closePostForm() {
 
   // clear pending link target
   pendingLinkPostId = null;
+  document.getElementById('toolbarPostBtn')?.classList.remove('active');
+  updateToolbarModalLockState();
   scheduleUiStatePersist();
 }
 
@@ -5313,6 +5555,7 @@ async function loadCategories() {
 
   categoryRecords = data || [];
   categoryColorColumn = inferCategoryColorColumn(categoryRecords);
+  categoryOwnerColumn = inferCategoryOwnerColumn(categoryRecords);
 
   // Rebuild custom dropdown
   if (postCategoryDropdown) {
@@ -5341,12 +5584,14 @@ async function loadCategories() {
 function renderCategoryEditor() {
   if (!postCategoryList) return;
 
-  if (!categoryRecords.length) {
-    postCategoryList.innerHTML = '<div class="post-form-category-empty">no categories yet</div>';
+  const editableCategories = categoryRecords.filter((cat) => canCurrentUserEditCategory(cat));
+
+  if (!editableCategories.length) {
+    postCategoryList.innerHTML = '<div class="post-form-category-empty">no editable categories yet</div>';
     return;
   }
 
-  postCategoryList.innerHTML = categoryRecords.map((cat) => {
+  postCategoryList.innerHTML = editableCategories.map((cat) => {
     const categoryName = String(cat.name || '');
     const encodedName = encodeURIComponent(categoryName);
     const isEditing = editingCategoryName === categoryName;
@@ -5395,9 +5640,14 @@ async function handleAddCategory() {
   }
 
   try {
+    const insertRecord = { name, group_id: 'group0' };
+    if (categoryOwnerColumn && currentUser?.id) {
+      insertRecord[categoryOwnerColumn] = currentUser.id;
+    }
+
     const { error } = await supabase
       .from('categories')
-      .insert([{ name: name, group_id: 'group0' }]);
+      .insert([insertRecord]);
 
     if (error) throw error;
 
@@ -5415,6 +5665,12 @@ async function handleRenameCategory(oldName, nextName) {
   const trimmedNextName = String(nextName || '').trim();
   if (!trimmedOldName) return;
 
+  const targetRecord = categoryRecords.find((cat) => String(cat?.name || '').trim() === trimmedOldName) || null;
+  if (!canCurrentUserEditCategory(targetRecord)) {
+    alert('You can only edit your own categories.');
+    return;
+  }
+
   if (!trimmedNextName) {
     alert('Enter a category name.');
     return;
@@ -5429,11 +5685,17 @@ async function handleRenameCategory(oldName, nextName) {
   }
 
   try {
-    const { error: categoryError } = await supabase
+    let renameQuery = supabase
       .from('categories')
       .update({ name: trimmedNextName })
       .eq('group_id', 'group0')
       .eq('name', trimmedOldName);
+
+    if (categoryOwnerColumn && !currentUserData?.is_admin) {
+      renameQuery = renameQuery.eq(categoryOwnerColumn, currentUser.id);
+    }
+
+    const { error: categoryError } = await renameQuery;
 
     if (categoryError) throw categoryError;
 
@@ -5476,6 +5738,12 @@ async function handleDeleteCategory(name) {
   const trimmedName = String(name || '').trim();
   if (!trimmedName) return;
 
+  const targetRecord = categoryRecords.find((cat) => String(cat?.name || '').trim() === trimmedName) || null;
+  if (!canCurrentUserEditCategory(targetRecord)) {
+    alert('You can only edit your own categories.');
+    return;
+  }
+
   const deleteMessage = `Delete "${trimmedName}"? Posts using it will be reset to no category.`;
   const confirmed = typeof window.__prettyConfirm === 'function'
     ? await window.__prettyConfirm({
@@ -5505,11 +5773,17 @@ async function handleDeleteCategory(name) {
 
     if (worldsError) throw worldsError;
 
-    const { error: categoryError } = await supabase
+    let deleteCategoryQuery = supabase
       .from('categories')
       .delete()
       .eq('group_id', 'group0')
       .eq('name', trimmedName);
+
+    if (categoryOwnerColumn && !currentUserData?.is_admin) {
+      deleteCategoryQuery = deleteCategoryQuery.eq(categoryOwnerColumn, currentUser.id);
+    }
+
+    const { error: categoryError } = await deleteCategoryQuery;
 
     if (categoryError) throw categoryError;
 
@@ -5536,6 +5810,12 @@ async function handleUpdateCategoryColor(categoryName, nextColor) {
   const trimmedName = String(categoryName || '').trim();
   const normalizedColor = toHexColor(nextColor);
   if (!trimmedName || !normalizedColor) return false;
+
+  const targetRecord = categoryRecords.find((cat) => String(cat?.name || '').trim() === trimmedName) || null;
+  if (!canCurrentUserEditCategory(targetRecord)) {
+    alert('You can only edit your own categories.');
+    return false;
+  }
 
   try {
     await updateCategoryColorInDb(trimmedName, normalizedColor);
@@ -6070,7 +6350,7 @@ async function loadNotifications(options = {}) {
     : baseNotifications;
 
   if (!filteredNotifications || filteredNotifications.length === 0) {
-    notifList.innerHTML = `<div class="notif-empty">no notifications</div>`;
+    notifList.innerHTML = '';
     return;
   }
 
@@ -6139,36 +6419,21 @@ async function openProfileModal(userId) {
   if (editMode) return;
   if (!userId) return;
   currentProfileUserId = userId;
-  profileEditMode     = false;
-  newProfileCoverFile = null;
-  newProfilePfpFile   = null;
+  profileEditMode = false;
+  newProfilePfpFile = null;
+  currentProfileUserRow = null;
 
   const { data: user, error } = await supabase
     .from('users')
-    .select('id, username, pfp, pfp_url, cover_image_url')
+    .select('id, username, pfp, pfp_url')
     .eq('id', userId)
     .single();
   if (error || !user) return;
+  currentProfileUserRow = user;
 
-  const isOwnProfile = currentUser && userId === currentUser.id;
+  const isOwnProfile = Boolean(currentUser && String(userId) === String(currentUser.id));
 
-  // ── Cover ──
-  const coverImg         = document.getElementById('profileCoverImg');
-  const coverPlaceholder = document.getElementById('profileCoverPlaceholder');
-  const coverOverlay     = document.getElementById('profileCoverOverlay');
-
-  if (user.cover_image_url) {
-    coverImg.src           = user.cover_image_url;
-    coverImg.style.display = 'block';
-    coverPlaceholder.style.display = 'none';
-  } else {
-    coverImg.style.display         = 'none';
-    coverPlaceholder.style.display = 'block';
-  }
-  coverOverlay.style.display = 'none';
-
-  // ── PFP ──
-  const pfpWidget  = document.getElementById('profilePfpWidget');
+  const pfpWidget = document.getElementById('profilePfpWidget');
   const pfpOverlay = document.getElementById('profilePfpOverlay');
   pfpWidget.innerHTML = '';
   const pfpSrc = resolvePfpUrl(user);
@@ -6177,24 +6442,53 @@ async function openProfileModal(userId) {
   img.loading = 'lazy';
   img.decoding = 'async';
   img.dataset.avatar = '1';
-  img.style.cssText = 'width:60px;height:60px;object-fit:cover;display:block;';
+  img.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block;';
   pfpWidget.appendChild(img);
   applyImageRuntimeDefaults(img);
   pfpOverlay.style.display = 'none';
 
-  // ── Username ──
-  const usernameSpan  = document.getElementById('profileUsername');
+  const usernameSpan = document.getElementById('profileUsername');
   const usernameInput = document.getElementById('profileUsernameInput');
-  usernameSpan.textContent  = user.username;
-  usernameSpan.style.display  = 'inline';
-  usernameInput.value         = user.username;
+  usernameSpan.textContent = user.username;
+  usernameSpan.style.display = 'inline';
+  usernameInput.value = user.username;
   usernameInput.style.display = 'none';
 
-  // ── Save btn ──
-  document.getElementById('profileSaveBtn').style.display = 'none';
+  const profileModal = document.getElementById('profileModal');
+  const profilePostsList = document.getElementById('profilePostsList');
+  const profileEditFields = document.getElementById('profileEditFields');
+  const profilePasswordInput = document.getElementById('profilePasswordInput');
+  const profileEditBtn = document.getElementById('profileEditBtn');
+  const profileCancelBtn = document.getElementById('profileCancelBtn');
+  const profileSaveBtn = document.getElementById('profileSaveBtn');
 
-  // ── Posts ──
-  const postsList = document.getElementById('profilePostsList');
+  const applyProfileEditState = (nextEditMode) => {
+    profileEditMode = nextEditMode;
+
+    if (profileModal) {
+      profileModal.classList.toggle('is-editing', profileEditMode);
+    }
+
+    pfpOverlay.style.display = profileEditMode ? 'flex' : 'none';
+    usernameSpan.style.display = profileEditMode ? 'none' : 'inline';
+    usernameInput.style.display = profileEditMode ? 'block' : 'none';
+    profileEditFields.style.display = profileEditMode ? 'flex' : 'none';
+    profilePostsList.style.display = profileEditMode ? 'none' : 'flex';
+    profileEditBtn.style.display = profileEditMode ? 'none' : 'inline-flex';
+    profileCancelBtn.style.display = profileEditMode ? 'inline-flex' : 'none';
+    profileSaveBtn.style.display = profileEditMode ? 'inline-flex' : 'none';
+
+    if (profileSaveBtn) profileSaveBtn.textContent = '✓';
+    if (profileCancelBtn) profileCancelBtn.textContent = '✕';
+    if (profileEditBtn) profileEditBtn.textContent = '✂';
+
+    if (!profileEditMode) {
+      if (profilePasswordInput) profilePasswordInput.value = '';
+      newProfilePfpFile = null;
+    }
+  };
+
+  const postsList = profilePostsList;
   postsList.innerHTML = '';
 
   const [
@@ -6205,6 +6499,7 @@ async function openProfileModal(userId) {
       .from('worlds')
       .select('id, user_id, name, description, category, background_url, font_family, font_color, ui_color, is_public_view, is_public_edit')
       .eq('user_id', userId)
+      .eq('group_id', 'group0')
       .order('created_at', { ascending: false }),
     supabase
       .from('posts')
@@ -6214,159 +6509,202 @@ async function openProfileModal(userId) {
       .order('created_at', { ascending: false })
   ]);
 
-  if (worlds && worlds.length > 0) {
-    const worldsLabel = document.createElement('div');
-    worldsLabel.className = 'profile-posts-section-label';
-    worldsLabel.textContent = 'worlds';
-    postsList.appendChild(worldsLabel);
+  const isViewingOwnProfile = Boolean(currentUser && String(userId) === String(currentUser.id));
 
-    worlds.forEach((world) => {
-      const label = world.name || world.description?.slice(0, 60) || world.category || 'untitled world';
-      const item = document.createElement('div');
-      item.className = 'profile-post-item profile-world-item';
-      item.textContent = label;
+  const openWorld = async (world) => {
+    if (editMode || !world?.id) return;
 
-      item.addEventListener('click', async () => {
-        if (editMode || !world?.id) return;
+    const isPrivateView = world.is_public_view === false;
+    if (isPrivateView && String(currentUser?.id || '') !== String(world.user_id || '')) {
+      alert('This world is private.');
+      return;
+    }
 
-        const isPrivateView = world.is_public_view === false;
-        if (isPrivateView && String(currentUser?.id || '') !== String(world.user_id || '')) {
+    closeProfileModal();
+    if (worldsFeature?.openWorldById) {
+      await worldsFeature.openWorldById(world.id);
+    } else {
+      await scheduleWorldModeReload('enter', {
+        world,
+        creator: user,
+        backgroundUrl: world.background_url || DEFAULT_BG_URL,
+        fontFamily: world.font_family || '',
+        fontColor: world.font_color || '',
+        uiColor: world.ui_color || 'rgba(255,255,255,0.7)'
+      });
+    }
+  };
+
+  const openPostFromProfile = async (p) => {
+    const wasPostModalOpen = postDetailOverlay?.style.display === 'flex';
+
+    const fullPost = await getPostRecordById(p.id, { fallbackPost: p });
+    if (!fullPost) return;
+
+    activeUserFilter = null;
+    activeCategoryFilter = null;
+    activeLinkTreeRootPostId = null;
+
+    if (fullPost.world_id) {
+      const sameWorld = String(activeWorldContext?.world?.id || '') === String(fullPost.world_id);
+      if (!sameWorld) {
+        const { data: worldRow, error: worldError } = await supabase
+          .from('worlds')
+          .select('id, user_id, name, description, category, background_url, custom_code_url, font_family, font_color, ui_color, is_public_view, is_public_edit')
+          .eq('id', fullPost.world_id)
+          .maybeSingle();
+
+        if (worldError || !worldRow) {
+          alert('Could not open world for this post.');
+          return;
+        }
+
+        const isPrivateView = worldRow.is_public_view === false;
+        if (isPrivateView && String(currentUser?.id || '') !== String(worldRow.user_id || '')) {
           alert('This world is private.');
           return;
         }
 
-        closeProfileModal();
         if (worldsFeature?.openWorldById) {
-          await worldsFeature.openWorldById(world.id);
+          await worldsFeature.openWorldById(worldRow.id);
         } else {
           await scheduleWorldModeReload('enter', {
-            world,
+            world: worldRow,
             creator: user,
-            backgroundUrl: world.background_url || DEFAULT_BG_URL,
-            fontFamily: world.font_family || '',
-            fontColor: world.font_color || '',
-            uiColor: world.ui_color || 'rgba(255,255,255,0.7)'
+            backgroundUrl: worldRow.background_url || DEFAULT_BG_URL,
+            fontFamily: worldRow.font_family || '',
+            fontColor: worldRow.font_color || '',
+            uiColor: worldRow.ui_color || 'rgba(255,255,255,0.7)'
           });
         }
-      });
-
-      postsList.appendChild(item);
-    });
-  }
-
-  if (posts && posts.length > 0) {
-    const postsLabel = document.createElement('div');
-    postsLabel.className = 'profile-posts-section-label';
-    postsLabel.textContent = 'posts';
-    postsList.appendChild(postsLabel);
-
-    posts.forEach(p => {
-      const label = p.title || p.body?.slice(0, 60) || p.file_name || 'untitled';
-      const item = document.createElement('div');
-      item.className    = 'profile-post-item';
-      item.textContent  = label;
-
-      item.addEventListener('click', async () => {
-        const wasPostModalOpen = postDetailOverlay?.style.display === 'flex';
-
-        const fullPost = await getPostRecordById(p.id, { fallbackPost: p });
-        if (!fullPost) return;
-
-        activeUserFilter = null;
-        activeCategoryFilter = null;
-        activeLinkTreeRootPostId = null;
-
-        if (fullPost.world_id) {
-          const sameWorld = String(activeWorldContext?.world?.id || '') === String(fullPost.world_id);
-          if (!sameWorld) {
-            const { data: worldRow, error: worldError } = await supabase
-              .from('worlds')
-              .select('id, user_id, name, description, category, background_url, custom_code_url, font_family, font_color, ui_color, is_public_view, is_public_edit')
-              .eq('id', fullPost.world_id)
-              .maybeSingle();
-
-            if (worldError || !worldRow) {
-              alert('Could not open world for this post.');
-              return;
-            }
-
-            const isPrivateView = worldRow.is_public_view === false;
-            if (isPrivateView && String(currentUser?.id || '') !== String(worldRow.user_id || '')) {
-              alert('This world is private.');
-              return;
-            }
-
-            if (worldsFeature?.openWorldById) {
-              await worldsFeature.openWorldById(worldRow.id);
-            } else {
-              await scheduleWorldModeReload('enter', {
-                world: worldRow,
-                creator: user,
-                backgroundUrl: worldRow.background_url || DEFAULT_BG_URL,
-                fontFamily: worldRow.font_family || '',
-                fontColor: worldRow.font_color || '',
-                uiColor: worldRow.ui_color || 'rgba(255,255,255,0.7)'
-              });
-            }
-          }
-        } else if (activeWorldContext?.world?.id) {
-          await scheduleWorldModeReload('exit');
-        }
-
-        centerCanvasOnPost(fullPost.id);
-
-        if (!wasPostModalOpen) {
-          return;
-        }
-
-        closeProfileModal();
-        openPostDetailModal(fullPost, user);
-      });
-
-      postsList.appendChild(item);
-    });
-  } else if (!worlds || worlds.length === 0) {
-    postsList.innerHTML = '<div style="color:rgba(255,255,255,0.2);font-size:0.8rem;padding:10px 0;">no posts yet</div>';
-  }
-
-  // ── Edit mode (own profile only, triggered by right-click) ──
-  const profileModal = document.getElementById('profileModal');
-
-    let lastProfileRightClick = 0;
-
-  profileModal.oncontextmenu = (e) => {
-    if (!isOwnProfile) return;
-    e.preventDefault();
-    e.stopPropagation();
-
-    const now = Date.now();
-    const timeSince = now - lastProfileRightClick;
-    lastProfileRightClick = now;
-
-    if (timeSince < DOUBLE_CLICK_THRESHOLD) {
-      lastProfileRightClick = 0;
-      profileEditMode = !profileEditMode;
-
-      coverOverlay.style.display  = profileEditMode ? 'flex'         : 'none';
-      pfpOverlay.style.display    = profileEditMode ? 'flex'         : 'none';
-      usernameSpan.style.display  = profileEditMode ? 'none'         : 'inline';
-      usernameInput.style.display = profileEditMode ? 'inline'       : 'none';
-      document.getElementById('profileSaveBtn').style.display = profileEditMode ? 'inline-block' : 'none';
+      }
+    } else if (activeWorldContext?.world?.id) {
+      await scheduleWorldModeReload('exit');
     }
-    // single right-click inside profile does nothing
+
+    centerCanvasOnPost(fullPost.id);
+
+    if (!wasPostModalOpen) {
+      return;
+    }
+
+    closeProfileModal();
+    openPostDetailModal(fullPost, user);
   };
-    profileOverlay.classList.add('open');
+
+  const renderProfileList = () => {
+    const allWorlds = worlds || [];
+    const allPosts = posts || [];
+
+    const visibleWorlds = isViewingOwnProfile
+      ? allWorlds
+      : allWorlds.filter((world) => world?.is_public_view !== false);
+
+    const visibleWorldIds = new Set(visibleWorlds.map((world) => String(world.id || '')));
+    const visibleMainPosts = allPosts.filter((post) => !post?.world_id);
+    const visibleWorldPosts = allPosts.filter((post) => {
+      if (!post?.world_id) return false;
+      return visibleWorldIds.has(String(post.world_id));
+    });
+
+    postsList.innerHTML = '';
+
+    if (!visibleWorlds.length && !visibleMainPosts.length) {
+      postsList.innerHTML = '<div style="color:rgba(255,255,255,0.45);font-size:0.78rem;padding:8px 0;">none yet</div>';
+      return;
+    }
+
+    visibleWorlds.forEach((world) => {
+      const label = world.name || world.description?.slice(0, 60) || world.category || 'untitled world';
+      const worldPosts = visibleWorldPosts.filter((p) => String(p.world_id) === String(world.id));
+
+      const worldItem = document.createElement('div');
+      worldItem.className = 'profile-post-item profile-world-item';
+      worldItem.textContent = label;
+      worldItem.addEventListener('click', async () => {
+        await openWorld(world);
+      });
+      postsList.appendChild(worldItem);
+
+      worldPosts.forEach((p) => {
+        const postLabel = p.title || p.body?.slice(0, 60) || p.file_name || 'untitled';
+        const postItem = document.createElement('div');
+        postItem.className = 'profile-post-item profile-world-post-item';
+        postItem.textContent = postLabel;
+        postItem.addEventListener('click', async () => {
+          await openPostFromProfile(p);
+        });
+        postsList.appendChild(postItem);
+      });
+
+      const divider = document.createElement('div');
+      divider.className = 'profile-item-separator';
+      divider.textContent = '--.-.--.--.--------...--...--..';
+      postsList.appendChild(divider);
+    });
+
+    if (visibleMainPosts.length) {
+      const mainItem = document.createElement('div');
+      mainItem.className = 'profile-post-item profile-world-item';
+      mainItem.textContent = 'main';
+      postsList.appendChild(mainItem);
+
+      visibleMainPosts.forEach((p) => {
+        const postLabel = p.title || p.body?.slice(0, 60) || p.file_name || 'untitled';
+        const postItem = document.createElement('div');
+        postItem.className = 'profile-post-item profile-world-post-item';
+        postItem.textContent = postLabel;
+        postItem.addEventListener('click', async () => {
+          await openPostFromProfile(p);
+        });
+        postsList.appendChild(postItem);
+      });
+
+      const divider = document.createElement('div');
+      divider.className = 'profile-item-separator';
+      divider.textContent = '--.-.--.--.--------...--...--..';
+      postsList.appendChild(divider);
+    }
+
+    const trailingSeparator = postsList.lastElementChild;
+    if (trailingSeparator && trailingSeparator.classList.contains('profile-item-separator')) {
+      trailingSeparator.remove();
+    }
+  };
+
+  renderProfileList();
+
+  applyProfileEditState(false);
+
+  profileEditBtn.onclick = () => {
+    if (!isOwnProfile) return;
+    applyProfileEditState(true);
+  };
+
+  profileCancelBtn.onclick = async () => {
+    if (!currentProfileUserId) return;
+    await openProfileModal(currentProfileUserId);
+  };
+
+  profileSaveBtn.onclick = saveProfileChanges;
+
+  profileOverlay.classList.add('open');
   document.body.classList.add('profile-open');
+  document.getElementById('toolbarProfileBtn')?.classList.add('active');
+  updateToolbarModalLockState();
   scheduleUiStatePersist();
 }
 
 function closeProfileModal() {
   profileOverlay.classList.remove('open');
   document.body.classList.remove('profile-open');
-  profileEditMode     = false;
-  newProfileCoverFile = null;
-  newProfilePfpFile   = null;
+  document.getElementById('toolbarProfileBtn')?.classList.remove('active');
+  profileEditMode = false;
+  newProfilePfpFile = null;
   currentProfileUserId = null;
+  const profilePasswordInput = document.getElementById('profilePasswordInput');
+  if (profilePasswordInput) profilePasswordInput.value = '';
+  updateToolbarModalLockState();
   scheduleUiStatePersist();
 }
 
@@ -6374,58 +6712,74 @@ async function saveProfileChanges() {
   if (!currentProfileUserId) return;
 
   const updates = {};
+  const passwordInput = document.getElementById('profilePasswordInput');
+  const currentPassword = String(passwordInput?.value || '').trim();
 
-  // Username
+  if (!currentPassword) {
+    alert('Enter your current password to save profile changes');
+    return;
+  }
+
+  if (!currentUser?.username) {
+    alert('Could not verify the current account');
+    return;
+  }
+
+  const authResult = await api.auth.signIn({ username: currentUser.username, password: currentPassword });
+  if (authResult?.error) {
+    alert('Current password is incorrect');
+    return;
+  }
+
   const usernameInput = document.getElementById('profileUsernameInput');
   const newUsername = usernameInput.value.trim();
   if (!newUsername || newUsername.length > 12) {
-    alert('Username must be 1–12 characters'); return;
+    alert('Username must be 1–12 characters');
+    return;
   }
 
-  // Check uniqueness only if changed
-  const { data: currentUserRow } = await supabase
-    .from('users').select('username').eq('id', currentProfileUserId).single();
+  const currentUserRow = currentProfileUserRow || (await supabase
+    .from('users').select('username').eq('id', currentProfileUserId).single())?.data;
   if (newUsername !== currentUserRow?.username) {
     const { data: taken } = await supabase
       .from('users').select('id').eq('username', newUsername).maybeSingle();
-    if (taken) { alert('Username already taken'); return; }
+    if (taken) {
+      alert('Username already taken');
+      return;
+    }
     updates.username = newUsername;
   }
 
-  // New cover image
-  if (newProfileCoverFile) {
-    const path = `covers/${currentProfileUserId}-${Date.now()}.${newProfileCoverFile.name.split('.').pop()}`;
-    const { error: upErr } = await supabase.storage
-      .from('group0-pfps').upload(path, newProfileCoverFile);
-    if (upErr) { alert('Cover upload failed'); return; }
-    const { data: urlData } = supabase.storage.from('group0-pfps').getPublicUrl(path);
-    updates.cover_image_url = urlData.publicUrl;
-  }
-
-  // New pfp
   if (newProfilePfpFile) {
-    const ext  = newProfilePfpFile.name.split('.').pop() || 'webp';
+    const ext = newProfilePfpFile.name.split('.').pop() || 'webp';
     const path = `${currentProfileUserId}-${Date.now()}.${ext}`;
     const { error: upErr } = await supabase.storage
       .from('group0-pfps').upload(path, newProfilePfpFile);
-    if (upErr) { alert('PFP upload failed'); return; }
+    if (upErr) {
+      alert('PFP upload failed');
+      return;
+    }
     const { data: urlData } = supabase.storage.from('group0-pfps').getPublicUrl(path);
     updates.pfp_url = urlData.publicUrl;
-    updates.pfp     = null;
+    updates.pfp = null;
   }
 
   if (Object.keys(updates).length === 0) {
-    closeProfileModal(); return;
+    closeProfileModal();
+    return;
   }
 
   updates.updated_at = new Date();
   const { error } = await supabase
     .from('users').update(updates).eq('id', currentProfileUserId);
-  if (error) { alert(`Save failed: ${error.message}`); return; }
+  if (error) {
+    alert(`Save failed: ${error.message}`);
+    return;
+  }
 
-  // Refresh current user data if it's their own profile
   if (currentProfileUserId === currentUser?.id) {
     currentUserData = { ...currentUserData, ...updates };
+    updateToolbarProfileAvatar();
   }
 
   mentionUserMapCache = null;
@@ -7880,6 +8234,8 @@ function closeHelpOverlay() {
   const helpOverlay = document.getElementById('helpOverlay');
   if (!helpOverlay) return;
   helpOverlay.style.display = 'none';
+  document.getElementById('toolbarHelpBtn')?.classList.remove('active');
+  updateToolbarModalLockState();
   scheduleUiStatePersist();
 }
 
@@ -7887,22 +8243,87 @@ function toggleHelpOverlay() {
   const helpOverlay = document.getElementById('helpOverlay');
   if (!helpOverlay) return;
   const isOpen = helpOverlay.style.display !== 'none';
+  if (!isOpen && document.body.classList.contains('music-panel-open')) return;
   helpOverlay.style.display = isOpen ? 'none' : 'flex';
+  document.getElementById('toolbarHelpBtn')?.classList.toggle('active', !isOpen);
+  updateToolbarModalLockState();
   scheduleUiStatePersist();
 }
 
 function closeNotificationsPanel() {
   notifPanel.classList.remove('open');
   document.body.classList.remove('notif-open');
+  document.getElementById('toolbarNotifBtn')?.classList.remove('active');
+  updateToolbarModalLockState();
   scheduleUiStatePersist();
 }
 
 function openNotificationsPanel() {
   notifPanel.classList.add('open');
   document.body.classList.add('notif-open');
+  document.getElementById('toolbarNotifBtn')?.classList.add('active');
+  updateToolbarModalLockState();
   loadNotifications({ force: true, validateThreads: true });
   scheduleUiStatePersist();
 }
+
+function closeSettingsPanel() {
+  const panel = document.getElementById('settingsPanel');
+  if (!panel) return;
+  panel.classList.remove('open');
+  document.getElementById('toolbarSettingsBtn')?.classList.remove('active');
+  updateToolbarModalLockState();
+}
+
+function openSettingsPanel() {
+  const panel = document.getElementById('settingsPanel');
+  if (!panel) return;
+  panel.classList.add('open');
+  document.getElementById('toolbarSettingsBtn')?.classList.add('active');
+  updateToolbarModalLockState();
+}
+
+function ensureToolbarModalShield() {
+  let shield = document.getElementById('toolbarModalShield');
+  if (shield) return shield;
+
+  shield = document.createElement('div');
+  shield.id = 'toolbarModalShield';
+  shield.setAttribute('aria-hidden', 'true');
+  document.body.appendChild(shield);
+  return shield;
+}
+
+function isToolbarModalOpen() {
+  const helpOverlay = document.getElementById('helpOverlay');
+  const settingsPanel = document.getElementById('settingsPanel');
+
+  const helpOpen = !!helpOverlay && helpOverlay.style.display !== 'none';
+  const settingsOpen = !!settingsPanel?.classList.contains('open');
+  const notifOpen = !!notifPanel?.classList.contains('open');
+  const profileOpen = !!profileOverlay?.classList.contains('open');
+  const postFormOpen = postFormOverlay?.style.display === 'flex';
+
+  return helpOpen || settingsOpen || notifOpen || profileOpen || postFormOpen;
+}
+
+function updateToolbarModalLockState() {
+  ensureToolbarModalShield();
+  document.body.classList.toggle('toolbar-modal-open', isToolbarModalOpen());
+}
+
+function closeToolbarPanels(except = '') {
+  if (except !== 'notif') closeNotificationsPanel();
+  if (except !== 'settings') closeSettingsPanel();
+  if (except !== 'help') closeHelpOverlay();
+  if (except !== 'profile') closeProfileModal();
+  if (except !== 'post') closePostForm();
+  updateToolbarModalLockState();
+}
+
+window.addEventListener('music-panel-open', () => {
+  closeToolbarPanels();
+});
 
 function getUiStateStorageKey() {
   return `${UI_STATE_STORAGE_PREFIX}:${currentUser?.id || 'anon'}`;
@@ -8063,6 +8484,7 @@ async function restoreUiPanelsAndModals(snapshot) {
   const helpOverlay = document.getElementById('helpOverlay');
   if (snapshot.helpOpen && helpOverlay) {
     helpOverlay.style.display = 'flex';
+    document.getElementById('toolbarHelpBtn')?.classList.add('active');
   }
 
   if (snapshot.profileUserId) {
@@ -8207,6 +8629,12 @@ function handleGlobalKeydown(e) {
   if (e.key !== 'Escape') return;
 
   if (worldsFeature?.closeActiveUi?.()) {
+    return;
+  }
+
+  const settingsPanel = document.getElementById('settingsPanel');
+  if (settingsPanel?.classList.contains('open')) {
+    closeSettingsPanel();
     return;
   }
 
@@ -8884,12 +9312,6 @@ function initializeEventListeners() {
     }, DOUBLE_CLICK_THRESHOLD);
   });
 
-  // Profile modal controls
-  document.getElementById('profileClose').addEventListener('click', closeProfileModal);
-
-
-  document.getElementById('profileSaveBtn').addEventListener('click', saveProfileChanges);
-
   // Post detail modal controls
   const pdVisualFullscreenBtn = document.getElementById('pdVisualFullscreenBtn');
   const pdCtxDownloadFile = document.getElementById('pdCtxDownloadFile');
@@ -9028,16 +9450,6 @@ function initializeEventListeners() {
     }
   });
 
-  document.getElementById('profileCoverInput').addEventListener('change', (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    newProfileCoverFile = file;
-    const coverImg = document.getElementById('profileCoverImg');
-    coverImg.src           = URL.createObjectURL(file);
-    coverImg.style.display = 'block';
-    document.getElementById('profileCoverPlaceholder').style.display = 'none';
-  });
-
   document.getElementById('profilePfpInput').addEventListener('change', (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -9046,7 +9458,7 @@ function initializeEventListeners() {
     pfpWidget.innerHTML = '';
     const img = document.createElement('img');
     img.src = URL.createObjectURL(file);
-    img.style.cssText = 'width:60px;height:60px;object-fit:cover;display:block;';
+    img.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block;';
     pfpWidget.appendChild(img);
   });
 
@@ -9153,7 +9565,19 @@ function initializeEventListeners() {
 
   postSubmitBtn.addEventListener('click', handlePostSubmit);
 
-  addCategoryToggle.addEventListener('click', () => {
+  postCategoryDropdownToggle?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (postCategoryDropdownToggle.disabled || postCategoryDisplay?.classList.contains('is-disabled')) return;
+    if (postCategoryDropdown.style.display === 'flex') {
+      closeCategorySelectDropdown();
+    } else {
+      openCategorySelectDropdown();
+    }
+  });
+
+  addCategoryToggle.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (addCategoryToggle.disabled || postCategoryDisplay?.classList.contains('is-disabled')) return;
     closeCategorySelectDropdown();
     if (postCategoryPanel.style.display === 'none') {
       openCategoryEditorPanel();
@@ -9164,9 +9588,22 @@ function initializeEventListeners() {
   });
 
   postCategoryDisplay?.addEventListener('click', (e) => {
-    e.stopPropagation();
+    if (e.target.closest('.post-form-category-inline-btn')) return;
+    if (postCategoryDisplay?.classList.contains('is-disabled')) return;
     if (postCategoryDropdown.style.display === 'none' || postCategoryDropdown.style.display === '') {
       closeCategoryEditorPanel();
+      openCategorySelectDropdown();
+    } else {
+      closeCategorySelectDropdown();
+    }
+  });
+
+  postCategoryDisplay?.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault();
+    if (postCategoryDisplay?.classList.contains('is-disabled')) return;
+    closeCategoryEditorPanel();
+    if (postCategoryDropdown.style.display === 'none' || postCategoryDropdown.style.display === '') {
       openCategorySelectDropdown();
     } else {
       closeCategorySelectDropdown();
@@ -9196,12 +9633,11 @@ function initializeEventListeners() {
 
     const action = button.dataset.action;
     const categoryName = decodeURIComponent(button.dataset.categoryName || '');
+    const targetRecord = categoryRecords.find((record) => String(record?.name || '') === categoryName) || null;
+    if (!canCurrentUserEditCategory(targetRecord)) return;
 
     if (action === 'recolor') {
-      const categoryRecord = categoryRecords.find(
-        (record) => String(record?.name || '') === categoryName
-      ) || null;
-      const currentColor = getCategoryColorValue(categoryRecord) || getCategoryNetworkColor(categoryName, categoryRecord);
+      const currentColor = getCategoryColorValue(targetRecord) || getCategoryNetworkColor(categoryName, targetRecord);
       openCategoryColorPicker(categoryName, currentColor, button);
       return;
     }
@@ -9221,6 +9657,9 @@ function initializeEventListeners() {
     const categoryName = decodeURIComponent(encodedName);
     if (!categoryName) return;
 
+    const targetRecord = categoryRecords.find((record) => String(record?.name || '') === categoryName) || null;
+    if (!canCurrentUserEditCategory(targetRecord)) return;
+
     editingCategoryName = categoryName;
     closeCategoryColorPicker();
     renderCategoryEditor();
@@ -9232,6 +9671,12 @@ function initializeEventListeners() {
     if (!input) return;
 
     const categoryName = decodeURIComponent(input.dataset.categoryEditInput || '');
+    const targetRecord = categoryRecords.find((record) => String(record?.name || '') === categoryName) || null;
+    if (!canCurrentUserEditCategory(targetRecord)) {
+      editingCategoryName = null;
+      renderCategoryEditor();
+      return;
+    }
 
     if (e.key === 'Enter') {
       e.preventDefault();
@@ -9287,8 +9732,6 @@ function initializeEventListeners() {
   // Global keyboard shortcuts and dismiss behavior
   document.addEventListener('keydown', handleGlobalKeydown);
 
-  document.getElementById('helpClose')?.addEventListener('click', closeHelpOverlay);
-
   const helpOverlay = document.getElementById('helpOverlay');
   helpOverlay?.addEventListener('click', (e) => {
     if (e.target === helpOverlay) {
@@ -9296,15 +9739,67 @@ function initializeEventListeners() {
     }
   });
 
-  // Notification panel toggle
-  notifBar.addEventListener('click', () => {
+  // Right toolbar button wiring
+  const toolbarNotifBtn    = document.getElementById('toolbarNotifBtn');
+  const toolbarProfileBtn  = document.getElementById('toolbarProfileBtn');
+  const toolbarPostBtn     = document.getElementById('toolbarPostBtn');
+  const toolbarSettingsBtn = document.getElementById('toolbarSettingsBtn');
+  const toolbarHelpBtn     = document.getElementById('toolbarHelpBtn');
+
+  toolbarNotifBtn?.addEventListener('click', () => {
     if (editMode) return;
     const isOpen = notifPanel.classList.contains('open');
     if (isOpen) {
       closeNotificationsPanel();
     } else {
+      closeToolbarPanels('notif');
       openNotificationsPanel();
     }
+  });
+
+  toolbarProfileBtn?.addEventListener('click', () => {
+    if (editMode) return;
+    const isOpen = profileOverlay?.classList.contains('open');
+    if (isOpen) {
+      closeProfileModal();
+      return;
+    }
+    if (currentUser) {
+      closeToolbarPanels('profile');
+      openProfileModal(currentUser.id);
+    }
+  });
+
+  toolbarPostBtn?.addEventListener('click', () => {
+    if (editMode) return;
+    const isOpen = postFormOverlay?.style.display === 'flex';
+    if (isOpen) {
+      closePostForm();
+    } else {
+      closeToolbarPanels('post');
+      openPostForm();
+      toolbarPostBtn.classList.add('active');
+    }
+  });
+
+  toolbarSettingsBtn?.addEventListener('click', () => {
+    const panel = document.getElementById('settingsPanel');
+    if (!panel) return;
+    const isOpen = panel.classList.contains('open');
+    if (isOpen) {
+      closeSettingsPanel();
+    } else {
+      closeToolbarPanels('settings');
+      openSettingsPanel();
+    }
+  });
+
+  toolbarHelpBtn?.addEventListener('click', () => {
+    const helpIsOpen = document.getElementById('helpOverlay')?.style.display !== 'none';
+    if (!helpIsOpen) {
+      closeToolbarPanels('help');
+    }
+    toggleHelpOverlay();
   });
 
   window.addEventListener('beforeunload', persistUiStateNow);
@@ -9363,13 +9858,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     cachedUserId: currentUser?.id || null
   });
   if (!session) return;
-
-  const meProbe = await api.auth.getUser();
-  console.log('[main-debug] auth-me-probe', {
-    ok: !meProbe?.error,
-    error: meProbe?.error || null,
-    userId: meProbe?.data?.user?.id || null
-  });
 
   await loadMentionUserMap();
 
@@ -9477,8 +9965,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     autoplay: false,
     forceRestart: false
   });
+
   initAnimToggle();
   initThemeColorPicker();
+  initSettingsPanel();
 
   applyCanvasTransform();
   renderLinks(lastLoadedPosts, lastLoadedLinks);

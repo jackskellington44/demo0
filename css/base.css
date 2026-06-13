@@ -24,6 +24,22 @@
     --font-family:    Arial, Helvetica, sans-serif;
     --bg-url:         url("/images/background.jpg");
 
+    /* =============================================
+     * SYSTEM THEME — user-customizable
+     * Overridden at runtime via JS from localStorage.
+     * bg = solid fill for chrome bars
+     * fg = text color + outlines
+     * ============================================= */
+    --sys-bg:   #ffffff;
+    --sys-fg:   #000000;
+    --sys-font: inherit;
+
+    /* Font size for nav bar and music bar chrome text */
+    --chrome-bar-font: 0.9rem;
+
+    /* Shared text size for inner system modals (slightly above chrome bars) */
+    --inner-system-modal-font: calc(var(--chrome-bar-font) + 0.1rem);
+
     /* Font scale */
     --font-size-base: 0.875rem;
     --font-size-sm:   1rem;
@@ -39,7 +55,8 @@
     --font-size-pfp-plus:   clamp(2rem, 4vw, 3.125rem);
 
     /* Layout */
-    --notif-bar-w:   16px;
+    --toolbar-w:     44px;
+    --notif-bar-w:   44px;  /* right-side toolbar width — used as right offset throughout */
     --notif-panel-w: 16%;
     --profile-w:     20%;
 
