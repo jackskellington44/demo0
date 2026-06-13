@@ -5421,6 +5421,7 @@ async function openPostDetailModal(post, user) {
   pdModalInteractionCleanup = initPostDetailInteractions();
 
   postDetailOverlay.style.display = 'flex';
+  resizeCommentInput();
   loadCommentsForPost(post.id);
   loadConnectedTabs(post);
   scheduleUiStatePersist();
@@ -5491,6 +5492,7 @@ function closePostDetailModal() {
   document.getElementById('postDetailContent').innerHTML = '';
   commentsList.innerHTML  = '';
   commentInput.value      = '';
+  resizeCommentInput();
   activePostForModal      = null;
   pdVisualNavController   = null;
   pdVisualZoom            = 1;
@@ -7540,9 +7542,16 @@ async function submitComment() {
   });
 
   commentInput.value = '';
+  resizeCommentInput();
   await loadCommentsForPost(activePostForModal.id);
 
   postDetailModal.scrollTop = postDetailModal.scrollHeight;
+}
+
+function resizeCommentInput() {
+  if (!commentInput) return;
+  commentInput.style.height = 'auto';
+  commentInput.style.height = `${commentInput.scrollHeight}px`;
 }
 
 // ============================================
@@ -9965,8 +9974,9 @@ function initializeEventListeners() {
   });
 
   commentSubmitBtn?.addEventListener('click', submitComment);
+  commentInput?.addEventListener('input', resizeCommentInput);
   commentInput?.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       submitComment();
     }

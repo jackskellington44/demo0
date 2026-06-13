@@ -8,25 +8,31 @@
 
 #postDetailOverlay {
   position: fixed;
-  top: 0; bottom: 44px;
+  top: 44px;
+  bottom: 44px;
   left: 0;
-  right: var(--notif-bar-w);
-  --pd-preview-fg: rgba(255, 255, 255, 0.82);
-  --pd-preview-fg-soft: rgba(255, 255, 255, 0.62);
+  right: var(--toolbar-w);
+  --pd-ui-bg: var(--sys-fg);
+  --pd-ui-fg: var(--sys-bg);
+  --pd-ui-fg-soft: color-mix(in srgb, var(--pd-ui-fg) 72%, transparent);
+  --pd-ui-fg-muted: color-mix(in srgb, var(--pd-ui-fg) 50%, transparent);
+  --pd-preview-fg: var(--pd-ui-fg);
+  --pd-preview-fg-soft: var(--pd-ui-fg-soft);
   z-index: 100;
-  background: #000;
+  background: color-mix(in srgb, var(--pd-ui-bg) 86%, transparent);
   display: none;
   flex-direction: column;
   background: transparent;
-  border: 1px solid color-mix(in srgb, var(--sys-bg) 56%, transparent);
+  border: none;
 
-  padding: 10px 12px;
+  padding: 0;
   min-width: 220px;
   max-width: 100%;
   animation: none;
   flex-direction: column;
   overflow: hidden;
-  background: #000;
+  font-family: var(--sys-font, inherit);
+  color: var(--pd-ui-fg);
 }
 
 /*  Thread header bar (same vibe as music bar)  */
@@ -215,16 +221,19 @@
 
 /*  Identity row: pfp/user block + date/title block  */
 .pd-identity-row {
+  --pd-identity-pad-top: 20px;
+  --pd-identity-pad-bottom: 16px;
   flex-shrink: 0;
   display: flex;
   flex-direction: row;
   align-items: stretch;
   gap: 0;
-  padding: 20px 28px 16px;
+  padding: var(--pd-identity-pad-top) 28px var(--pd-identity-pad-bottom);
   border-bottom: 1px solid rgba(255,255,255,0.18);
 }
 
 .pd-user-block {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -233,7 +242,17 @@
   flex-shrink: 0;
   width: 80px;
   padding-right: 20px;
-  border-right: 1px solid rgba(255,255,255,0.18);
+  border-right: none;
+}
+
+.pd-user-block::after {
+  content: '';
+  position: absolute;
+  top: calc(-1 * var(--pd-identity-pad-top));
+  bottom: calc(-1 * var(--pd-identity-pad-bottom));
+  right: 0;
+  width: 1px;
+  background: rgba(255,255,255,0.18);
 }
 
 .pd-pfp {
@@ -310,16 +329,48 @@
 
 /*  Resize handles  */
 .pd-resize-handle {
-  flex: 0 0 3px;
+  position: relative;
+  flex: 0 0 1px;
   background: rgba(255,255,255,0.1);
   cursor: col-resize;
   transition: background 0.15s ease;
   height: 100%;
   flex-shrink: 0;
+  overflow: visible;
+}
+
+.pd-resize-handle::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -6px;
+  right: -6px;
+  background: transparent;
+}
+
+.pd-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  transform: translate(-50%, -50%);
+  border: 1px solid color-mix(in srgb, var(--pd-ui-fg, #fff) 26%, transparent);
+  background: color-mix(in srgb, var(--pd-ui-bg, #000) 88%, transparent);
+  opacity: 0;
+  transition: opacity 0.15s ease, border-color 0.15s ease;
+  pointer-events: none;
 }
 .pd-resize-handle:hover,
 .pd-resize-handle:active {
   background: rgba(255,255,255,0.3);
+}
+
+.pd-resize-handle:hover::after,
+.pd-resize-handle:active::after {
+  opacity: 1;
 }
 
 /*  Visual column  */
@@ -527,7 +578,7 @@
 
 /*  Text column  */
 .pd-text-col {
-  border-right: 1px solid rgba(255,255,255,0.12);
+  border-right: none;
   overflow: hidden;
 }
 
@@ -661,26 +712,31 @@
 .comment-form {
   flex-shrink: 0;
   display: flex;
-  gap: 8px;
+  gap: 0;
   border-top: 1px solid rgba(255,255,255,0.12);
   padding: 10px 14px;
-  align-items: center;
+  align-items: stretch;
   background: rgba(255,255,255,0.02);
 }
 
 .comment-input {
   flex: 1;
   background: transparent;
-  border: none;
-  border-bottom: 1px solid rgba(255,255,255,0.18);
+  border: 1px solid rgba(255,255,255,0.22);
+  border-radius: 0;
   outline: none;
   color: rgba(255,255,255,0.85);
   font-size: 0.8rem;
   font-family: inherit;
-  padding: 4px 2px;
-  transition: border-bottom-color 0.15s ease;
+  padding: 8px 10px;
+  line-height: 1.45;
+  min-height: 36px;
+  max-height: 30vh;
+  resize: none;
+  overflow-y: hidden;
+  transition: border-color 0.15s ease;
 }
-.comment-input:focus         { border-bottom-color: rgba(255,255,255,0.5); }
+.comment-input:focus         { border-color: rgba(255,255,255,0.5); }
 .comment-input::placeholder  { color: rgba(255,255,255,0.3); }
 
 .comment-submit-btn {
@@ -841,6 +897,183 @@
   border: none;
   border-radius: 1px;
   background: rgba(255,255,255,0.9);
+}
+
+/* Unified system-theme + connected boxes for post detail modal */
+#postDetailModal,
+#postDetailModal * {
+  font-family: var(--sys-font, inherit);
+}
+
+#postDetailModal {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  color: var(--pd-ui-fg);
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+.pd-thread-bar,
+.pd-file-tab-row,
+.pd-identity-row,
+.pd-audio-dock,
+.pd-body {
+  background: color-mix(in srgb, var(--pd-ui-bg) 92%, transparent);
+  border-left: 1px solid color-mix(in srgb, var(--pd-ui-fg) 28%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--pd-ui-fg) 28%, transparent);
+  border-top: none;
+  border-right: none;
+  backdrop-filter: none;
+}
+
+.pd-file-tab-row,
+.pd-identity-row,
+.pd-audio-dock,
+.pd-body {
+  margin-top: 0;
+}
+
+.pd-body {
+  border-bottom: none;
+}
+
+.pd-thread-tab,
+.pd-file-tab,
+#pdCommentsToggle,
+.pd-vis-btn,
+.pd-audio-btn,
+.comment-submit-btn,
+.pd-visual-fullscreen-btn,
+.pd-pdf-btn,
+.pd-ctx-item {
+  color: var(--pd-ui-fg-muted);
+  border-color: color-mix(in srgb, var(--pd-ui-fg) 24%, transparent);
+}
+
+.pd-thread-tab:hover,
+.pd-file-tab:hover,
+#pdCommentsToggle:hover,
+.pd-vis-btn:hover,
+.pd-audio-btn:hover,
+.comment-submit-btn:hover,
+.pd-visual-fullscreen-btn:hover,
+.pd-pdf-btn:hover,
+.pd-ctx-item:hover {
+  color: var(--pd-ui-fg);
+}
+
+.pd-thread-tab,
+.pd-file-tab,
+#pdCommentsToggle {
+  background: color-mix(in srgb, var(--pd-ui-bg) 84%, transparent);
+}
+
+#pdCommentsToggle.collapsed {
+  background: color-mix(in srgb, var(--pd-ui-fg) 12%, var(--pd-ui-bg));
+  border-color: color-mix(in srgb, var(--pd-ui-fg) 34%, transparent);
+  color: var(--pd-ui-fg-soft);
+}
+
+.pd-title,
+#postDetailContent .post-body,
+.comment-body,
+.post-external-link {
+  color: var(--pd-ui-fg);
+}
+
+.pd-username,
+.pd-date,
+.pd-category,
+.comment-username,
+.comment-time,
+.pd-visual-counter,
+.pd-tab-kind,
+.pd-audio-title,
+.pd-pdf-page-indicator,
+.file-nav-label,
+.file-nav-download a {
+  color: var(--pd-ui-fg-soft);
+}
+
+.pd-resize-handle {
+  background: color-mix(in srgb, var(--pd-ui-fg) 24%, transparent);
+}
+
+.pd-resize-handle:hover,
+.pd-resize-handle:active {
+  background: color-mix(in srgb, var(--pd-ui-fg) 42%, transparent);
+}
+
+.pd-resize-handle:hover::after,
+.pd-resize-handle:active::after {
+  border-color: color-mix(in srgb, var(--pd-ui-fg) 44%, transparent);
+}
+
+.pd-text-col,
+.pd-user-block,
+.comment-form,
+.pd-visual-nav,
+.pd-file-tab-row,
+.pd-audio-dock {
+  border-color: color-mix(in srgb, var(--pd-ui-fg) 24%, transparent);
+}
+
+.pd-user-block::after {
+  background: color-mix(in srgb, var(--pd-ui-fg) 24%, transparent);
+}
+
+.pd-visual-col,
+.pd-pdf-shell,
+.pd-visual-video,
+.pd-visual-pdf {
+  background: color-mix(in srgb, var(--pd-ui-bg) 96%, transparent);
+}
+
+.pd-comments-inner,
+#postDetailContent {
+  scrollbar-color: color-mix(in srgb, var(--pd-ui-fg) 22%, transparent) transparent;
+}
+
+.pd-comments-inner::-webkit-scrollbar-thumb,
+#postDetailContent::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--pd-ui-fg) 22%, transparent);
+}
+
+.pd-comments-inner::-webkit-scrollbar-thumb:hover,
+#postDetailContent::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--pd-ui-fg) 40%, transparent);
+}
+
+.comment-input {
+  color: var(--pd-ui-fg);
+  border-color: color-mix(in srgb, var(--pd-ui-fg) 34%, transparent);
+}
+
+.comment-edit-input {
+  color: var(--pd-ui-fg);
+  border-bottom-color: color-mix(in srgb, var(--pd-ui-fg) 34%, transparent);
+}
+
+.comment-input:focus {
+  border-color: color-mix(in srgb, var(--pd-ui-fg) 60%, transparent);
+}
+
+.comment-edit-input:focus {
+  border-bottom-color: color-mix(in srgb, var(--pd-ui-fg) 60%, transparent);
+}
+
+.comment-input::placeholder {
+  color: color-mix(in srgb, var(--pd-ui-fg) 56%, transparent);
+}
+
+#pdFileContextMenu {
+  background: color-mix(in srgb, var(--pd-ui-bg) 94%, transparent);
+  border-color: color-mix(in srgb, var(--pd-ui-fg) 26%, transparent);
 }
 
 /* ============================================ */
