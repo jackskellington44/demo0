@@ -1052,9 +1052,10 @@ body.anim-hard-freeze #categoryLayer path {
 /* ============================================ */
 
 :root {
-  --utility-panel-w: clamp(320px, 30vw, 460px);
-  --settings-panel-w: clamp(240px, 22vw, 340px);
+  --utility-panel-w: 300px;
+  --settings-panel-w: var(--utility-panel-w);
   --modal-title-size: 1.08rem;
+  --utility-modal-font-size: var(--inner-system-modal-font);
 }
 
 .right-toolbar {
@@ -1120,7 +1121,7 @@ body.anim-hard-freeze #categoryLayer path {
   background: var(--sys-fg);
   border-right: 1px solid var(--sys-bg);
   color: var(--sys-bg);
-  z-index: 199;
+  z-index: 150;
   transition: left 0.25s ease;
   display: flex;
   flex-direction: column;
@@ -1137,14 +1138,23 @@ body.anim-hard-freeze #categoryLayer path {
   overflow-y: auto;
   padding: 14px 16px 30px 16px;
   overscroll-behavior: contain;
+  font-family: var(--sys-font, inherit);
+  font-size: var(--utility-modal-font-size);
 }
 
-.notif-heading {
+.notif-heading,
+.help-heading,
+.profile-username {
+  font-family: var(--sys-font, inherit);
   font-size: var(--modal-title-size);
   letter-spacing: 0.04em;
   text-transform: lowercase;
   color: var(--sys-bg);
-  font-family: var(--sys-font, inherit);
+  line-height: 1.2;
+}
+
+.notif-heading,
+.help-heading {
   margin-bottom: 8px;
 }
 
@@ -1227,7 +1237,7 @@ body.anim-hard-freeze #categoryLayer path {
   color: var(--sys-bg);
   backdrop-filter: blur(18px) saturate(120%);
   -webkit-backdrop-filter: blur(18px) saturate(120%);
-  z-index: 199;
+  z-index: 150;
   transition: left 0.25s ease;
   display: flex;
   flex-direction: column;
@@ -1242,13 +1252,18 @@ body.anim-hard-freeze #categoryLayer path {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 18px;
+  padding: 14px 16px 20px 16px;
   overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 0;
   font-family: var(--sys-font, inherit);
+  font-size: var(--utility-modal-font-size);
   color: var(--sys-bg);
+}
+
+.settings-panel-inner > :not(.notif-heading):not(.modal-separator-settings) {
+  margin-top: 14px;
 }
 
 .settings-control-row {
@@ -1388,6 +1403,55 @@ body.anim-hard-freeze #categoryLayer path {
   border-color: var(--sys-bg);
 }
 
+.settings-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 44px;
+}
+
+.settings-toggle-label {
+  color: color-mix(in srgb, var(--sys-bg) 86%, transparent);
+  font-family: var(--sys-font, inherit);
+  font-size: 0.78rem;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.settings-toggle-switch {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid color-mix(in srgb, var(--sys-bg) 44%, transparent);
+  background: color-mix(in srgb, var(--sys-fg) 78%, transparent);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.settings-toggle-btn {
+  min-width: 54px;
+  height: 42px;
+  border: none;
+  border-right: 1px solid color-mix(in srgb, var(--sys-bg) 26%, transparent);
+  background: transparent;
+  color: color-mix(in srgb, var(--sys-bg) 78%, transparent);
+  font-family: var(--sys-font, inherit);
+  font-size: 0.76rem;
+  text-transform: lowercase;
+  cursor: pointer;
+  padding: 0 14px;
+}
+
+.settings-toggle-btn:last-child {
+  border-right: none;
+}
+
+.settings-toggle-btn.active {
+  background: var(--sys-bg);
+  color: var(--sys-fg);
+}
+
 /* ============================================ */
 /* 19.2 PFP WIDGET                              */
 /* ============================================ */
@@ -1488,8 +1552,10 @@ body.anim-hard-freeze #categoryLayer path {
   display: flex;
   flex-direction: column;
   position: relative;
-  padding: 12px 16px 20px;
+  padding: 14px 16px 20px;
   gap: 8px;
+  font-family: var(--sys-font, inherit);
+  font-size: var(--utility-modal-font-size);
 }
 
 .profile-pfp-wrap {
@@ -1523,29 +1589,26 @@ body.anim-hard-freeze #categoryLayer path {
 }
 
 .profile-username {
-  margin: 0;
-  font-size: var(--modal-title-size);
-  letter-spacing: 0.04em;
-  text-transform: lowercase;
-  color: var(--sys-bg);
-  line-height: 1.2;
+  margin: 0 0 8px;
   display: block;
 }
 
 .profile-username-input {
+  margin: 0 0 8px;
   width: 100%;
   background: transparent;
-  border: none;
-  border-bottom: 1px solid color-mix(in srgb, var(--sys-bg) 56%, transparent);
+  border: 1px solid color-mix(in srgb, var(--sys-bg) 56%, transparent);
+  color: color-mix(in srgb, var(--sys-bg) 90%, transparent);
+  font-family: var(--sys-font, inherit);
+  font-size: var(--utility-modal-font-size);
+  letter-spacing: 0.01em;
+  text-transform: none;
+  line-height: 1.2;
   outline: none;
-  padding: 4px 0 6px;
+  padding: 10px 12px;
   min-width: 0;
   max-width: none;
   animation: none;
-  font-size: var(--modal-title-size);
-  letter-spacing: 0.04em;
-  text-transform: lowercase;
-  color: var(--sys-bg);
 }
 
 .profile-action-group {
@@ -1583,8 +1646,8 @@ body.anim-hard-freeze #categoryLayer path {
 }
 
 .profile-modal-separator {
-  margin-top: -2px;
-  margin-bottom: 0;
+  margin-top: 0;
+  margin-bottom: 14px;
 }
 
 .profile-hero-row {
@@ -1616,6 +1679,12 @@ body.anim-hard-freeze #categoryLayer path {
   gap: 8px;
 }
 
+.profile-edit-field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 .profile-edit-field > span {
   color: color-mix(in srgb, var(--sys-bg) 64%, transparent);
   font-size: 0.72rem;
@@ -1628,10 +1697,15 @@ body.anim-hard-freeze #categoryLayer path {
   background: transparent;
   border: 1px solid color-mix(in srgb, var(--sys-bg) 56%, transparent);
   color: color-mix(in srgb, var(--sys-bg) 90%, transparent);
-  font-family: inherit;
-  font-size: 1rem;
+  font-family: var(--sys-font, inherit);
+  font-size: var(--utility-modal-font-size);
   padding: 10px 12px;
   outline: none;
+}
+
+.profile-edit-input:focus,
+.profile-username-input:focus {
+  border-color: var(--sys-bg);
 }
 
 .profile-edit-input::placeholder {
@@ -2402,7 +2476,7 @@ body.music-panel-open .music-bar {
   left: 0;
   bottom: 44px;
   right: var(--toolbar-w);
-  z-index: 240;
+  z-index: 150;
   background: transparent;
   backdrop-filter: blur(8px) saturate(110%);
   -webkit-backdrop-filter: blur(8px) saturate(110%);
@@ -2421,8 +2495,9 @@ body.music-panel-open .music-bar {
   overflow-y: auto;
   background: var(--sys-fg);
   border-right: 1px solid var(--sys-bg);
-  padding: 22px 18px 20px;
+  padding: 14px 16px 20px 16px;
   font-family: var(--sys-font, inherit);
+  font-size: var(--utility-modal-font-size);
   color: var(--sys-bg);
 }
 
@@ -2445,15 +2520,6 @@ body.music-panel-open .music-bar {
   display: flex;
   flex-direction: column;
   gap: 18px;
-}
-
-.help-heading {
-  font-size: var(--modal-title-size);
-  letter-spacing: 0.04em;
-  text-transform: lowercase;
-  color: var(--sys-bg);
-  font-family: var(--sys-font, inherit);
-  margin-bottom: 8px;
 }
 
 .modal-separator-help {
@@ -2562,16 +2628,19 @@ body.music-panel-open .music-bar {
 
 .world-maker-overlay {
   position: fixed;
-  inset: 0 var(--notif-bar-w) 44px 0;
+  top: 44px;
+  left: 0;
+  bottom: 44px;
+  right: var(--toolbar-w);
   z-index: 130;
+  padding: 0;
+  background: transparent;
+  backdrop-filter: blur(8px) saturate(110%);
+  -webkit-backdrop-filter: blur(8px) saturate(110%);
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  overflow-y: auto;
-  background: rgba(0, 0, 0, 0.38);
-  backdrop-filter: blur(22px);
-  -webkit-backdrop-filter: blur(22px);
-  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  align-items: stretch;
+  justify-content: stretch;
+  overflow: auto;
   transition: left 0.2s ease, right 0.2s ease;
 }
 
@@ -2581,14 +2650,19 @@ body.profile-open.notif-open .world-maker-overlay { left: var(--utility-panel-w)
 
 .world-maker-modal {
   width: 100%;
-  max-width: 860px;
-  flex-shrink: 0;
-  background: transparent;
+  max-width: 100%;
+  min-height: 100%;
+  max-height: 100%;
+  overflow: auto;
+  background: color-mix(in srgb, var(--post-overlay-bg, rgba(4, 8, 16, 0.28)) 20%, transparent);
   border: none;
   box-shadow: none;
-  backdrop-filter: none;
-  padding: 48px 40px 80px;
+  backdrop-filter: blur(8px) saturate(110%);
+  -webkit-backdrop-filter: blur(8px) saturate(110%);
+  padding: clamp(16px, 2.4vw, 30px);
   position: relative;
+  font-family: var(--post-overlay-font, var(--sys-font, inherit));
+  color: var(--post-overlay-color, var(--sys-fg));
 }
 
 .world-maker-close,
@@ -2628,32 +2702,40 @@ body.profile-open.notif-open .world-maker-overlay { left: var(--utility-panel-w)
 }
 
 .world-maker-kicker {
-  margin-bottom: 10px;
-  color: rgba(255, 255, 255, 0.38);
-  font-size: 0.72rem;
-  letter-spacing: 0.24em;
-  text-transform: uppercase;
+  margin-bottom: 8px;
+  color: color-mix(in srgb, var(--post-overlay-color, var(--sys-fg)) 60%, transparent);
+  font-size: 0.76rem;
+  letter-spacing: 0.08em;
+  text-transform: lowercase;
 }
 
 .world-maker-title {
   margin: 0 0 12px;
-  color: rgba(255, 255, 255, 0.92);
-  font-size: clamp(1.7rem, 2.6vw, 2.5rem);
-  font-weight: 300;
+  color: var(--post-overlay-color, var(--sys-fg));
+  font-size: 1.08rem;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  font-weight: 400;
 }
 
 .world-maker-copy {
   margin: 0 0 26px;
   width: min(64ch, 100%);
-  color: rgba(255, 255, 255, 0.52);
-  font-size: 0.88rem;
+  color: color-mix(in srgb, var(--post-overlay-color, var(--sys-fg)) 70%, transparent);
+  font-size: 0.84rem;
   line-height: 1.6;
+}
+
+.world-maker-kicker,
+.world-maker-title,
+.world-maker-copy {
+  display: none;
 }
 
 .world-maker-mode-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 18px;
+  gap: 12px;
 }
 
 .world-maker-mode-btn,
@@ -2663,44 +2745,40 @@ body.profile-open.notif-open .world-maker-overlay { left: var(--utility-panel-w)
 }
 
 .world-maker-mode-btn {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-height: 220px;
-  padding: 24px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: rgba(255, 255, 255, 0.03);
-  color: rgba(255, 255, 255, 0.82);
-  text-align: left;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: 0 16px;
+  border: 1px solid var(--post-overlay-color, var(--sys-fg));
+  background: transparent;
+  color: var(--post-overlay-color, var(--sys-fg));
+  text-align: center;
+  font-size: 1.04rem;
   cursor: pointer;
-  transition: border-color 0.15s ease, background-color 0.15s ease;
+  transition: none;
 }
 
 .world-maker-mode-btn:hover {
-  border-color: rgba(255, 255, 255, 0.32);
-  background-color: rgba(255, 255, 255, 0.06);
-}
-
-.world-maker-mode-title {
-  font-size: 1.1rem;
-  color: rgba(255, 255, 255, 0.94);
-}
-
-.world-maker-mode-copy {
-  color: rgba(255, 255, 255, 0.62);
-  line-height: 1.6;
+  color: var(--post-overlay-color, var(--sys-fg));
 }
 
 .world-maker-form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 18px;
+  gap: 14px;
+}
+
+.world-maker-form-grid--plug {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
 }
 
 .world-maker-field {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
 }
 
@@ -2709,10 +2787,29 @@ body.profile-open.notif-open .world-maker-overlay { left: var(--utility-panel-w)
 }
 
 .world-maker-field > span {
-  color: rgba(255, 255, 255, 0.62);
-  font-size: 0.76rem;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
+  display: none;
+}
+
+.world-maker-input {
+  width: 100%;
+  background: transparent;
+  border: 1px solid var(--post-overlay-color, var(--sys-fg));
+  color: var(--post-overlay-color, var(--sys-fg));
+  font-size: 1.04rem;
+  font-family: inherit;
+  outline: none;
+  padding: 10px 12px;
+}
+
+.world-maker-input::placeholder,
+.world-maker-textarea::placeholder,
+.world-maker-mode-password::placeholder {
+  color: color-mix(in srgb, var(--post-overlay-color, var(--sys-fg)) 70%, transparent);
+}
+
+.world-maker-textarea {
+  min-height: 124px;
+  resize: vertical;
 }
 
 .world-maker-field input[type="text"],
@@ -2721,28 +2818,20 @@ body.profile-open.notif-open .world-maker-overlay { left: var(--utility-panel-w)
 .world-maker-field select,
 .world-maker-upload,
 .world-maker-download {
-  width: 100%;
-  border: none;
-  border-bottom: 2px solid var(--sys-bg);
-  background: transparent;
-  color: var(--sys-bg);
-  padding: 8px 0;
-  border-radius: 0;
-  outline: none;
-  transition: border-bottom-color 0.15s ease, color 0.15s ease;
+  transition: none;
 }
 
 .world-maker-field select {
   appearance: none;
   -webkit-appearance: none;
-  border: 1px solid var(--sys-bg);
-  border-bottom: 1px solid var(--sys-bg);
-  background-color: var(--sys-fg);
-  padding-right: 22px;
+  border: 1px solid var(--post-overlay-color, var(--sys-fg));
+  background-color: transparent;
+  color: var(--post-overlay-color, var(--sys-fg));
+  padding: 10px 30px 10px 10px;
   cursor: pointer;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='rgb(13,16,22)' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='rgb(242,244,248)' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
-  background-position: right 2px center;
+  background-position: right 10px center;
 }
 
 .world-maker-field select option {
@@ -2754,27 +2843,113 @@ body.profile-open.notif-open .world-maker-overlay { left: var(--utility-panel-w)
 .world-maker-field input[type="password"]:focus,
 .world-maker-field textarea:focus,
 .world-maker-field select:focus {
-  border-color: var(--sys-bg);
-  color: var(--sys-bg);
-}
-
-.world-maker-field textarea {
-  min-height: 124px;
-  resize: vertical;
-}
-
-.world-maker-field input[type="color"] {
-  width: 100%;
-  min-height: 48px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.04);
-  padding: 6px;
+  border-color: var(--post-overlay-color, var(--sys-fg));
 }
 
 .world-maker-upload {
   display: flex;
   align-items: center;
+  border: 1px solid var(--post-overlay-color, var(--sys-fg));
+  color: var(--post-overlay-color, var(--sys-fg));
+  padding: 10px 12px;
   cursor: pointer;
+}
+
+.world-maker-upload--compact {
+  width: 100%;
+}
+
+.world-maker-input-box {
+  border: 1px solid var(--post-overlay-color, var(--sys-fg));
+  color: var(--post-overlay-color, var(--sys-fg));
+  font-size: 1.04rem;
+}
+
+.world-maker-inline-row--style {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.world-maker-inline-control {
+  min-width: 0;
+}
+
+.world-maker-inline-control--style,
+.world-maker-inline-control--font,
+.world-maker-inline-control--color {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--post-overlay-color, var(--sys-fg));
+  padding: 8px 10px;
+}
+
+.world-maker-inline-label {
+  font-size: 0.74rem;
+  color: color-mix(in srgb, var(--post-overlay-color, var(--sys-fg)) 76%, transparent);
+  white-space: nowrap;
+}
+
+.world-maker-inline-control--font select {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  padding: 0 16px 0 0;
+  font-size: 0.88rem;
+}
+
+.world-maker-inline-control--color input[type="color"] {
+  width: 34px;
+  height: 34px;
+  border: 1px solid color-mix(in srgb, var(--post-overlay-color, var(--sys-fg)) 40%, transparent);
+  background: transparent;
+  padding: 0;
+}
+
+.world-maker-mode-setting {
+  display: grid;
+  grid-template-columns: 1fr;
+  border: 1px solid var(--post-overlay-color, var(--sys-fg));
+}
+
+.world-maker-mode-setting[data-private="true"] {
+  grid-template-columns: 1fr 1fr;
+}
+
+.world-maker-inline-control--mode {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  border: none;
+  padding: 0 10px;
+}
+
+.world-maker-inline-prefix {
+  font-size: 1.04rem;
+  color: var(--post-overlay-color, var(--sys-fg));
+}
+
+.world-maker-inline-control--mode select {
+  border: none;
+  background: transparent;
+  color: var(--post-overlay-color, var(--sys-fg));
+  padding: 0 18px 0 0;
+  min-width: 86px;
+}
+
+.world-maker-mode-password {
+  width: 100%;
+  border: none;
+  border-left: 1px solid var(--post-overlay-color, var(--sys-fg));
+  background: transparent;
+  color: var(--post-overlay-color, var(--sys-fg));
+  font-family: inherit;
+  font-size: 1.04rem;
+  padding: 10px 12px;
+  outline: none;
 }
 
 .world-maker-upload input[type="file"] {
@@ -2783,21 +2958,40 @@ body.profile-open.notif-open .world-maker-overlay { left: var(--utility-panel-w)
 
 .world-maker-actions {
   display: flex;
-  justify-content: space-between;
-  gap: 14px;
-  margin-top: 28px;
+  justify-content: flex-end;
+  gap: 12px;
+  align-items: center;
+  margin-top: 0;
 }
 
 .world-maker-primary,
 .world-maker-secondary,
-.world-maker-download,
 .world-mode-close,
 .world-mode-delete {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 42px;
+  min-height: 48px;
+  height: 48px;
+  min-width: 48px;
   padding: 0 16px;
+  background: transparent;
+  border: none;
+  color: color-mix(in srgb, var(--post-overlay-color, var(--sys-fg)) 82%, transparent);
+  font-size: 1.25rem;
+}
+
+.world-maker-download {
+  width: 100%;
+  min-height: 48px;
+  padding: 10px 12px;
+  border: 1px solid var(--post-overlay-color, var(--sys-fg));
+  background: transparent;
+  color: var(--post-overlay-color, var(--sys-fg));
+  text-align: left;
+  justify-content: flex-start;
+  font-size: 1.04rem;
+  font-family: inherit;
 }
 
 .world-maker-danger {
@@ -2818,18 +3012,19 @@ body.profile-open.notif-open .world-maker-overlay { left: var(--utility-panel-w)
 }
 
 .world-maker-primary {
-  background: transparent;
-  color: rgba(255, 255, 255, 0.62);
-  border-color: rgba(255, 255, 255, 0.22);
+  color: color-mix(in srgb, var(--post-overlay-color, var(--sys-fg)) 82%, transparent);
 }
 
 .world-maker-secondary,
 .world-maker-download,
 .world-mode-close,
 .world-mode-delete {
-  background: transparent;
-  color: rgba(255, 255, 255, 0.62);
-  border-color: rgba(255, 255, 255, 0.22);
+  color: color-mix(in srgb, var(--post-overlay-color, var(--sys-fg)) 82%, transparent);
+}
+
+.world-maker-primary:hover,
+.world-maker-secondary:hover {
+  color: color-mix(in srgb, var(--post-overlay-color, var(--sys-fg)) 100%, transparent);
 }
 
 .world-card {

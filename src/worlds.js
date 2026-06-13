@@ -564,37 +564,18 @@ function createWorldsDom(baseUrl) {
         <button type="button" class="world-maker-close" id="worldMakerClose" aria-label="close world maker">×</button>
         <div class="world-maker-shell" id="worldMakerShell" data-step="mode">
           <section class="world-maker-step is-active" data-step-panel="mode">
-            <div class="world-maker-kicker">world maker</div>
-            <h2 class="world-maker-title">choose your mode</h2>
-            <p class="world-maker-copy">Plug &amp; Play reskins the existing world layout. Full Coding lets you upload custom HTML and CSS into a sandboxed iframe.</p>
             <div class="world-maker-mode-grid">
-              <button type="button" class="world-maker-mode-btn" id="worldModePlugBtn">
-                <span class="world-maker-mode-title">plug &amp; play</span>
-                <span class="world-maker-mode-copy">name, description, category, optional background and typography.</span>
-              </button>
-              <button type="button" class="world-maker-mode-btn" id="worldModeCodeBtn">
-                <span class="world-maker-mode-title">full coding</span>
-                <span class="world-maker-mode-copy">download the scaffold, customize it offline, then upload your world files.</span>
-              </button>
+              <button type="button" class="world-maker-mode-btn" id="worldModePlugBtn">plug your world</button>
+              <button type="button" class="world-maker-mode-btn" id="worldModeCodeBtn">code your world</button>
             </div>
           </section>
 
           <section class="world-maker-step" data-step-panel="plug">
             <div class="world-maker-kicker">plug &amp; play</div>
             <h2 class="world-maker-title">build a reskinned world</h2>
-            <div class="world-maker-form-grid">
-              <label class="world-maker-field">
-                <span>world name</span>
-                <input type="text" id="worldPlugName" maxlength="80" autocomplete="off">
-              </label>
-              <label class="world-maker-field world-maker-field--wide">
-                <span>description</span>
-                <textarea id="worldPlugDescription" rows="4" maxlength="500"></textarea>
-              </label>
-              <label class="world-maker-field">
-                <span>category</span>
-                <select id="worldPlugCategory"></select>
-              </label>
+            <div class="world-maker-form-grid world-maker-form-grid--plug">
+              <input class="world-maker-input" type="text" id="worldPlugName" maxlength="80" autocomplete="off" placeholder="world name">
+              <textarea class="world-maker-input world-maker-textarea" id="worldPlugDescription" rows="4" maxlength="500" placeholder="description"></textarea>
               <div class="world-maker-field world-maker-field--wide world-maker-inline-row world-maker-inline-row--style">
                 <label class="world-maker-inline-control world-maker-inline-control--font" for="worldPlugFont">
                   <select id="worldPlugFont" aria-label="font choice"></select>
@@ -609,111 +590,86 @@ function createWorldsDom(baseUrl) {
                   <span class="world-maker-inline-label">bg color</span>
                 </label>
               </div>
-              <label class="world-maker-field world-maker-field--upload">
-                <span>world cover</span>
-                <label class="world-maker-upload world-maker-upload--compact">
+              <label class="world-maker-field world-maker-field--upload world-maker-field--wide">
+                <label class="world-maker-upload world-maker-upload--compact world-maker-input-box">
                   <span id="worldPlugCoverLabel">use world background as cover</span>
                   <input type="file" id="worldPlugCover" accept="image/jpeg,image/png,image/gif,image/webp,image/heic,image/heif,.heic,.heif">
                 </label>
               </label>
-              <label class="world-maker-field world-maker-field--upload">
-                <span>background image</span>
-                <label class="world-maker-upload world-maker-upload--compact">
+              <label class="world-maker-field world-maker-field--upload world-maker-field--wide">
+                <label class="world-maker-upload world-maker-upload--compact world-maker-input-box">
                   <span id="worldPlugBackgroundLabel">use site background</span>
                   <input type="file" id="worldPlugBackground" accept="image/jpeg,image/png,image/gif,image/webp,image/heic,image/heif,.heic,.heif">
                 </label>
               </label>
-              <div class="world-maker-field world-maker-field--wide world-maker-inline-row world-maker-inline-row--modes">
-                <label class="world-maker-inline-control world-maker-inline-control--font" for="worldPlugVisibility">
+              <div class="world-maker-field world-maker-field--wide world-maker-mode-setting" id="worldPlugViewModeRow" data-private="false">
+                <label class="world-maker-inline-control world-maker-inline-control--font world-maker-inline-control--mode" for="worldPlugVisibility">
+                  <span class="world-maker-inline-prefix">view mode</span>
                   <select id="worldPlugVisibility" aria-label="view mode">
-                    <option value="true">public — anyone</option>
-                    <option value="false">private — only me</option>
+                    <option value="true">public</option>
+                    <option value="false">private</option>
                   </select>
-                  <span class="world-maker-inline-label">view mode</span>
                 </label>
-                <label class="world-maker-inline-control world-maker-inline-control--font" for="worldPlugEditing">
-                  <select id="worldPlugEditing" aria-label="edit mode">
-                    <option value="true">public — anyone</option>
-                    <option value="false">private — only me</option>
-                  </select>
-                  <span class="world-maker-inline-label">edit mode</span>
-                </label>
+                <input class="world-maker-mode-password" type="password" id="worldPlugViewPassword" autocomplete="new-password" placeholder="password" style="display:none;">
               </div>
-              <label class="world-maker-field">
-                <span>world password</span>
-                <input type="password" id="worldPlugPassword" autocomplete="new-password" placeholder="optional">
-              </label>
-              <label class="world-maker-field">
-                <span>update preference</span>
-                <select id="worldPlugUpdateMode">
-                  <option value="auto">auto-update</option>
-                  <option value="manual">manual update</option>
-                </select>
-              </label>
+              <div class="world-maker-field world-maker-field--wide world-maker-mode-setting" id="worldPlugEditModeRow" data-private="false">
+                <label class="world-maker-inline-control world-maker-inline-control--font world-maker-inline-control--mode" for="worldPlugEditing">
+                  <span class="world-maker-inline-prefix">edit mode</span>
+                  <select id="worldPlugEditing" aria-label="edit mode">
+                    <option value="true">public</option>
+                    <option value="false">private</option>
+                  </select>
+                </label>
+                <input class="world-maker-mode-password" type="password" id="worldPlugEditPassword" autocomplete="new-password" placeholder="password" style="display:none;">
+              </div>
             </div>
             <div class="world-maker-actions">
-              <button type="button" class="world-maker-secondary" id="worldPlugBack">back</button>
-              <button type="button" class="world-maker-primary" id="worldPlugPublish">publish world</button>
+              <button type="button" class="world-maker-secondary" id="worldPlugBack" aria-label="cancel world maker">x</button>
+              <button type="button" class="world-maker-primary" id="worldPlugPublish" aria-label="submit world maker">✓</button>
             </div>
           </section>
 
           <section class="world-maker-step" data-step-panel="code">
-            <div class="world-maker-kicker">full coding</div>
-            <h2 class="world-maker-title">upload custom files</h2>
-            <p class="world-maker-copy">The iframe is sandboxed and cannot talk to Supabase or the parent page. Your uploaded HTML should reference <strong>world.css</strong> from the same folder.</p>
-            <div class="world-maker-form-grid">
-              <div class="world-maker-field world-maker-field--wide">
-                <span>template</span>
-                <button type="button" class="world-maker-secondary world-maker-download" id="worldCodeDownload">download template zip</button>
-              </div>
-              <label class="world-maker-field">
-                <span>world.html</span>
-                <label class="world-maker-upload">
+            <div class="world-maker-form-grid world-maker-form-grid--plug">
+              <input class="world-maker-input" type="text" id="worldCodeName" maxlength="80" autocomplete="off" placeholder="world name">
+              <textarea class="world-maker-input world-maker-textarea" id="worldCodeDescription" rows="4" maxlength="500" placeholder="description"></textarea>
+              <button type="button" class="world-maker-download world-maker-input-box" id="worldCodeDownload">download template zip</button>
+              <label class="world-maker-field world-maker-field--upload world-maker-field--wide">
+                <label class="world-maker-upload world-maker-upload--compact world-maker-input-box">
                   <span id="worldCodeHtmlLabel">choose html</span>
                   <input type="file" id="worldCodeHtml" accept=".html,text/html">
                 </label>
               </label>
-              <label class="world-maker-field">
-                <span>world.css</span>
-                <label class="world-maker-upload">
+              <label class="world-maker-field world-maker-field--upload world-maker-field--wide">
+                <label class="world-maker-upload world-maker-upload--compact world-maker-input-box">
                   <span id="worldCodeCssLabel">choose css</span>
                   <input type="file" id="worldCodeCss" accept=".css,text/css">
                 </label>
               </label>
-              <label class="world-maker-field">
-                <span>world name</span>
-                <input type="text" id="worldCodeName" maxlength="80" autocomplete="off" placeholder="world name">
-              </label>
-              <label class="world-maker-field world-maker-field--wide">
-                <span>description</span>
-                <textarea id="worldCodeDescription" rows="4" maxlength="500" placeholder="describe the world"></textarea>
-              </label>
-              <label class="world-maker-field">
-                <span>category</span>
-                <select id="worldCodeCategory"></select>
-              </label>
-              <label class="world-maker-field">
-                <span>who can view</span>
-                <select id="worldCodeVisibility">
-                  <option value="true">public — anyone</option>
-                  <option value="false">private — only me</option>
-                </select>
-              </label>
-              <label class="world-maker-field">
-                <span>who can post</span>
-                <select id="worldCodeEditing">
-                  <option value="true">public — anyone</option>
-                  <option value="false">private — only me</option>
-                </select>
-              </label>
-              <label class="world-maker-field">
-                <span>world password</span>
-                <input type="password" id="worldCodePassword" autocomplete="new-password" placeholder="optional">
-              </label>
+              <div class="world-maker-field world-maker-field--wide world-maker-mode-setting" id="worldCodeViewModeRow" data-private="false">
+                <label class="world-maker-inline-control world-maker-inline-control--font world-maker-inline-control--mode" for="worldCodeVisibility">
+                  <span class="world-maker-inline-prefix">view mode</span>
+                  <select id="worldCodeVisibility" aria-label="view mode">
+                    <option value="true">public</option>
+                    <option value="false">private</option>
+                  </select>
+                </label>
+                <input class="world-maker-mode-password" type="password" id="worldCodeViewPassword" autocomplete="new-password" placeholder="password" style="display:none;">
+              </div>
+              <div class="world-maker-field world-maker-field--wide world-maker-mode-setting" id="worldCodeEditModeRow" data-private="false">
+                <label class="world-maker-inline-control world-maker-inline-control--font world-maker-inline-control--mode" for="worldCodeEditing">
+                  <span class="world-maker-inline-prefix">edit mode</span>
+                  <select id="worldCodeEditing" aria-label="edit mode">
+                    <option value="true">public</option>
+                    <option value="false">private</option>
+                  </select>
+                </label>
+                <input class="world-maker-mode-password" type="password" id="worldCodeEditPassword" autocomplete="new-password" placeholder="password" style="display:none;">
+              </div>
             </div>
             <div class="world-maker-actions">
-              <button type="button" class="world-maker-secondary" id="worldCodeBack">back</button>
-              <button type="button" class="world-maker-primary" id="worldCodePublish">publish world</button>
+              <button type="button" class="world-maker-secondary" id="worldCodeBack" aria-label="cancel code world maker">x</button>
+              <button type="button" class="world-maker-primary" id="worldCodePublish" aria-label="submit code world maker">✓</button>
             </div>
           </section>
         </div>
@@ -794,8 +750,10 @@ function createWorldsDom(baseUrl) {
     plugBackgroundLabel: host.querySelector('#worldPlugBackgroundLabel'),
     plugVisibility: host.querySelector('#worldPlugVisibility'),
     plugEditing: host.querySelector('#worldPlugEditing'),
-    plugPassword: host.querySelector('#worldPlugPassword'),
-    plugUpdateMode: host.querySelector('#worldPlugUpdateMode'),
+    plugViewModeRow: host.querySelector('#worldPlugViewModeRow'),
+    plugEditModeRow: host.querySelector('#worldPlugEditModeRow'),
+    plugViewPassword: host.querySelector('#worldPlugViewPassword'),
+    plugEditPassword: host.querySelector('#worldPlugEditPassword'),
     plugBack: host.querySelector('#worldPlugBack'),
     plugPublish: host.querySelector('#worldPlugPublish'),
     codeHtml: host.querySelector('#worldCodeHtml'),
@@ -804,10 +762,12 @@ function createWorldsDom(baseUrl) {
     codeCssLabel: host.querySelector('#worldCodeCssLabel'),
     codeName: host.querySelector('#worldCodeName'),
     codeDescription: host.querySelector('#worldCodeDescription'),
-    codeCategory: host.querySelector('#worldCodeCategory'),
     codeVisibility: host.querySelector('#worldCodeVisibility'),
     codeEditing: host.querySelector('#worldCodeEditing'),
-    codePassword: host.querySelector('#worldCodePassword'),
+    codeViewModeRow: host.querySelector('#worldCodeViewModeRow'),
+    codeEditModeRow: host.querySelector('#worldCodeEditModeRow'),
+    codeViewPassword: host.querySelector('#worldCodeViewPassword'),
+    codeEditPassword: host.querySelector('#worldCodeEditPassword'),
     codeBack: host.querySelector('#worldCodeBack'),
     codePublish: host.querySelector('#worldCodePublish'),
     codeDownload: host.querySelector('#worldCodeDownload'),
@@ -965,6 +925,7 @@ export function initWorldsFeature(options) {
   let myWorldIds = [];
   let myWorldMap = new Map();
   let myWorldsHydrated = false;
+  let makerSourceWorldId = '';
   let parentTabAction = async () => {
     await exitWorldMode();
   };
@@ -1187,17 +1148,23 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
 
       const isCurrent = Boolean(entry?.current);
       const label = String(entry?.label || DEFAULT_WORLD_TITLE);
+      const navTarget = String(entry?.navTarget || 'root');
+      const isStatic = navTarget === 'static';
+      const isMakerHome = navTarget === 'maker-home';
 
-      if (isCurrent) {
+      if (isCurrent || (isStatic && !isMakerHome)) {
         const current = document.createElement('span');
-        current.className = 'world-mode-breadcrumb world-mode-breadcrumb-current';
-        current.setAttribute('aria-current', 'page');
+        current.className = isCurrent
+          ? 'world-mode-breadcrumb world-mode-breadcrumb-current'
+          : 'world-mode-breadcrumb';
+        if (isCurrent) {
+          current.setAttribute('aria-current', 'page');
+        }
         current.textContent = label;
         dom.modeTabs.appendChild(current);
         return;
       }
 
-      const navTarget = String(entry?.navTarget || 'root');
       const worldId = String(entry?.worldId || '').trim();
       const button = document.createElement('button');
       button.type = 'button';
@@ -1210,6 +1177,10 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         event.stopPropagation();
 
         if (navTarget === 'root') {
+          if (isMakerOpen()) {
+            closeMaker();
+            return;
+          }
           showTransitionLoader({
             mode: 'loading',
             kicker: 'main',
@@ -1226,12 +1197,66 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
           return;
         }
 
+        if (navTarget === 'maker-home') {
+          showStep('mode');
+          return;
+        }
+
+        if (navTarget === 'maker-return') {
+          closeMaker();
+          return;
+        }
+
         if (navTarget === 'crumb' && worldId) {
+          if (isMakerOpen()) {
+            const sourceWorldId = String(makerSourceWorldId || '').trim();
+            const currentWorldId = String(activeWorld?.id || '').trim();
+            if ((sourceWorldId && sourceWorldId === worldId) || (currentWorldId && currentWorldId === worldId)) {
+              closeMaker();
+              return;
+            }
+          }
           await openWorldById(worldId);
         }
       });
       dom.modeTabs.appendChild(button);
     });
+  }
+
+  function getMakerBreadcrumbEntries() {
+    if (!isMakerOpen()) return [];
+
+    const currentStep = String(dom.makerShell?.dataset?.step || 'mode');
+    const entries = [
+      {
+        label: 'world maker',
+        navTarget: 'maker-home',
+        worldId: '',
+        current: currentStep === 'mode'
+      }
+    ];
+
+    if (currentStep === 'plug') {
+      entries[0].current = false;
+      entries.push({
+        label: 'plug your world',
+        navTarget: 'static',
+        worldId: '',
+        current: true
+      });
+    }
+
+    if (currentStep === 'code') {
+      entries[0].current = false;
+      entries.push({
+        label: 'code your world',
+        navTarget: 'static',
+        worldId: '',
+        current: true
+      });
+    }
+
+    return entries;
   }
 
   async function renderWorldNavigation(world) {
@@ -1258,7 +1283,18 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       }))
     ];
 
-    renderBreadcrumbBar(breadcrumbEntries);
+    const makerEntries = getMakerBreadcrumbEntries();
+    if (breadcrumbEntries.length > 0) {
+      breadcrumbEntries[breadcrumbEntries.length - 1].current = makerEntries.length === 0;
+      if (makerEntries.length > 0 && breadcrumbEntries.length > 1) {
+        const lastWorldCrumb = breadcrumbEntries[breadcrumbEntries.length - 1];
+        if (String(lastWorldCrumb?.worldId || '').trim()) {
+          lastWorldCrumb.navTarget = 'maker-return';
+        }
+      }
+    }
+
+    renderBreadcrumbBar([...breadcrumbEntries, ...makerEntries]);
   }
 
   function canUseCustomWorldFrame(world) {
@@ -1283,7 +1319,98 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
 
   function syncCategories() {
     fillCategorySelect(dom.plugCategory);
-    fillCategorySelect(dom.codeCategory);
+  }
+
+  function syncPlugAccessPasswordVisibility() {
+    const viewIsPrivate = dom.plugVisibility?.value === 'false';
+    const editIsPrivate = dom.plugEditing?.value === 'false';
+
+    if (dom.plugViewModeRow) dom.plugViewModeRow.dataset.private = viewIsPrivate ? 'true' : 'false';
+    if (dom.plugEditModeRow) dom.plugEditModeRow.dataset.private = editIsPrivate ? 'true' : 'false';
+
+    if (dom.plugViewPassword) {
+      dom.plugViewPassword.style.display = viewIsPrivate ? 'block' : 'none';
+      if (!viewIsPrivate) dom.plugViewPassword.value = '';
+    }
+
+    if (dom.plugEditPassword) {
+      dom.plugEditPassword.style.display = editIsPrivate ? 'block' : 'none';
+      if (!editIsPrivate) dom.plugEditPassword.value = '';
+    }
+  }
+
+  function syncCodeAccessPasswordVisibility() {
+    const viewIsPrivate = dom.codeVisibility?.value === 'false';
+    const editIsPrivate = dom.codeEditing?.value === 'false';
+
+    if (dom.codeViewModeRow) dom.codeViewModeRow.dataset.private = viewIsPrivate ? 'true' : 'false';
+    if (dom.codeEditModeRow) dom.codeEditModeRow.dataset.private = editIsPrivate ? 'true' : 'false';
+
+    if (dom.codeViewPassword) {
+      dom.codeViewPassword.style.display = viewIsPrivate ? 'block' : 'none';
+      if (!viewIsPrivate) dom.codeViewPassword.value = '';
+    }
+
+    if (dom.codeEditPassword) {
+      dom.codeEditPassword.style.display = editIsPrivate ? 'block' : 'none';
+      if (!editIsPrivate) dom.codeEditPassword.value = '';
+    }
+  }
+
+  function resolvePlugWorldPassword() {
+    const viewIsPrivate = dom.plugVisibility?.value === 'false';
+    const editIsPrivate = dom.plugEditing?.value === 'false';
+
+    if (!viewIsPrivate && !editIsPrivate) {
+      return '';
+    }
+
+    const viewPassword = String(dom.plugViewPassword?.value || '').trim();
+    const editPassword = String(dom.plugEditPassword?.value || '').trim();
+
+    const requiredPasswords = [];
+    if (viewIsPrivate) requiredPasswords.push(viewPassword);
+    if (editIsPrivate) requiredPasswords.push(editPassword);
+
+    if (requiredPasswords.some((value) => !value)) {
+      alert('Enter a password for private mode.');
+      return null;
+    }
+
+    if (viewIsPrivate && editIsPrivate && viewPassword !== editPassword) {
+      alert('View and edit passwords must match.');
+      return null;
+    }
+
+    return viewPassword || editPassword;
+  }
+
+  function resolveCodeWorldPassword() {
+    const viewIsPrivate = dom.codeVisibility?.value === 'false';
+    const editIsPrivate = dom.codeEditing?.value === 'false';
+
+    if (!viewIsPrivate && !editIsPrivate) {
+      return '';
+    }
+
+    const viewPassword = String(dom.codeViewPassword?.value || '').trim();
+    const editPassword = String(dom.codeEditPassword?.value || '').trim();
+
+    const requiredPasswords = [];
+    if (viewIsPrivate) requiredPasswords.push(viewPassword);
+    if (editIsPrivate) requiredPasswords.push(editPassword);
+
+    if (requiredPasswords.some((value) => !value)) {
+      alert('Enter a password for private mode.');
+      return null;
+    }
+
+    if (viewIsPrivate && editIsPrivate && viewPassword !== editPassword) {
+      alert('View and edit passwords must match.');
+      return null;
+    }
+
+    return viewPassword || editPassword;
   }
 
   function showStep(step) {
@@ -1291,6 +1418,9 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     dom.makerShell.querySelectorAll('[data-step-panel]').forEach((panel) => {
       panel.classList.toggle('is-active', panel.getAttribute('data-step-panel') === step);
     });
+    if (isMakerOpen()) {
+      void syncNavigationChrome();
+    }
   }
 
   function resetMaker() {
@@ -1306,19 +1436,26 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     dom.plugCoverLabel.textContent = 'use world background as cover';
     dom.plugBackground.value = '';
     dom.plugBackgroundLabel.textContent = 'use site background';
-    dom.plugPassword.value = '';
-    dom.plugUpdateMode.value = 'auto';
+    dom.plugVisibility.value = 'true';
+    dom.plugEditing.value = 'true';
+    if (dom.plugViewPassword) dom.plugViewPassword.value = '';
+    if (dom.plugEditPassword) dom.plugEditPassword.value = '';
     dom.codeHtml.value = '';
     dom.codeCss.value = '';
     dom.codeHtmlLabel.textContent = 'choose html';
     dom.codeCssLabel.textContent = 'choose css';
     dom.codeName.value = '';
     dom.codeDescription.value = '';
-    dom.codePassword.value = '';
-    dom.plugPublish.textContent = 'publish world';
-    dom.codePublish.textContent = 'publish world';
+    dom.codeVisibility.value = 'true';
+    dom.codeEditing.value = 'true';
+    if (dom.codeViewPassword) dom.codeViewPassword.value = '';
+    if (dom.codeEditPassword) dom.codeEditPassword.value = '';
+    dom.plugPublish.textContent = '✓';
+    dom.codePublish.textContent = '✓';
     dom.makerDelete.style.display = 'none';
     syncCategories();
+    syncPlugAccessPasswordVisibility();
+    syncCodeAccessPasswordVisibility();
     showStep('mode');
   }
 
@@ -1328,9 +1465,10 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     makerEditingType = 'plug';
     syncCategories();
     fillFontSelect();
+    makerSourceWorldId = String(activeWorld?.id || '').trim();
     dom.makerOverlay.style.display = 'flex';
-    dom.plugPublish.textContent = 'publish world';
-    dom.codePublish.textContent = 'publish world';
+    dom.plugPublish.textContent = '✓';
+    dom.codePublish.textContent = '✓';
     showStep('mode');
   }
 
@@ -1346,7 +1484,6 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
 
     dom.plugName.value = world.name || '';
     dom.plugDescription.value = world.description || '';
-    dom.plugCategory.value = world.category || dom.plugCategory.value;
     dom.plugFont.value = world.font_family || '';
     dom.plugFontColor.value = world.font_color || '#f5f5f5';
     dom.plugBgColor.value = world.ui_color || world.font_color || DEFAULT_UI_COLOR;
@@ -1358,31 +1495,39 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     dom.plugBackgroundLabel.textContent = world.background_url ? 'keep current background (choose file to replace)' : 'use site background';
     dom.plugVisibility.value = world.is_public_view === false ? 'false' : 'true';
     dom.plugEditing.value = world.is_public_edit === false ? 'false' : 'true';
-    dom.plugPassword.value = '';
-    dom.plugUpdateMode.value = world.update_mode === 'manual' ? 'manual' : 'auto';
+    if (dom.plugViewPassword) dom.plugViewPassword.value = '';
+    if (dom.plugEditPassword) dom.plugEditPassword.value = '';
 
     dom.codeName.value = world.name || '';
     dom.codeDescription.value = world.description || '';
-    dom.codeCategory.value = world.category || dom.codeCategory.value;
     dom.codeVisibility.value = world.is_public_view === false ? 'false' : 'true';
     dom.codeEditing.value = world.is_public_edit === false ? 'false' : 'true';
-    dom.codePassword.value = '';
+    if (dom.codeViewPassword) dom.codeViewPassword.value = '';
+    if (dom.codeEditPassword) dom.codeEditPassword.value = '';
     dom.codeHtml.value = '';
     dom.codeCss.value = '';
     dom.codeHtmlLabel.textContent = 'keep current html (choose file to replace)';
     dom.codeCssLabel.textContent = 'keep current css (choose file to replace)';
 
-    dom.plugPublish.textContent = 'update world';
-    dom.codePublish.textContent = 'update world';
+    dom.plugPublish.textContent = '✓';
+    dom.codePublish.textContent = '✓';
     dom.makerDelete.style.display = 'inline-flex';
+    syncPlugAccessPasswordVisibility();
+    syncCodeAccessPasswordVisibility();
 
+    makerSourceWorldId = String(activeWorld?.id || '').trim();
     dom.makerOverlay.style.display = 'flex';
     showStep(makerEditingType);
   }
 
   function closeMaker() {
+    const wasOpen = isMakerOpen();
     dom.makerOverlay.style.display = 'none';
+    makerSourceWorldId = '';
     resetMaker();
+    if (wasOpen) {
+      void syncNavigationChrome();
+    }
   }
 
   function isMakerOpen() {
@@ -1443,15 +1588,25 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     if (dom.modePfpWrap) dom.modePfpWrap.style.display = 'none';
     if (dom.modeIdentityPanel) dom.modeIdentityPanel.style.display = 'none';
 
+    const makerEntries = getMakerBreadcrumbEntries();
     renderBreadcrumbBar([
       {
         label: MAIN_WORLD_LABEL,
         navTarget: 'root',
         worldId: '',
-        current: true
-      }
+        current: makerEntries.length === 0
+      },
+      ...makerEntries
     ]);
     parentTabAction = async () => {};
+  }
+
+  async function syncNavigationChrome() {
+    if (activeWorld?.id) {
+      await renderWorldNavigation(activeWorld);
+      return;
+    }
+    await renderMainNavigationChrome();
   }
 
   function clearWorldTabs() {
@@ -2184,10 +2339,8 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
 
     const name = dom.plugName.value.trim();
     const description = dom.plugDescription.value.trim();
-    const category = dom.plugCategory.value.trim();
-
-    if (!name || !description || !category) {
-      alert('World name, description, and category are required.');
+    if (!name || !description) {
+      alert('World name and description are required.');
       return;
     }
 
@@ -2195,7 +2348,10 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     if (!currentUser?.id) return;
     const isEdit = makerMode === 'edit' && Boolean(makerEditingWorld?.id);
     const editingWorldId = makerEditingWorld?.id || null;
-    const passwordInput = dom.plugPassword.value;
+    const resolvedPassword = resolvePlugWorldPassword();
+    if (resolvedPassword === null) {
+      return;
+    }
 
     publishInFlight = true;
     dom.plugPublish.disabled = true;
@@ -2206,13 +2362,13 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       const draft = {
         name,
         description,
-        category,
+        category: null,
         font_family: dom.plugFont.value || null,
         font_color: dom.plugFontColor.value || null,
         ui_color: uiColor,
         is_public_view: dom.plugVisibility.value !== 'false',
         is_public_edit: dom.plugEditing.value !== 'false',
-        update_mode: dom.plugUpdateMode.value === 'manual' ? 'manual' : 'auto'
+        update_mode: 'auto'
       };
 
       let nextWorld = null;
@@ -2276,8 +2432,8 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         nextWorld = await updateWorldCoverAsset(nextWorld.id, currentUser.id, coverUrl);
       }
 
-      if (passwordInput?.trim()) {
-        await setWorldPassword(nextWorld.id, passwordInput);
+      if (resolvedPassword?.trim()) {
+        await setWorldPassword(nextWorld.id, resolvedPassword);
       }
 
       if (activeWorld?.id === nextWorld.id) {
@@ -2293,7 +2449,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     } finally {
       publishInFlight = false;
       dom.plugPublish.disabled = false;
-      dom.plugPublish.textContent = makerMode === 'edit' ? 'update world' : 'publish world';
+      dom.plugPublish.textContent = '✓';
     }
   }
 
@@ -2302,15 +2458,17 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
 
     const name = dom.codeName.value.trim();
     const description = dom.codeDescription.value.trim();
-    const category = dom.codeCategory.value.trim();
     const htmlFile = dom.codeHtml.files?.[0] || null;
     const cssFile = dom.codeCss.files?.[0] || null;
     const isEdit = makerMode === 'edit' && Boolean(makerEditingWorld?.id);
     const editingWorldId = makerEditingWorld?.id || null;
-    const passwordInput = dom.codePassword.value;
+    const resolvedPassword = resolveCodeWorldPassword();
+    if (resolvedPassword === null) {
+      return;
+    }
 
-    if (!name || !description || !category || (!isEdit && (!htmlFile || !cssFile))) {
-      alert('Upload world.html and world.css, then fill in name, description, and category.');
+    if (!name || !description || (!isEdit && (!htmlFile || !cssFile))) {
+      alert('Upload world.html and world.css, then fill in name and description.');
       return;
     }
 
@@ -2325,7 +2483,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       const draft = {
         name,
         description,
-        category,
+        category: null,
         is_public_view: dom.codeVisibility.value !== 'false',
         is_public_edit: dom.codeEditing.value !== 'false'
       };
@@ -2386,8 +2544,8 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         nextWorld = updatedCode;
       }
 
-      if (passwordInput?.trim()) {
-        await setWorldPassword(nextWorld.id, passwordInput);
+      if (resolvedPassword?.trim()) {
+        await setWorldPassword(nextWorld.id, resolvedPassword);
       }
 
       if (activeWorld?.id === nextWorld.id) {
@@ -2403,7 +2561,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     } finally {
       publishInFlight = false;
       dom.codePublish.disabled = false;
-      dom.codePublish.textContent = makerMode === 'edit' ? 'update world' : 'publish world';
+      dom.codePublish.textContent = '✓';
     }
   }
 
@@ -2752,30 +2910,18 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       ? Boolean(options.canEditWorld(world))
       : Boolean(currentUserId && currentUserId === world.user_id);
     const showMoveControl = Boolean(options.editMode && canEdit);
-    const isPrivateView = world.is_public_view === false;
-    const isPrivateEdit = world.is_public_edit === false;
-    const hasPassword = Boolean(world.password_hash);
-    const hasUpdate = worldNeedsManualUpdate(world, currentUserId) && !options.editMode;
-
     card.innerHTML = `
       <div class="post-card-content world-card-content">
-        <div class="post-title world-card-title"><span class="post-title-track world-card-title-track">${escapeHtml(world.name || DEFAULT_WORLD_TITLE)}</span></div>
         <div class="world-card-orb-wrap">
           <div class="world-card-screen">
             <img class="world-card-cover" src="${escapeHtml(coverUrl)}" alt="" loading="lazy" decoding="async">
           </div>
-          ${isPrivateView ? '<span class="world-card-badge world-card-badge--private">private</span>' : ''}
-          ${isPrivateEdit ? '<span class="world-card-badge world-card-badge--locked">creator posts only</span>' : ''}
-          ${hasPassword ? '<span class="world-card-badge world-card-badge--password">password</span>' : ''}
-          ${hasUpdate ? '<button type="button" class="world-card-badge world-card-badge--update">update available</button>' : ''}
         </div>
       </div>
       <div class="post-footer world-card-footer">
         <img class="post-footer-pfp world-card-pfp" src="${escapeHtml(creatorPfp)}" alt="">
         <span class="post-footer-username post-footer-filter-btn"><span class="post-footer-username-track">${escapeHtml(creatorName)}</span></span>
-        <span class="post-footer-category post-footer-filter-btn"><span class="post-footer-category-track">${escapeHtml(world.category || 'none')}</span></span>
       </div>
-      ${hasUpdate ? '<button type="button" class="world-card-update-action">apply update</button>' : ''}
       ${showMoveControl ? `
         <div class="post-edit-chrome world-edit-chrome" aria-hidden="false">
           <div class="post-edit-top-actions" aria-label="world edit actions">
@@ -2784,20 +2930,6 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         </div>
       ` : ''}
     `;
-
-    const titleElement = card.querySelector('.world-card-title');
-    if (titleElement) {
-      if (hasContainerFontColor) {
-        titleElement.style.color = containerFontColor || '#000000';
-      } else {
-        titleElement.style.color = '#000000';
-      }
-    }
-
-    applyWorldTitleMarquee(
-      titleElement,
-      card.querySelector('.world-card-title-track')
-    );
 
     const coverScreen = card.querySelector('.world-card-screen');
     const coverImage = card.querySelector('.world-card-cover');
@@ -2831,10 +2963,6 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         event.stopPropagation();
         options.onFilterUser?.(creator?.id || null);
       });
-      card.querySelector('.post-footer-category')?.addEventListener('click', (event) => {
-        event.stopPropagation();
-        options.onFilterCategory?.(world.category || null);
-      });
     }
 
     card.querySelector('.world-card-move')?.addEventListener('pointerdown', (event) => {
@@ -2856,20 +2984,6 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       event.preventDefault();
       const syntheticEvent = window.__lastMouseEventForPlacement || { clientX: 200, clientY: 200 };
       options.onBeginMove?.(world, card, syntheticEvent);
-    });
-
-    card.querySelector('.world-card-badge--update')?.addEventListener('click', (event) => {
-      event.stopPropagation();
-      const release = latestUpdateInfo;
-      const releaseMessage = release
-        ? `${release.version || 'latest'}\n\n${release.description || 'No details were provided.'}`
-        : 'No release metadata is available yet.';
-      alert(releaseMessage);
-    });
-
-    card.querySelector('.world-card-update-action')?.addEventListener('click', async (event) => {
-      event.stopPropagation();
-      await applyWorldUpdate(world);
     });
 
     card.addEventListener('click', async () => {
@@ -2914,8 +3028,8 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
   dom.modePlugBtn.addEventListener('click', () => showStep('plug'));
   dom.modeCodeBtn.addEventListener('click', () => showStep('code'));
   dom.makerClose.addEventListener('click', closeMaker);
-  dom.plugBack.addEventListener('click', () => showStep('mode'));
-  dom.codeBack.addEventListener('click', () => showStep('mode'));
+  dom.plugBack.addEventListener('click', closeMaker);
+  dom.codeBack.addEventListener('click', closeMaker);
   dom.plugPublish.addEventListener('click', publishPlugWorld);
   dom.codePublish.addEventListener('click', publishCodeWorld);
   dom.codeDownload.addEventListener('click', downloadTemplateZip);
@@ -3030,6 +3144,10 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
   dom.plugBackground.addEventListener('change', () => {
     dom.plugBackgroundLabel.textContent = dom.plugBackground.files?.[0]?.name || 'use site background';
   });
+  dom.plugVisibility.addEventListener('change', syncPlugAccessPasswordVisibility);
+  dom.plugEditing.addEventListener('change', syncPlugAccessPasswordVisibility);
+  dom.codeVisibility.addEventListener('change', syncCodeAccessPasswordVisibility);
+  dom.codeEditing.addEventListener('change', syncCodeAccessPasswordVisibility);
   dom.codeHtml.addEventListener('change', () => {
     dom.codeHtmlLabel.textContent = dom.codeHtml.files?.[0]?.name || 'choose html';
   });
@@ -3039,6 +3157,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
 
   fillFontSelect();
   syncCategories();
+  syncCodeAccessPasswordVisibility();
   document.addEventListener('keydown', handleCheatCode);
   hydrateMyWorlds().catch((error) => {
     console.warn('Failed to hydrate My Worlds:', error);

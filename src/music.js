@@ -1406,12 +1406,16 @@ async function downloadPlaylistAsCSV() {
 // ============================================
 // 13. PUBLIC INIT
 // ============================================
-export async function initMusic(user, userData) {
+export async function initMusic(user, userData, options = {}) {
+  const {
+    autoplay = true
+  } = options;
+
   currentUser     = user;
   currentUserData = userData;
 
   if (isMusicInitialized) {
-    await loadTracks({ autoplay: true, forceRestart: false });
+    await loadTracks({ autoplay, forceRestart: false });
     return;
   }
 
@@ -1693,7 +1697,7 @@ export async function initMusic(user, userData) {
   musicLoop.addEventListener('click', () => {});
 
   updatePlaylistAccessUi();
-  await loadTracks({ autoplay: true, forceRestart: true });
+  await loadTracks({ autoplay, forceRestart: true });
 }
 
 export async function setMusicWorldContext(world = null, options = {}) {

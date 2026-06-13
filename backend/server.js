@@ -275,6 +275,52 @@ app.get('/auth/me', readLimiter, authMiddleware, async (req, res) => {
   }
 });
 
+// ─── POST /auth/change-password ───────────────────────────────────────────────
+
+app.post('/auth/change-password', authLimiter, authMiddleware, async (req, res) => {
+  const { currentPassword, newPassword } = req.body || {};
+
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ data: null, error: 'currentPassword and newPassword are required' });
+  }
+
+  if (String(newPassword).length < MIN_PASSWORD_LENGTH) {
+    return res.status(400).json({ data: null, error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` });
+  }
+
+  if (String(currentPassword) === String(newPassword)) {
+    return res.status(400).json({ data: null, error: 'New password must be different from current password' });
+  }
+
+  try {
+    const { rows } = await pool.query(
+      'SELECT id, password_hash FROM public.users WHERE id = $1',
+      [req.user.id]
+    );
+
+    if (!rows.length) {
+      return res.status(404).json({ data: null, error: 'User not found' });
+    }
+
+    const currentRow = rows[0];
+    const isMatch = await bcrypt.compare(String(currentPassword), currentRow.password_hash || '');
+    if (!isMatch) {
+      return res.status(401).json({ data: null, error: 'Current password is incorrect' });
+    }
+
+    const passwordHash = await bcrypt.hash(String(newPassword), BCRYPT_ROUNDS);
+    await pool.query(
+      'UPDATE public.users SET password_hash = $1, updated_at = $2 WHERE id = $3',
+      [passwordHash, new Date().toISOString(), req.user.id]
+    );
+
+    return res.json({ data: { success: true }, error: null });
+  } catch (err) {
+    console.error('Change password error:', err);
+    return res.status(500).json({ data: null, error: err.message });
+  }
+});
+
 // ─── POST /auth/upload-pfp ─────────────────────────────────────────────────────
 
 app.post('/auth/upload-pfp', uploadLimiter, authMiddleware, upload.single('file'), async (req, res) => {

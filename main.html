@@ -208,7 +208,6 @@
       <div class="settings-control-row settings-control-row-compact">
         <input type="color" id="settingsBgColor" class="settings-color-swatch settings-color-swatch-lg" value="#ffffff" title="background color">
         <input type="color" id="settingsFgColor" class="settings-color-swatch settings-color-swatch-sm" value="#000000" title="font and outline color">
-        <button id="settingsAnimBtn" class="settings-anim-btn" type="button" aria-label="toggle movement">͙͘͡★</button>
       </div>
       <div class="settings-control-row settings-control-row-select settings-control-row-select-only">
         <div class="settings-select-wrap">
@@ -219,6 +218,20 @@
             <option value="'Linux Biolinum G', 'Liberation Sans', Arial, sans-serif">Linux Biolinum G</option>
           </select>
           <span class="settings-select-chevron" aria-hidden="true">▾</span>
+        </div>
+      </div>
+      <div class="settings-toggle-row" role="group" aria-label="animations">
+        <span class="settings-toggle-label">animations</span>
+        <div class="settings-toggle-switch" role="radiogroup" aria-label="animations toggle">
+          <button id="settingsAnimOn" class="settings-toggle-btn" type="button" role="radio" aria-checked="false">on</button>
+          <button id="settingsAnimOff" class="settings-toggle-btn" type="button" role="radio" aria-checked="false">off</button>
+        </div>
+      </div>
+      <div class="settings-toggle-row" role="group" aria-label="automatic music">
+        <span class="settings-toggle-label">automatic music</span>
+        <div class="settings-toggle-switch" role="radiogroup" aria-label="automatic music toggle">
+          <button id="settingsAutoMusicOn" class="settings-toggle-btn" type="button" role="radio" aria-checked="false">on</button>
+          <button id="settingsAutoMusicOff" class="settings-toggle-btn" type="button" role="radio" aria-checked="false">off</button>
         </div>
       </div>
     </div>
@@ -255,8 +268,15 @@
 
             <div class="profile-edit-fields" id="profileEditFields" style="display:none;">
               <div class="profile-edit-field">
-                <span>current password</span>
-                <input id="profilePasswordInput" class="profile-edit-input" type="password" autocomplete="current-password" spellcheck="false" autocorrect="off" autocapitalize="off" placeholder="enter current password">
+                <input id="profilePasswordInput" class="profile-edit-input" type="password" autocomplete="current-password" spellcheck="false" autocorrect="off" autocapitalize="off" placeholder="current password">
+              </div>
+              <div id="profileNewPasswordFields" class="profile-edit-field-group" style="display:none;">
+                <div class="profile-edit-field">
+                  <input id="profileNewPasswordInput" class="profile-edit-input" type="password" autocomplete="new-password" spellcheck="false" autocorrect="off" autocapitalize="off" placeholder="new password">
+                </div>
+                <div class="profile-edit-field">
+                  <input id="profileConfirmPasswordInput" class="profile-edit-input" type="password" autocomplete="new-password" spellcheck="false" autocorrect="off" autocapitalize="off" placeholder="confirm new password">
+                </div>
               </div>
             </div>
             <div id="profilePostsList" class="profile-posts-list"></div>

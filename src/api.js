@@ -299,6 +299,21 @@ export const api = {
       return result;
     },
 
+    changePassword: async ({ currentPassword, newPassword }) => {
+      const result = await apiFetch('/auth/change-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders(),
+        },
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      if (result.error) {
+        return { data: null, error: withEndpointContext('/auth/change-password', result.error) };
+      }
+      return result;
+    },
+
     signOut: async () => {
       localStorage.removeItem('auth_token');
       localStorage.removeItem('auth_user');

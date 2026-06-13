@@ -250,6 +250,8 @@ let profileEditMode       = false;
 let newProfilePfpFile     = null;
 let currentProfileUserId  = null;
 let currentProfileUserRow = null;
+let profileCurrentPasswordVerified = false;
+let profilePasswordChangeLocked = false;
 
 // Post detail 3-col layout state
 let pdColWidths   = { visual: 50, text: 30, comments: 20 };
@@ -1214,6 +1216,30 @@ let cardLodRafId = 0;
 
 const ANIM_MODES = ['full', 'reduced', 'off'];
 let animationMode = localStorage.getItem('demo4-anim-mode') || 'full';
+const AUTO_MUSIC_PREF_KEY = 'demo4-auto-music-enabled';
+let autoMusicEnabled = true;
+
+function resolveInitialAutoMusicPreference() {
+  const fromBackend = currentUserData?.auto_music_enabled;
+  if (typeof fromBackend === 'boolean') {
+    autoMusicEnabled = fromBackend;
+    localStorage.setItem(AUTO_MUSIC_PREF_KEY, autoMusicEnabled ? '1' : '0');
+    return;
+  }
+
+  const stored = localStorage.getItem(AUTO_MUSIC_PREF_KEY);
+  if (stored === '0') {
+    autoMusicEnabled = false;
+    return;
+  }
+  if (stored === '1') {
+    autoMusicEnabled = true;
+    return;
+  }
+
+  autoMusicEnabled = true;
+  localStorage.setItem(AUTO_MUSIC_PREF_KEY, '1');
+}
 
 const VIEWPORT_NEAR_MARGIN_PX = 120;
 const VIEWPORT_FAR_MARGIN_PX = 680;
@@ -1490,12 +1516,15 @@ function applyAnimationMode(mode, { persist = true } = {}) {
     btn.classList.toggle('active', effectiveMode !== 'full');
   }
 
-  // Sync settings panel anim button
-  const settingsAnimBtn = document.getElementById('settingsAnimBtn');
-  if (settingsAnimBtn) {
+  // Sync settings panel animation segmented toggle
+  const settingsAnimOn = document.getElementById('settingsAnimOn');
+  const settingsAnimOff = document.getElementById('settingsAnimOff');
+  if (settingsAnimOn && settingsAnimOff) {
     const movementOn = effectiveMode !== 'off';
-    settingsAnimBtn.textContent = movementOn ? '͙͘͡★' : '⚠︎';
-    settingsAnimBtn.classList.toggle('active', movementOn);
+    settingsAnimOn.classList.toggle('active', movementOn);
+    settingsAnimOff.classList.toggle('active', !movementOn);
+    settingsAnimOn.setAttribute('aria-checked', movementOn ? 'true' : 'false');
+    settingsAnimOff.setAttribute('aria-checked', movementOn ? 'false' : 'true');
   }
 
     enforceFrozenMediaState();
@@ -1565,9 +1594,12 @@ function initSettingsPanel() {
   const fgSwatch = document.getElementById('settingsFgColor');
   const fgHex    = document.getElementById('settingsFgHex');
   const fontSel  = document.getElementById('settingsFontSelect');
-  const animBtn  = document.getElementById('settingsAnimBtn');
+  const animOnBtn = document.getElementById('settingsAnimOn');
+  const animOffBtn = document.getElementById('settingsAnimOff');
+  const autoMusicOnBtn = document.getElementById('settingsAutoMusicOn');
+  const autoMusicOffBtn = document.getElementById('settingsAutoMusicOff');
 
-  if (!bgSwatch || !fgSwatch || !fontSel || !animBtn) return;
+  if (!bgSwatch || !fgSwatch || !fontSel || !animOnBtn || !animOffBtn || !autoMusicOnBtn || !autoMusicOffBtn) return;
 
   // Sync initial values from CSS
   const root = document.documentElement;
@@ -1626,23 +1658,76 @@ function initSettingsPanel() {
 
   fontSel.addEventListener('change', applyAndSave);
 
-  // Movement toggle in settings panel (mapped to animation on/off)
-  const updateSettingsAnimBtn = () => {
-    if (!animBtn) return;
+  const updateAnimToggleUi = () => {
     const movementOn = getEffectiveAnimationMode() !== 'off';
-    animBtn.textContent = movementOn ? '͙͘͡★' : '⚠︎';
-    animBtn.classList.toggle('active', movementOn);
+    animOnBtn.classList.toggle('active', movementOn);
+    animOffBtn.classList.toggle('active', !movementOn);
+    animOnBtn.setAttribute('aria-checked', movementOn ? 'true' : 'false');
+    animOffBtn.setAttribute('aria-checked', movementOn ? 'false' : 'true');
   };
 
-  animBtn.addEventListener('click', () => {
+  animOnBtn.addEventListener('click', () => {
     if (autoFreezeActive) setAutoFreezeActive(false);
-    const movementOn = getEffectiveAnimationMode() !== 'off';
-    const next = movementOn ? 'off' : 'full';
-    applyAnimationMode(next);
-    updateSettingsAnimBtn();
+    applyAnimationMode('full');
+    updateAnimToggleUi();
   });
 
-  updateSettingsAnimBtn();
+  animOffBtn.addEventListener('click', () => {
+    if (autoFreezeActive) setAutoFreezeActive(false);
+    applyAnimationMode('off');
+    updateAnimToggleUi();
+  });
+
+  const persistAutoMusicPreference = async (enabled) => {
+    if (!currentUser?.id) return;
+
+    try {
+      const { error } = await supabase
+        .from('users')
+        .update({ auto_music_enabled: enabled, updated_at: new Date() })
+        .eq('id', currentUser.id);
+
+      if (error) {
+        console.warn('Failed to persist automatic music preference to backend:', error.message || error);
+      }
+    } catch (err) {
+      console.warn('Failed to persist automatic music preference to backend:', err);
+    }
+  };
+
+  const updateAutoMusicToggleUi = () => {
+    autoMusicOnBtn.classList.toggle('active', autoMusicEnabled);
+    autoMusicOffBtn.classList.toggle('active', !autoMusicEnabled);
+    autoMusicOnBtn.setAttribute('aria-checked', autoMusicEnabled ? 'true' : 'false');
+    autoMusicOffBtn.setAttribute('aria-checked', autoMusicEnabled ? 'false' : 'true');
+  };
+
+  const setAutoMusicEnabled = (enabled) => {
+    const next = Boolean(enabled);
+    if (autoMusicEnabled === next) {
+      updateAutoMusicToggleUi();
+      return;
+    }
+
+    autoMusicEnabled = next;
+    localStorage.setItem(AUTO_MUSIC_PREF_KEY, autoMusicEnabled ? '1' : '0');
+    if (currentUserData) {
+      currentUserData.auto_music_enabled = autoMusicEnabled;
+    }
+    updateAutoMusicToggleUi();
+    void persistAutoMusicPreference(autoMusicEnabled);
+  };
+
+  autoMusicOnBtn.addEventListener('click', () => {
+    setAutoMusicEnabled(true);
+  });
+
+  autoMusicOffBtn.addEventListener('click', () => {
+    setAutoMusicEnabled(false);
+  });
+
+  updateAnimToggleUi();
+  updateAutoMusicToggleUi();
 }
 
 function clampPostScale(value) {
@@ -6458,9 +6543,34 @@ async function openProfileModal(userId) {
   const profilePostsList = document.getElementById('profilePostsList');
   const profileEditFields = document.getElementById('profileEditFields');
   const profilePasswordInput = document.getElementById('profilePasswordInput');
+  const profileNewPasswordFields = document.getElementById('profileNewPasswordFields');
+  const profileNewPasswordInput = document.getElementById('profileNewPasswordInput');
+  const profileConfirmPasswordInput = document.getElementById('profileConfirmPasswordInput');
   const profileEditBtn = document.getElementById('profileEditBtn');
   const profileCancelBtn = document.getElementById('profileCancelBtn');
   const profileSaveBtn = document.getElementById('profileSaveBtn');
+
+  const resetProfilePasswordEditorState = () => {
+    profilePasswordChangeLocked = false;
+    if (profilePasswordInput) {
+      profilePasswordInput.value = '';
+      profilePasswordInput.placeholder = 'current password';
+      profilePasswordInput.readOnly = false;
+    }
+    if (profileNewPasswordInput) profileNewPasswordInput.value = '';
+    if (profileConfirmPasswordInput) profileConfirmPasswordInput.value = '';
+  };
+
+  const setProfilePasswordVerifiedState = (verified) => {
+    profileCurrentPasswordVerified = Boolean(verified);
+    if (profileNewPasswordFields) {
+      profileNewPasswordFields.style.display = profileCurrentPasswordVerified ? 'flex' : 'none';
+    }
+    if (!profileCurrentPasswordVerified) {
+      if (profileNewPasswordInput) profileNewPasswordInput.value = '';
+      if (profileConfirmPasswordInput) profileConfirmPasswordInput.value = '';
+    }
+  };
 
   const applyProfileEditState = (nextEditMode) => {
     profileEditMode = nextEditMode;
@@ -6483,10 +6593,59 @@ async function openProfileModal(userId) {
     if (profileEditBtn) profileEditBtn.textContent = '✂';
 
     if (!profileEditMode) {
-      if (profilePasswordInput) profilePasswordInput.value = '';
+      resetProfilePasswordEditorState();
+      setProfilePasswordVerifiedState(false);
       newProfilePfpFile = null;
+    } else {
+      resetProfilePasswordEditorState();
+      setProfilePasswordVerifiedState(false);
     }
   };
+
+  if (profilePasswordInput) {
+    profilePasswordInput.oninput = () => {
+      if (profileCurrentPasswordVerified) {
+        setProfilePasswordVerifiedState(false);
+      }
+    };
+
+    profilePasswordInput.onkeydown = (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      if (!profileEditMode) return;
+      if (profileSaveBtn) {
+        profileSaveBtn.click();
+      } else {
+        void saveProfileChanges();
+      }
+    };
+  }
+
+  if (profileNewPasswordInput) {
+    profileNewPasswordInput.onkeydown = (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      if (!profileEditMode || !profileCurrentPasswordVerified || profilePasswordChangeLocked) return;
+      if (profileSaveBtn) {
+        profileSaveBtn.click();
+      } else {
+        void saveProfileChanges();
+      }
+    };
+  }
+
+  if (profileConfirmPasswordInput) {
+    profileConfirmPasswordInput.onkeydown = (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      if (!profileEditMode || !profileCurrentPasswordVerified || profilePasswordChangeLocked) return;
+      if (profileSaveBtn) {
+        profileSaveBtn.click();
+      } else {
+        void saveProfileChanges();
+      }
+    };
+  }
 
   const postsList = profilePostsList;
   postsList.innerHTML = '';
@@ -6700,10 +6859,22 @@ function closeProfileModal() {
   document.body.classList.remove('profile-open');
   document.getElementById('toolbarProfileBtn')?.classList.remove('active');
   profileEditMode = false;
+  profileCurrentPasswordVerified = false;
+  profilePasswordChangeLocked = false;
   newProfilePfpFile = null;
   currentProfileUserId = null;
   const profilePasswordInput = document.getElementById('profilePasswordInput');
+  const profileNewPasswordFields = document.getElementById('profileNewPasswordFields');
+  const profileNewPasswordInput = document.getElementById('profileNewPasswordInput');
+  const profileConfirmPasswordInput = document.getElementById('profileConfirmPasswordInput');
   if (profilePasswordInput) profilePasswordInput.value = '';
+  if (profilePasswordInput) {
+    profilePasswordInput.placeholder = 'current password';
+    profilePasswordInput.readOnly = false;
+  }
+  if (profileNewPasswordFields) profileNewPasswordFields.style.display = 'none';
+  if (profileNewPasswordInput) profileNewPasswordInput.value = '';
+  if (profileConfirmPasswordInput) profileConfirmPasswordInput.value = '';
   updateToolbarModalLockState();
   scheduleUiStatePersist();
 }
@@ -6713,7 +6884,13 @@ async function saveProfileChanges() {
 
   const updates = {};
   const passwordInput = document.getElementById('profilePasswordInput');
+  const newPasswordInput = document.getElementById('profileNewPasswordInput');
+  const confirmPasswordInput = document.getElementById('profileConfirmPasswordInput');
   const currentPassword = String(passwordInput?.value || '').trim();
+
+  if (profilePasswordChangeLocked) {
+    return;
+  }
 
   if (!currentPassword) {
     alert('Enter your current password to save profile changes');
@@ -6727,8 +6904,44 @@ async function saveProfileChanges() {
 
   const authResult = await api.auth.signIn({ username: currentUser.username, password: currentPassword });
   if (authResult?.error) {
+    profileCurrentPasswordVerified = false;
+    const profileNewPasswordFields = document.getElementById('profileNewPasswordFields');
+    if (profileNewPasswordFields) profileNewPasswordFields.style.display = 'none';
+    if (newPasswordInput) newPasswordInput.value = '';
+    if (confirmPasswordInput) confirmPasswordInput.value = '';
     alert('Current password is incorrect');
     return;
+  }
+
+  const profileNewPasswordFields = document.getElementById('profileNewPasswordFields');
+  if (!profileCurrentPasswordVerified) {
+    profileCurrentPasswordVerified = true;
+    if (profileNewPasswordFields) profileNewPasswordFields.style.display = 'flex';
+    if (newPasswordInput) newPasswordInput.focus();
+    return;
+  }
+
+  const newPassword = String(newPasswordInput?.value || '').trim();
+  const confirmPassword = String(confirmPasswordInput?.value || '').trim();
+
+  if ((newPassword && !confirmPassword) || (!newPassword && confirmPassword)) {
+    alert('Enter both new password fields');
+    return;
+  }
+
+  if (newPassword || confirmPassword) {
+    if (newPassword !== confirmPassword) {
+      alert('New password fields do not match');
+      return;
+    }
+    if (newPassword.length < 6) {
+      alert('New password must be at least 6 characters');
+      return;
+    }
+    if (newPassword === currentPassword) {
+      alert('New password must be different from current password');
+      return;
+    }
   }
 
   const usernameInput = document.getElementById('profileUsernameInput');
@@ -6762,6 +6975,36 @@ async function saveProfileChanges() {
     const { data: urlData } = supabase.storage.from('group0-pfps').getPublicUrl(path);
     updates.pfp_url = urlData.publicUrl;
     updates.pfp = null;
+  }
+
+  if (Object.keys(updates).length === 0) {
+    if (!newPassword) {
+      closeProfileModal();
+      return;
+    }
+  }
+
+  if (newPassword) {
+    const pwResult = await api.auth.changePassword({ currentPassword, newPassword });
+    if (pwResult?.error) {
+      alert(`Password change failed: ${pwResult.error}`);
+      return;
+    }
+
+    profilePasswordChangeLocked = true;
+    profileCurrentPasswordVerified = false;
+    if (passwordInput) {
+      passwordInput.value = '';
+      passwordInput.placeholder = 'password updated';
+      passwordInput.readOnly = true;
+    }
+    if (newPasswordInput) newPasswordInput.value = '';
+    if (confirmPasswordInput) confirmPasswordInput.value = '';
+    if (profileNewPasswordFields) profileNewPasswordFields.style.display = 'none';
+
+    if (Object.keys(updates).length === 0) {
+      return;
+    }
   }
 
   if (Object.keys(updates).length === 0) {
@@ -9859,6 +10102,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   if (!session) return;
 
+  resolveInitialAutoMusicPreference();
+
   await loadMentionUserMap();
 
   restoredUiState = readPersistedUiState();
@@ -9910,14 +10155,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     },
     onEnterWorld: async (worldPayload) => {
       await setMusicWorldContext(worldPayload?.world || null, {
-        autoplay: true,
+        autoplay: autoMusicEnabled,
         forceRestart: true
       });
       await scheduleWorldModeReload('enter', worldPayload);
     },
     onExitWorld: async () => {
       await setMusicWorldContext(null, {
-        autoplay: true,
+        autoplay: autoMusicEnabled,
         forceRestart: true
       });
       await scheduleWorldModeReload('exit');
@@ -9960,7 +10205,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     .then(() => loadNotifications())
     .catch((err) => console.error('Deferred notifications load failed:', err));
 
-  await initMusic(currentUser, currentUserData);
+  await initMusic(currentUser, currentUserData, {
+    autoplay: autoMusicEnabled
+  });
   await setMusicWorldContext(activeWorldContext?.world || null, {
     autoplay: false,
     forceRestart: false
