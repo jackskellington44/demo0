@@ -32,6 +32,13 @@ const MINIO_BUCKET   = process.env.MINIO_BUCKET   || 'group0-pfps';
 const MINIO_PROTOCOL = MINIO_USE_SSL ? 'https' : 'http';
 const SLOW_REQUEST_MS = 200;
 
+function getEnvInt(name, fallback, min = 1) {
+  const raw = process.env[name];
+  const parsed = Number.parseInt(String(raw ?? ''), 10);
+  if (Number.isNaN(parsed)) return fallback;
+  return Math.max(min, parsed);
+}
+
 const MAX_PFP_BYTES = 2 * 1024 * 1024; // 2 MB
 const ALLOWED_PFP_MIMETYPES = new Set(['image/webp', 'image/gif', 'image/png', 'image/jpeg']);
 const MIME_TO_EXT = { 'image/webp': 'webp', 'image/gif': 'gif', 'image/png': 'png', 'image/jpeg': 'jpg' };
@@ -105,25 +112,52 @@ app.use((req, res, next) => {
 
 // ─── Rate limiting ─────────────────────────────────────────────────────────────
 
+const RATE_WINDOW_AUTH_MS = getEnvInt('RATE_LIMIT_AUTH_WINDOW_MS', 15 * 60 * 1000);
+const RATE_WINDOW_READ_MS = getEnvInt('RATE_LIMIT_READ_WINDOW_MS', 15 * 60 * 1000);
+const RATE_WINDOW_MUTATE_MS = getEnvInt('RATE_LIMIT_MUTATE_WINDOW_MS', 60 * 1000);
+const RATE_WINDOW_UPLOAD_MS = getEnvInt('RATE_LIMIT_UPLOAD_WINDOW_MS', 60 * 1000);
+
+const RATE_MAX_AUTH = getEnvInt('RATE_LIMIT_AUTH_MAX', 20);
+const RATE_MAX_READ = getEnvInt('RATE_LIMIT_READ_MAX', 300);
+const RATE_MAX_MUTATE = getEnvInt('RATE_LIMIT_MUTATE_MAX', 180);
+const RATE_MAX_UPLOAD = getEnvInt('RATE_LIMIT_UPLOAD_MAX', 90);
+const RATE_MAX_PFP_UPLOAD = getEnvInt('RATE_LIMIT_PFP_UPLOAD_MAX', 20);
+
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 20,
+  windowMs: RATE_WINDOW_AUTH_MS,
+  max: RATE_MAX_AUTH,
   standardHeaders: true,
   legacyHeaders: false,
   message: { data: null, error: 'Too many requests, please try again later.' },
 });
 
-const uploadLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
+const pfpUploadLimiter = rateLimit({
+  windowMs: RATE_WINDOW_AUTH_MS,
+  max: RATE_MAX_PFP_UPLOAD,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { data: null, error: 'Too many requests, please try again later.' },
+});
+
+const mediaUploadLimiter = rateLimit({
+  windowMs: RATE_WINDOW_UPLOAD_MS,
+  max: RATE_MAX_UPLOAD,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { data: null, error: 'Too many requests, please try again later.' },
+});
+
+const mutateLimiter = rateLimit({
+  windowMs: RATE_WINDOW_MUTATE_MS,
+  max: RATE_MAX_MUTATE,
   standardHeaders: true,
   legacyHeaders: false,
   message: { data: null, error: 'Too many requests, please try again later.' },
 });
 
 const readLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
+  windowMs: RATE_WINDOW_READ_MS,
+  max: RATE_MAX_READ,
   standardHeaders: true,
   legacyHeaders: false,
   message: { data: null, error: 'Too many requests, please try again later.' },
@@ -323,7 +357,7 @@ app.post('/auth/change-password', authLimiter, authMiddleware, async (req, res) 
 
 // ─── POST /auth/upload-pfp ─────────────────────────────────────────────────────
 
-app.post('/auth/upload-pfp', uploadLimiter, authMiddleware, upload.single('file'), async (req, res) => {
+app.post('/auth/upload-pfp', pfpUploadLimiter, authMiddleware, upload.single('file'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ data: null, error: 'No file uploaded' });
   }
@@ -475,7 +509,7 @@ app.post('/api/db/query', readLimiter, authMiddleware, async (req, res) => {
 
 // ─── POST /api/db/mutate ───────────────────────────────────────────────────────
 
-app.post('/api/db/mutate', readLimiter, authMiddleware, async (req, res) => {
+app.post('/api/db/mutate', mutateLimiter, authMiddleware, async (req, res) => {
   const { table, action, values: mutValues, filters, select, single, maybeSingle } = req.body || {};
 
   if (!table) return res.status(400).json({ data: null, error: 'table is required' });
@@ -553,7 +587,7 @@ app.post('/api/db/mutate', readLimiter, authMiddleware, async (req, res) => {
 
 // ─── POST /api/storage/upload ──────────────────────────────────────────────────
 
-app.post('/api/storage/upload', uploadLimiter, authMiddleware, uploadAny.single('file'), async (req, res) => {
+app.post('/api/storage/upload', mediaUploadLimiter, authMiddleware, uploadAny.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ data: null, error: 'No file uploaded' });
 
   const bucket  = req.body.bucket || 'uploads';
@@ -594,7 +628,7 @@ app.post('/api/storage/list', readLimiter, authMiddleware, async (req, res) => {
 
 // ─── POST /api/storage/remove ─────────────────────────────────────────────────
 
-app.post('/api/storage/remove', uploadLimiter, authMiddleware, async (req, res) => {
+app.post('/api/storage/remove', mediaUploadLimiter, authMiddleware, async (req, res) => {
   const { bucket, paths = [] } = req.body || {};
   if (!bucket) return res.status(400).json({ data: null, error: 'bucket is required' });
 
@@ -622,6 +656,44 @@ app.get('/api/storage/public/:bucket/*', async (req, res) => {
   }
 });
 
+async function verifyWorldPassword(worldId, password) {
+  const result = await pool.query(
+    'SELECT password_hash FROM public.worlds WHERE id = $1',
+    [worldId]
+  );
+  const hash = result.rows[0]?.password_hash;
+  if (!hash) return false;
+  return bcrypt.compare(String(password || ''), hash);
+}
+
+async function grantWorldAccess(userId, worldId, password) {
+  const allowed = await verifyWorldPassword(worldId, password);
+  if (!allowed) return false;
+
+  await pool.query(
+    `INSERT INTO public.world_access (user_id, world_id, unlocked_at)
+     VALUES ($1, $2, NOW())
+     ON CONFLICT (user_id, world_id)
+     DO UPDATE SET unlocked_at = EXCLUDED.unlocked_at`,
+    [userId, worldId]
+  );
+
+  return true;
+}
+
+async function setWorldPassword(userId, worldId, password) {
+  const trimmed = String(password || '').trim();
+  const passwordHash = trimmed ? await bcrypt.hash(trimmed, BCRYPT_ROUNDS) : null;
+  const result = await pool.query(
+    `UPDATE public.worlds
+     SET password_hash = $1
+     WHERE id = $2 AND user_id = $3`,
+    [passwordHash, worldId, userId]
+  );
+
+  return result.rowCount > 0;
+}
+
 // ─── POST /api/rpc/:name ───────────────────────────────────────────────────────
 
 app.post('/api/rpc/:name', readLimiter, async (req, res) => {
@@ -632,6 +704,44 @@ app.post('/api/rpc/:name', readLimiter, async (req, res) => {
   const AUTH_RPCS = new Set(['set_world_password', 'grant_world_access']);
   if (!PUBLIC_RPCS.has(fnName) && !AUTH_RPCS.has(fnName)) {
     return res.status(400).json({ data: null, error: `Unknown RPC: ${fnName}` });
+  }
+
+  const executeWorldRpc = async () => {
+    try {
+      const worldId = args.p_world_id || args.world_id;
+      const password = args.p_password ?? args.password ?? '';
+      if (!worldId) {
+        return res.status(400).json({ data: null, error: 'world id is required' });
+      }
+
+      if (fnName === 'verify_world_password') {
+        const data = await verifyWorldPassword(worldId, password);
+        return res.json({ data, error: null });
+      }
+
+      if (fnName === 'grant_world_access') {
+        const data = await grantWorldAccess(req.user.id, worldId, password);
+        return res.json({ data, error: null });
+      }
+
+      if (fnName === 'set_world_password') {
+        const data = await setWorldPassword(req.user.id, worldId, password);
+        return res.json({ data, error: null });
+      }
+
+      return res.status(400).json({ data: null, error: `Unknown RPC: ${fnName}` });
+    } catch (err) {
+      console.error(`RPC ${fnName} error:`, err);
+      return res.status(500).json({ data: null, error: err.message });
+    }
+  };
+
+  if (fnName === 'verify_world_password') {
+    return executeWorldRpc();
+  }
+
+  if (fnName === 'grant_world_access' || fnName === 'set_world_password') {
+    return authMiddleware(req, res, executeWorldRpc);
   }
 
   const executeRpc = async () => {

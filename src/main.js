@@ -38,8 +38,9 @@ import { supabase } from './supabase-config.js';
 import { api } from './api.js';
 import { installPrettyAlerts } from './ui-alerts.js';
 import { initWorldsFeature } from './worlds.js';
+import { attachFakePasswordInput, getFakePasswordValue, setFakePasswordValue } from './password-mask.js';
 
-import { initMusic, setMusicWorldContext } from './music.js';
+import { closeMusicPanel, initMusic, isMusicPanelOpen, setMusicWorldContext } from './music.js';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import JSZip from 'jszip';
@@ -242,6 +243,7 @@ const DOUBLE_CLICK_THRESHOLD = 400; // ms
 // Cache last loaded data for re-rendering link lines on pan/zoom/move
 let lastLoadedPosts = [];
 let lastLoadedLinks = [];
+const deletingPostIds = new Set();
 
 let activeLinkTreeRootPostId = null; // any post id inside the selected connected component
 
@@ -268,6 +270,8 @@ let pdVisualZoom = 1;
 let pdVisualPanX = 0;
 let pdVisualPanY = 0;
 let pdPdfRenderToken = 0;
+let activeCommentEditRow = null;
+let activeCommentEditCancel = null;
 
 const PD_MIN_ZOOM = 1;
 const PD_MAX_ZOOM = 4;
@@ -471,11 +475,16 @@ function renderFeedCards(posts = [], worlds = [], userMap = {}, options = {}) {
         if (currentUserData?.is_admin) return true;
         return String(currentUser?.id || '') === String(worldRow.user_id || '');
       },
-      containerFontColor: activeWorldContext?.world?.font_color || '',
+      containerFontColor: '',
       onBeginMove: (worldRow, cardEl, pointerEvent) => {
         if (!editMode) return;
         startPlacement(worldRow, cardEl, pointerEvent);
       },
+      onBeginResize: (e, cardEl, worldId, corner) => {
+        if (!editMode) return;
+        beginPostResize(e, cardEl, worldId, corner);
+      },
+      isPlacementActive: () => isPlacing || isBulkPlacing,
       onFilterUser: (userId) => {
         activeUserFilter = activeUserFilter === userId ? null : userId;
         loadPosts();
@@ -660,7 +669,7 @@ function updateToolbarProfileAvatar() {
   if (!toolbarBtn) return;
 
   document.getElementById('toolbarProfileImg')?.remove();
-  toolbarBtn.textContent = '◌';
+  toolbarBtn.innerHTML = '<span class="ui-icon icon-profile" aria-hidden="true"></span>';
 }
 
 function applyImageRuntimeDefaults(rootEl) {
@@ -1244,7 +1253,8 @@ function resolveInitialAutoMusicPreference() {
 const VIEWPORT_NEAR_MARGIN_PX = 120;
 const VIEWPORT_FAR_MARGIN_PX = 680;
 const VIEWPORT_LINK_CULL_MARGIN_PX = 360;
-const ZOOM_OUT_DETAIL_THRESHOLD = 0.11;
+const ZOOM_OUT_DETAIL_THRESHOLD = 0.18;
+const ULTRA_ZOOM_OUT_COLLAPSE_THRESHOLD = 0.27;
 const POST_COORD_MIN = -5000;
 const POST_COORD_MAX = 18000;
 const POST_CARD_FALLBACK_WIDTH = 320;
@@ -1256,9 +1266,11 @@ let placingPost = null;      // the post row (must include id)
 let placingCardEl = null;    // DOM element for the card being placed
 let placeMouseOffsetX = 0;   // center-of-card offset (canvas units)
 let placeMouseOffsetY = 0;
+let suppressPlacementClickPostId = null;
 let isBulkPlacing = false;
 let bulkPlacementItems = [];
 let resizingPostState = null;
+let suppressEditSelectionClickPostId = null;
 
 const CARD_GAP = 10; // minimum gap between cards (px in canvas units)
 
@@ -1268,6 +1280,7 @@ const CARD_GAP = 10; // minimum gap between cards (px in canvas units)
 
 function applyCanvasTransform() {
   if (!postCanvas) return;
+  document.documentElement.style.setProperty('--canvas-scale', String(canvasScale));
   postCanvas.style.transform = `translate(${canvasOffsetX}px, ${canvasOffsetY}px) scale(${canvasScale})`;
   postCanvas.style.transformOrigin = '0 0';
 
@@ -1417,6 +1430,7 @@ function syncCardEnergyState(card, lod, { allowPreviewVideoPlayback = true } = {
   const previewVideo = card.querySelector('.post-preview-video');
   if (previewVideo) {
     if (lod === 'near' && allowPreviewVideoPlayback && !shouldHardFreezeMotion()) {
+      ensurePreviewVideoSource(previewVideo);
       previewVideo.play().catch(() => {});
     } else {
       previewVideo.pause();
@@ -1479,6 +1493,7 @@ function refreshCardLodStates() {
   });
 
   mainPageContainer?.classList.toggle('zoomed-out-intentional', canvasScale <= ZOOM_OUT_DETAIL_THRESHOLD);
+  mainPageContainer?.classList.toggle('ultra-zoomed-out', canvasScale <= ULTRA_ZOOM_OUT_COLLAPSE_THRESHOLD);
 }
 
 function scheduleCardLodRefresh() {
@@ -1594,12 +1609,16 @@ function initSettingsPanel() {
   const fgSwatch = document.getElementById('settingsFgColor');
   const fgHex    = document.getElementById('settingsFgHex');
   const fontSel  = document.getElementById('settingsFontSelect');
+  const fontDropdownWrap = document.getElementById('settingsFontDropdownWrap');
+  const fontDisplay = document.getElementById('settingsFontDisplay');
+  const fontDisplayText = document.getElementById('settingsFontDisplayText');
+  const fontDropdown = document.getElementById('settingsFontDropdown');
   const animOnBtn = document.getElementById('settingsAnimOn');
   const animOffBtn = document.getElementById('settingsAnimOff');
   const autoMusicOnBtn = document.getElementById('settingsAutoMusicOn');
   const autoMusicOffBtn = document.getElementById('settingsAutoMusicOff');
 
-  if (!bgSwatch || !fgSwatch || !fontSel || !animOnBtn || !animOffBtn || !autoMusicOnBtn || !autoMusicOffBtn) return;
+  if (!bgSwatch || !fgSwatch || !fontSel || !fontDropdownWrap || !fontDisplay || !fontDisplayText || !fontDropdown || !animOnBtn || !animOffBtn || !autoMusicOnBtn || !autoMusicOffBtn) return;
 
   // Sync initial values from CSS
   const root = document.documentElement;
@@ -1617,6 +1636,47 @@ function initSettingsPanel() {
   const matchFont = fontOpts.find(o => o.value === curFont);
   if (matchFont) fontSel.value = curFont;
 
+  const syncSettingsFontUi = () => {
+    const selected = fontOpts.find((option) => option.value === fontSel.value) || fontOpts[0] || null;
+    fontDisplayText.textContent = selected?.textContent || 'select font';
+
+    Array.from(fontDropdown.children).forEach((child) => {
+      child.classList.toggle('is-selected', child.dataset.value === fontSel.value);
+    });
+  };
+
+  const closeSettingsFontDropdown = () => {
+    fontDropdown.style.display = 'none';
+    fontDisplay.classList.remove('is-open');
+    fontDisplay.setAttribute('aria-expanded', 'false');
+  };
+
+  const openSettingsFontDropdown = () => {
+    fontDropdown.style.display = 'flex';
+    fontDisplay.classList.add('is-open');
+    fontDisplay.setAttribute('aria-expanded', 'true');
+  };
+
+  const renderSettingsFontOptions = () => {
+    fontDropdown.innerHTML = '';
+    fontOpts.forEach((option) => {
+      const item = document.createElement('div');
+      item.className = 'settings-font-option ui-dropdown-option';
+      item.dataset.value = option.value;
+      item.setAttribute('role', 'option');
+      item.textContent = option.textContent || option.value;
+      item.style.fontFamily = option.value || 'inherit';
+      item.addEventListener('click', () => {
+        fontSel.value = option.value;
+        syncSettingsFontUi();
+        closeSettingsFontDropdown();
+        applyAndSave();
+      });
+      fontDropdown.appendChild(item);
+    });
+    syncSettingsFontUi();
+  };
+
   const applyAndSave = () => {
     applySysTheme({
       bg:   bgSwatch.value,
@@ -1625,6 +1685,8 @@ function initSettingsPanel() {
     });
     saveSysTheme();
   };
+
+  renderSettingsFontOptions();
 
   bgSwatch.addEventListener('input', () => {
     if (bgHex) bgHex.value = bgSwatch.value;
@@ -1656,7 +1718,41 @@ function initSettingsPanel() {
     });
   }
 
-  fontSel.addEventListener('change', applyAndSave);
+  fontSel.addEventListener('change', () => {
+    syncSettingsFontUi();
+    applyAndSave();
+  });
+
+  fontDisplay.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (fontDropdown.style.display === 'flex') {
+      closeSettingsFontDropdown();
+    } else {
+      openSettingsFontDropdown();
+    }
+  });
+
+  fontDisplay.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      if (fontDropdown.style.display === 'flex') {
+        closeSettingsFontDropdown();
+      } else {
+        openSettingsFontDropdown();
+      }
+      return;
+    }
+
+    if (event.key === 'Escape') {
+      closeSettingsFontDropdown();
+    }
+  });
+
+  document.addEventListener('click', (event) => {
+    if (!event.target.closest('#settingsFontDropdownWrap')) {
+      closeSettingsFontDropdown();
+    }
+  });
 
   const updateAnimToggleUi = () => {
     const movementOn = getEffectiveAnimationMode() !== 'off';
@@ -2128,7 +2224,7 @@ function updatePlacementPosition(e) {
   renderLinks(lastLoadedPosts, lastLoadedLinks);
 }
 
-function beginPostResize(e, cardEl, postId) {
+function beginPostResize(e, cardEl, postId, corner = 'se') {
   if (isPlacing || isBulkPlacing) return;
 
   e.preventDefault();
@@ -2140,7 +2236,8 @@ function beginPostResize(e, cardEl, postId) {
     postId: String(postId),
     startX: e.clientX,
     startY: e.clientY,
-    startScale
+    startScale,
+    corner
   };
 
   cardEl.classList.add('post-card-resizing');
@@ -2150,8 +2247,14 @@ function updatePostResize(e) {
   if (!resizingPostState?.cardEl) return;
 
   const dx = e.clientX - resizingPostState.startX;
+  const dy = e.clientY - resizingPostState.startY;
   const cardBaseWidth = Math.max(220, resizingPostState.cardEl.offsetWidth || 220);
-  const delta = dx / cardBaseWidth;
+  const horizontalSign = resizingPostState.corner.includes('w') ? -1 : 1;
+  const verticalSign = resizingPostState.corner.includes('n') ? -1 : 1;
+  const dominantDelta = Math.abs(dx) >= Math.abs(dy)
+    ? (dx * horizontalSign)
+    : (dy * verticalSign);
+  const delta = dominantDelta / cardBaseWidth;
   const nextScale = clampPostScale(resizingPostState.startScale + delta);
 
   applyCardScale(resizingPostState.cardEl, nextScale);
@@ -2207,8 +2310,15 @@ async function tryDropPlacement(e) {
 
   const { error } = await placementQuery;
   if (error) {
+    const placementMessage = String(
+      error?.message
+      || error?.details
+      || error?.hint
+      || error?.code
+      || 'Unknown placement error'
+    );
     console.error('Placement save failed:', error);
-    alert(`Placement save failed: ${error.message}`);
+    alert(`Placement save failed: ${placementMessage}`);
     return;
   }
 
@@ -2546,17 +2656,11 @@ function setCanvasLoadingState(isLoading, label = 'loading posts...') {
 function applyWorldModeVisuals(worldModeConfig = null) {
   if (!worldModeConfig) {
     mainPageContainer?.classList.remove('world-mode-active');
-    mainPageContainer?.style.removeProperty('--world-mode-font-family');
-    mainPageContainer?.style.removeProperty('--world-mode-font-color');
-    mainPageContainer?.style.removeProperty('--world-mode-ui-color');
     applyBackgroundImage(DEFAULT_BG_URL);
     return;
   }
 
   mainPageContainer?.classList.add('world-mode-active');
-  mainPageContainer?.style.setProperty('--world-mode-font-family', worldModeConfig.fontFamily || 'inherit');
-  mainPageContainer?.style.setProperty('--world-mode-font-color', worldModeConfig.fontColor || 'inherit');
-  mainPageContainer?.style.setProperty('--world-mode-ui-color', worldModeConfig.uiColor || 'rgba(255,255,255,0.7)');
   applyBackgroundImage(worldModeConfig.backgroundUrl || DEFAULT_BG_URL);
 }
 
@@ -2755,26 +2859,13 @@ function applyOverlayThemeVars() {
   const world = activeWorldContext?.world || null;
 
   const worldFont = String(world?.font_family || '').trim();
-  const worldColor = String(world?.font_color || '').trim();
-  const worldUi = String(world?.ui_color || '').trim();
-
   if (worldFont) {
     root.style.setProperty('--post-overlay-font', worldFont);
   } else {
     root.style.removeProperty('--post-overlay-font');
   }
-
-  if (worldColor) {
-    root.style.setProperty('--post-overlay-color', worldColor);
-  } else {
-    root.style.removeProperty('--post-overlay-color');
-  }
-
-  if (worldUi) {
-    root.style.setProperty('--post-overlay-bg', worldUi);
-  } else {
-    root.style.removeProperty('--post-overlay-bg');
-  }
+  root.style.removeProperty('--post-overlay-color');
+  root.style.removeProperty('--post-overlay-bg');
 }
 
 function clearVisibleCanvasContent() {
@@ -2794,7 +2885,12 @@ function applyOptimisticPostRemoval(postIds = []) {
 
   lastLoadedPosts = (lastLoadedPosts || []).filter((post) => !idSet.has(String(post?.id)));
   idSet.forEach((id) => {
+    deletingPostIds.add(String(id));
     postRecordCache.delete(String(id));
+    selectedEditPostIds.delete(String(id));
+    if (activeThreadSourcePostId && String(activeThreadSourcePostId) === String(id)) {
+      activeThreadSourcePostId = null;
+    }
     if (postCanvas) {
       postCanvas.querySelector(`.post-card[data-post-id="${id}"]`)?.remove();
     }
@@ -2830,6 +2926,8 @@ async function enterWorldMode(worldPayload) {
   }
 
   const runPromise = (async () => {
+    stopPlacement();
+    stopBulkPlacement();
     activeWorldContext = worldPayload;
     worldsFeature?.setWorldLoaderProgress?.(0);
     setCanvasLoadingState(true, 'loading world...');
@@ -2873,6 +2971,8 @@ async function exitWorldMode() {
   }
 
   const runPromise = (async () => {
+    stopPlacement();
+    stopBulkPlacement();
     activeWorldContext = null;
     worldsFeature?.setWorldLoaderProgress?.(0);
     setCanvasLoadingState(true, 'loading main...');
@@ -2952,14 +3052,64 @@ function scheduleWorldModeReload(mode, worldPayload = null, delayMs = 0) {
   });
 }
 
-function openPostForm() {
+async function ensureExclusiveSurface(target) {
+  const confirmTitle = 'are you sure you meant to exit?';
+  const confirmMessage = 'You have unsaved changes. Closing now will lose them.';
+
+  if (target !== 'world-maker' && worldsFeature?.isMakerOpen?.()) {
+    const closed = await worldsFeature.maybeCloseMaker?.({
+      title: confirmTitle,
+      message: confirmMessage
+    });
+    if (!closed) return false;
+  }
+
+  if (target !== 'post-form' && postFormOverlay?.style.display === 'flex') {
+    const closed = await maybeClosePostForm({
+      title: confirmTitle,
+      message: confirmMessage
+    });
+    if (!closed) return false;
+  }
+
+  if (target !== 'post-detail' && postDetailOverlay?.style.display === 'flex') {
+    closePostDetailModal();
+  }
+
+  if (target !== 'profile' && profileOverlay?.classList?.contains('open')) {
+    closeProfileModal();
+  }
+
+  if (target !== 'notif' && notifPanel?.classList?.contains('open')) {
+    closeNotificationsPanel();
+  }
+
+  if (target !== 'settings') {
+    const settingsPanel = document.getElementById('settingsPanel');
+    if (settingsPanel?.classList?.contains('open')) {
+      closeSettingsPanel();
+    }
+  }
+
+  if (target !== 'help') {
+    const helpOverlay = document.getElementById('helpOverlay');
+    if (helpOverlay && helpOverlay.style.display !== 'none') {
+      closeHelpOverlay();
+    }
+  }
+
+  return true;
+}
+
+async function openPostForm() {
   if (activeWorldContext?.world && activeWorldContext.world.is_public_edit === false) {
     if ((currentUser?.id || null) !== activeWorldContext.world.user_id) {
       alert('Only the world creator can post here.');
       return;
     }
   }
-  closeToolbarPanels('post');
+  const canOpen = await ensureExclusiveSurface('post-form');
+  if (!canOpen) return;
   applyOverlayThemeVars();
   postFileInput.multiple = true;
   postFormOverlay.style.display = 'flex';
@@ -3050,13 +3200,20 @@ function hasUnsavedFormContent() {
   return false;
 }
 
-async function maybeClosePostForm() {
+async function maybeClosePostForm(options = {}) {
+  if (postFormOverlay?.style.display !== 'flex') return true;
+
+  const {
+    title: customTitle = '',
+    message: customMessage = ''
+  } = options;
+
   if (hasUnsavedFormContent()) {
     const isEditing = Boolean(editingPostId);
-    const title = isEditing ? 'discard post edits?' : 'discard this draft?';
-    const message = isEditing
+    const title = customTitle || (isEditing ? 'discard post edits?' : 'discard this draft?');
+    const message = customMessage || (isEditing
       ? 'You have unsaved edits in this post form. Closing now will lose these changes.'
-      : 'You have unsaved content in this draft. Closing now will lose it.';
+      : 'You have unsaved content in this draft. Closing now will lose it.');
 
     let shouldClose = false;
     if (typeof window.__prettyConfirm === 'function') {
@@ -3065,15 +3222,17 @@ async function maybeClosePostForm() {
         message,
         confirmLabel: 'discard',
         cancelLabel: 'keep editing',
-        danger: true
+        danger: true,
+        theme: 'post-delete'
       });
     } else {
       shouldClose = confirm('Unsaved changes will be lost. Close anyway?');
     }
 
-    if (!shouldClose) return;
+    if (!shouldClose) return false;
   }
   closePostForm();
+  return true;
 }
 
 function closeCoverImagePrompt() {
@@ -3336,7 +3495,7 @@ function renderPostTitleMarkup(title, { clickableMentions = true } = {}) {
   const titleText = String(title || '').trim();
   if (!titleText) return '';
 
-  return `<div class="post-title"><span class="post-title-track">${formatBodyTextWithMentions(titleText, { clickable: clickableMentions })}</span></div>`;
+  return `<div class="post-title-wrap"><div class="post-title"><span class="post-title-track">${formatBodyTextWithMentions(titleText, { clickable: clickableMentions })}</span></div></div>`;
 }
 
 async function loadMentionUserMap() {
@@ -3774,6 +3933,7 @@ function renderPlainFieldSpellDecoration(fieldEl) {
 
 function isSpellEnabledPlainField(fieldEl) {
   if (!fieldEl) return false;
+  if (fieldEl.id === 'commentInput') return false;
   if (fieldEl.disabled || fieldEl.readOnly) return false;
   const tag = fieldEl.tagName?.toLowerCase();
   if (tag === 'textarea') return true;
@@ -3996,7 +4156,7 @@ function initializePostTextSpellcheck() {
   }
 
   spellFields
-    .filter((field) => field !== postText)
+    .filter((field) => field !== postText && field.id !== 'commentInput')
     .forEach((field) => {
       wirePlainFieldSpellcheck(field);
     });
@@ -4244,6 +4404,22 @@ function formatTimestamp(value) {
     hour: 'numeric',
     minute: '2-digit'
   });
+}
+
+function formatCommentTimestampParts(value) {
+  if (!value) return '';
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return { date: '', time: '' };
+
+  const month = dt.getMonth() + 1;
+  const day = dt.getDate();
+  const year = String(dt.getFullYear()).slice(-2);
+  const hours = String(dt.getHours()).padStart(2, '0');
+  const minutes = String(dt.getMinutes()).padStart(2, '0');
+  return {
+    date: `${month}/${day}/${year}`,
+    time: `${hours}:${minutes}`
+  };
 }
 
 function renderPostBodyMarkup(
@@ -4686,6 +4862,7 @@ function wirePreviewVideoControls(content, { freezeMotion = false } = {}) {
   }
 
   muteBtn.textContent = '♫';
+  ensurePreviewVideoSource(previewVideo);
   previewVideo.play().catch(() => {});
 
   muteBtn.addEventListener('mousedown', (e) => e.stopPropagation());
@@ -4894,13 +5071,53 @@ function wireMultiVisualHoverPreview(content, post, { disableInteraction = false
 // 10. POST DETAIL LAYOUT HELPERS
 // ============================================
 function applyPdColWidths() {
+  const getBodyContentWidth = () => {
+    const body = document.getElementById('pdBody');
+    const h1 = document.getElementById('pdHandle1');
+    const h2 = document.getElementById('pdHandle2');
+    if (!body) return 0;
+
+    const isVisible = (el) => {
+      if (!el) return false;
+      return window.getComputedStyle(el).display !== 'none';
+    };
+
+    const handleWidth = (el) => {
+      if (!el) return 0;
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 0) return rect.width;
+      const fallback = Number.parseFloat(window.getComputedStyle(el).flexBasis);
+      return Number.isFinite(fallback) && fallback > 0 ? fallback : 13;
+    };
+
+    const totalWidth = body.getBoundingClientRect().width || body.clientWidth || 0;
+    const handlesWidth =
+      (isVisible(h1) ? handleWidth(h1) : 0) +
+      (isVisible(h2) ? handleWidth(h2) : 0);
+
+    return Math.max(0, totalWidth - handlesWidth);
+  };
+
+  const setColWidth = (el, pct, contentWidth) => {
+    if (!el) return;
+    const safePct = Math.max(0, pct);
+    if (!contentWidth) {
+      el.style.flex = `0 0 ${safePct}%`;
+      return;
+    }
+    const px = Math.max(0, Math.round((safePct / 100) * contentWidth));
+    el.style.flex = `0 0 ${px}px`;
+  };
+
   const vc = document.getElementById('pdVisualCol');
   const tc = document.getElementById('pdTextCol');
   const cc = document.getElementById('pdCommentsCol');
   const commentsOpen = !pdCommentsCollapsed;
-  if (vc && pdColWidths.visual > 0) vc.style.flex = `0 0 ${pdColWidths.visual}%`;
-  if (tc && pdColWidths.text   > 0) tc.style.flex = `0 0 ${pdColWidths.text}%`;
-  if (cc) cc.style.flex = commentsOpen ? `0 0 ${pdColWidths.comments}%` : '0 0 0%';
+  const contentWidth = getBodyContentWidth();
+  setColWidth(vc, pdColWidths.visual, contentWidth);
+  setColWidth(tc, pdColWidths.text, contentWidth);
+  setColWidth(cc, commentsOpen ? pdColWidths.comments : 0, contentWidth);
+  cc?.classList.toggle('pd-col-sliver', commentsOpen && pdColWidths.comments <= 15);
 }
 
 
@@ -4943,24 +5160,35 @@ function applyPdLayout(hasVisual, hasText) {
   cc.style.display = '';
 
   if (pdCommentsCollapsed) {
+    const bodyWidth = (document.getElementById('pdBody')?.getBoundingClientRect().width || 0);
+    const h1Width = h1.style.display === 'none' ? 0 : (h1.getBoundingClientRect().width || 13);
+    const h2Width = h2.style.display === 'none' ? 0 : (h2.getBoundingClientRect().width || 13);
+    const contentWidth = Math.max(0, bodyWidth - h1Width - h2Width);
+
+    const setColWidth = (el, pct) => {
+      if (!el) return;
+      const px = Math.max(0, Math.round((Math.max(0, pct) / 100) * contentWidth));
+      el.style.flex = contentWidth > 0 ? `0 0 ${px}px` : `0 0 ${Math.max(0, pct)}%`;
+    };
+
     const base = pdColWidths.visual + pdColWidths.text;
     if (hasVisual && hasText && base > 0) {
       const visualPct = (pdColWidths.visual / base) * 100;
       const textPct = 100 - visualPct;
-      vc.style.flex = `0 0 ${visualPct}%`;
-      tc.style.flex = `0 0 ${textPct}%`;
+      setColWidth(vc, visualPct);
+      setColWidth(tc, textPct);
       cc.style.display = 'none';
       h2.style.display = 'none';
       return;
     }
     if (hasVisual) {
-      vc.style.flex = '0 0 100%';
+      setColWidth(vc, 100);
       cc.style.display = 'none';
       h2.style.display = 'none';
       return;
     }
     if (hasText) {
-      tc.style.flex = '0 0 100%';
+      setColWidth(tc, 100);
       cc.style.display = 'none';
       h2.style.display = 'none';
       return;
@@ -5132,7 +5360,38 @@ function initPdResize() {
   const body = document.getElementById('pdBody');
   const h1   = document.getElementById('pdHandle1');
   const h2   = document.getElementById('pdHandle2');
+  if (!body || !h1 || !h2) return;
   let dragging = null;
+  const SNAP_CLOSE_PCT = 4;
+  const MIN_OPEN_PCT = 14;
+  const EDGE_SLIVER_PCT = 5;
+
+  const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+  const snapPair = (first, second, total, { minFirst = 0, minSecond = 0 } = {}) => {
+    let a = clamp(first, 0, total);
+    let b = total - a;
+
+    if (a <= SNAP_CLOSE_PCT) return [minFirst, total - minFirst];
+    if (b <= SNAP_CLOSE_PCT) return [total - minSecond, minSecond];
+
+    if (minFirst > 0 && a < MIN_OPEN_PCT) {
+      return [minFirst, total - minFirst];
+    }
+    if (minSecond > 0 && b < MIN_OPEN_PCT) {
+      return [total - minSecond, minSecond];
+    }
+
+    if (a < MIN_OPEN_PCT) {
+      a = MIN_OPEN_PCT;
+      b = total - a;
+    }
+    if (b < MIN_OPEN_PCT) {
+      b = MIN_OPEN_PCT;
+      a = total - b;
+    }
+
+    return [clamp(a, 0, total), clamp(b, 0, total)];
+  };
 
   h1.addEventListener('mousedown', (e) => {
     e.preventDefault();
@@ -5147,17 +5406,28 @@ function initPdResize() {
     if (!dragging) return;
     const totalW = body.getBoundingClientRect().width;
     if (!totalW) return;
+    pdCommentsCollapsed = false;
     const dxPct = ((e.clientX - dragging.startX) / totalW) * 100;
 
     if (dragging.handle === 'h1') {
-      const newV = Math.max(15, Math.min(75, dragging.start.visual + dxPct));
-      const newT = Math.max(10, dragging.start.visual + dragging.start.text - newV);
+      const total = dragging.start.visual + dragging.start.text;
+      const [newV, newT] = snapPair(
+        dragging.start.visual + dxPct,
+        total - (dragging.start.visual + dxPct),
+        total,
+        { minFirst: EDGE_SLIVER_PCT }
+      );
       pdColWidths.visual = newV;
       pdColWidths.text   = newT;
     } else {
       const leftKey = _pdHasText ? 'text' : 'visual';
-      const newL = Math.max(15, Math.min(85, dragging.start[leftKey] + dxPct));
-      const newC = Math.max(10, dragging.start[leftKey] + dragging.start.comments - newL);
+      const total = dragging.start[leftKey] + dragging.start.comments;
+      const [newL, newC] = snapPair(
+        dragging.start[leftKey] + dxPct,
+        total - (dragging.start[leftKey] + dxPct),
+        total,
+        { minSecond: EDGE_SLIVER_PCT }
+      );
       pdColWidths[leftKey]  = newL;
       pdColWidths.comments  = newC;
     }
@@ -5165,10 +5435,17 @@ function initPdResize() {
   });
 
   document.addEventListener('mouseup', () => { dragging = null; });
+
+  window.addEventListener('resize', () => {
+    if (postDetailOverlay?.style.display !== 'flex') return;
+    applyPdLayout(_pdHasVisual, _pdHasText);
+  });
 }
 
 async function openPostDetailModal(post, user) {
   if (editMode) return;
+  const canOpen = await ensureExclusiveSurface('post-detail');
+  if (!canOpen) return;
 
   if (pdModalInteractionCleanup) {
     pdModalInteractionCleanup();
@@ -5216,9 +5493,8 @@ async function openPostDetailModal(post, user) {
   const extFromUrl = getFileExtension(post.file_url || '');
   const ext = extFromName || extFromUrl;
   const isImage = post.file_type === 'image'  || isImageExtension(ext);
-  const isAudio = post.file_type === 'audio'  || isAudioExtension(ext);
+  const isAudio = (post.file_type === 'audio' && !isVideoExtension(ext)) || isAudioExtension(ext);
   const isVideo = (post.file_type === 'video' || isVideoExtension(ext)) && !isAudio;
-  const isMulti = !!(post.files && post.files.length > 1);
   const hasCover = !!post.cover_image_url;
 
   let visualFiles = []; // { url, name, type:'image'|'video'|'youtube'|'pdf' }
@@ -5414,13 +5690,16 @@ async function openPostDetailModal(post, user) {
     });
   }
 
-  // ── Apply layout ──
+  postDetailOverlay.style.display = 'flex';
+  document.body.classList.add('post-detail-open');
+
+  // ── Apply layout after overlay is visible so width-based sizing can compute correctly ──
   setPdCommentsCollapsed(false);
   applyPdLayout(hasVisual, hasText);
+  window.requestAnimationFrame(() => applyPdLayout(hasVisual, hasText));
 
   pdModalInteractionCleanup = initPostDetailInteractions();
 
-  postDetailOverlay.style.display = 'flex';
   resizeCommentInput();
   loadCommentsForPost(post.id);
   loadConnectedTabs(post);
@@ -5487,7 +5766,9 @@ async function loadConnectedTabs(post) {
 
 function closePostDetailModal() {
   pdPdfRenderToken += 1;
+  activeCommentEditCancel?.();
   postDetailOverlay.style.display = 'none';
+  document.body.classList.remove('post-detail-open');
   hidePdFileContextMenu();
   document.getElementById('postDetailContent').innerHTML = '';
   commentsList.innerHTML  = '';
@@ -5533,6 +5814,7 @@ function toggleEditMode() {
     closeProfileModal();
   }
   mainPageContainer.classList.toggle('edit-mode', editMode);
+  document.body.classList.toggle('app-edit-mode', editMode);
   document.getElementById('editModeBtn')?.classList.toggle('active', editMode);
   if (!editMode) closePostForm();
   applyAnimationMode(animationMode, { persist: false });
@@ -5576,7 +5858,8 @@ async function handleDeletePost(postId) {
 
 async function handleDeletePosts(postIds = []) {
   try {
-    const ids = [...new Set((postIds || []).map((id) => String(id)).filter(Boolean))];
+    const ids = [...new Set((postIds || []).map((id) => String(id)).filter(Boolean))]
+      .filter((id) => !deletingPostIds.has(String(id)));
     if (ids.length === 0) return;
 
     const isBulk = ids.length > 1;
@@ -5590,17 +5873,21 @@ async function handleDeletePosts(postIds = []) {
           message: confirmMessage,
           confirmLabel: 'delete',
           cancelLabel: 'cancel',
+          theme: 'post-delete',
           danger: true
         })
       : window.confirm(confirmMessage);
     if (!confirmed) return;
 
-    applyOptimisticPostRemoval(ids);
+    const deleteIds = ids.filter((id) => !deletingPostIds.has(String(id)));
+    if (deleteIds.length === 0) return;
+
+    applyOptimisticPostRemoval(deleteIds);
 
     let deleteQuery = supabase
       .from('posts')
       .delete()
-      .in('id', ids);
+      .in('id', deleteIds);
 
     if (!currentUserData?.is_admin) {
       deleteQuery = deleteQuery.eq('user_id', currentUser.id);
@@ -5610,15 +5897,18 @@ async function handleDeletePosts(postIds = []) {
 
     if (error) throw error;
 
-    ids.forEach((id) => selectedEditPostIds.delete(String(id)));
-    if (activeThreadSourcePostId && ids.includes(String(activeThreadSourcePostId))) {
+    deleteIds.forEach((id) => selectedEditPostIds.delete(String(id)));
+    if (activeThreadSourcePostId && deleteIds.includes(String(activeThreadSourcePostId))) {
       activeThreadSourcePostId = null;
     }
 
-    console.log(isBulk ? 'Posts deleted:' : 'Post deleted:', isBulk ? ids : ids[0]);
-    void refreshFeedAfterMutation();
+    console.log(deleteIds.length > 1 ? 'Posts deleted:' : 'Post deleted:', deleteIds.length > 1 ? deleteIds : deleteIds[0]);
+    void refreshFeedAfterMutation().finally(() => {
+      deleteIds.forEach((id) => deletingPostIds.delete(String(id)));
+    });
   } catch (error) {
     console.error('Delete failed:', error.message);
+    (postIds || []).forEach((id) => deletingPostIds.delete(String(id)));
     void refreshFeedAfterMutation();
     alert(`Delete failed: ${error.message}`);
   }
@@ -6505,6 +6795,8 @@ async function loadNotifications(options = {}) {
 async function openProfileModal(userId) {
   if (editMode) return;
   if (!userId) return;
+  const canOpen = await ensureExclusiveSurface('profile');
+  if (!canOpen) return;
   currentProfileUserId = userId;
   profileEditMode = false;
   newProfilePfpFile = null;
@@ -6522,16 +6814,19 @@ async function openProfileModal(userId) {
 
   const pfpWidget = document.getElementById('profilePfpWidget');
   const pfpOverlay = document.getElementById('profilePfpOverlay');
-  pfpWidget.innerHTML = '';
-  const pfpSrc = resolvePfpUrl(user);
-  const img = document.createElement('img');
-  img.src = pfpSrc;
-  img.loading = 'lazy';
-  img.decoding = 'async';
-  img.dataset.avatar = '1';
-  img.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block;';
-  pfpWidget.appendChild(img);
-  applyImageRuntimeDefaults(img);
+  const renderProfilePfp = (profileUser, file = null) => {
+    if (!pfpWidget) return;
+    pfpWidget.innerHTML = '';
+    const img = document.createElement('img');
+    img.src = file ? URL.createObjectURL(file) : resolvePfpUrl(profileUser);
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    img.dataset.avatar = '1';
+    img.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block;';
+    pfpWidget.appendChild(img);
+    applyImageRuntimeDefaults(img);
+  };
+  renderProfilePfp(user);
   pfpOverlay.style.display = 'none';
 
   const usernameSpan = document.getElementById('profileUsername');
@@ -6548,19 +6843,21 @@ async function openProfileModal(userId) {
   const profileNewPasswordFields = document.getElementById('profileNewPasswordFields');
   const profileNewPasswordInput = document.getElementById('profileNewPasswordInput');
   const profileConfirmPasswordInput = document.getElementById('profileConfirmPasswordInput');
-  const profileEditBtn = document.getElementById('profileEditBtn');
-  const profileCancelBtn = document.getElementById('profileCancelBtn');
-  const profileSaveBtn = document.getElementById('profileSaveBtn');
+  const profilePfpInput = document.getElementById('profilePfpInput');
+
+  attachFakePasswordInput(profilePasswordInput);
+  attachFakePasswordInput(profileNewPasswordInput);
+  attachFakePasswordInput(profileConfirmPasswordInput);
 
   const resetProfilePasswordEditorState = () => {
     profilePasswordChangeLocked = false;
     if (profilePasswordInput) {
-      profilePasswordInput.value = '';
+      setFakePasswordValue(profilePasswordInput, '');
       profilePasswordInput.placeholder = 'current password';
       profilePasswordInput.readOnly = false;
     }
-    if (profileNewPasswordInput) profileNewPasswordInput.value = '';
-    if (profileConfirmPasswordInput) profileConfirmPasswordInput.value = '';
+    if (profileNewPasswordInput) setFakePasswordValue(profileNewPasswordInput, '');
+    if (profileConfirmPasswordInput) setFakePasswordValue(profileConfirmPasswordInput, '');
   };
 
   const setProfilePasswordVerifiedState = (verified) => {
@@ -6569,9 +6866,17 @@ async function openProfileModal(userId) {
       profileNewPasswordFields.style.display = profileCurrentPasswordVerified ? 'flex' : 'none';
     }
     if (!profileCurrentPasswordVerified) {
-      if (profileNewPasswordInput) profileNewPasswordInput.value = '';
-      if (profileConfirmPasswordInput) profileConfirmPasswordInput.value = '';
+      if (profileNewPasswordInput) setFakePasswordValue(profileNewPasswordInput, '');
+      if (profileConfirmPasswordInput) setFakePasswordValue(profileConfirmPasswordInput, '');
     }
+  };
+
+  const restoreProfileEditDraft = () => {
+    usernameSpan.textContent = user.username;
+    usernameInput.value = user.username;
+    renderProfilePfp(user);
+    newProfilePfpFile = null;
+    if (profilePfpInput) profilePfpInput.value = '';
   };
 
   const applyProfileEditState = (nextEditMode) => {
@@ -6586,23 +6891,37 @@ async function openProfileModal(userId) {
     usernameInput.style.display = profileEditMode ? 'block' : 'none';
     profileEditFields.style.display = profileEditMode ? 'flex' : 'none';
     profilePostsList.style.display = profileEditMode ? 'none' : 'flex';
-    profileEditBtn.style.display = profileEditMode ? 'none' : 'inline-flex';
-    profileCancelBtn.style.display = profileEditMode ? 'inline-flex' : 'none';
-    profileSaveBtn.style.display = profileEditMode ? 'inline-flex' : 'none';
-
-    if (profileSaveBtn) profileSaveBtn.textContent = '✓';
-    if (profileCancelBtn) profileCancelBtn.textContent = '✕';
-    if (profileEditBtn) profileEditBtn.textContent = '✂';
 
     if (!profileEditMode) {
       resetProfilePasswordEditorState();
       setProfilePasswordVerifiedState(false);
       newProfilePfpFile = null;
+      if (profilePfpInput) profilePfpInput.value = '';
     } else {
       resetProfilePasswordEditorState();
       setProfilePasswordVerifiedState(false);
+      usernameInput.focus();
+      usernameInput.select();
     }
   };
+
+  const exitProfileEditMode = () => {
+    restoreProfileEditDraft();
+    applyProfileEditState(false);
+  };
+
+  const submitProfileEdit = () => {
+    if (!profileEditMode) return;
+    void saveProfileChanges();
+  };
+
+  if (usernameInput) {
+    usernameInput.onkeydown = (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      submitProfileEdit();
+    };
+  }
 
   if (profilePasswordInput) {
     profilePasswordInput.oninput = () => {
@@ -6615,11 +6934,7 @@ async function openProfileModal(userId) {
       if (event.key !== 'Enter') return;
       event.preventDefault();
       if (!profileEditMode) return;
-      if (profileSaveBtn) {
-        profileSaveBtn.click();
-      } else {
-        void saveProfileChanges();
-      }
+      submitProfileEdit();
     };
   }
 
@@ -6628,11 +6943,7 @@ async function openProfileModal(userId) {
       if (event.key !== 'Enter') return;
       event.preventDefault();
       if (!profileEditMode || !profileCurrentPasswordVerified || profilePasswordChangeLocked) return;
-      if (profileSaveBtn) {
-        profileSaveBtn.click();
-      } else {
-        void saveProfileChanges();
-      }
+      submitProfileEdit();
     };
   }
 
@@ -6641,11 +6952,7 @@ async function openProfileModal(userId) {
       if (event.key !== 'Enter') return;
       event.preventDefault();
       if (!profileEditMode || !profileCurrentPasswordVerified || profilePasswordChangeLocked) return;
-      if (profileSaveBtn) {
-        profileSaveBtn.click();
-      } else {
-        void saveProfileChanges();
-      }
+      submitProfileEdit();
     };
   }
 
@@ -6689,7 +6996,6 @@ async function openProfileModal(userId) {
         world,
         creator: user,
         backgroundUrl: world.background_url || DEFAULT_BG_URL,
-        fontFamily: world.font_family || '',
         fontColor: world.font_color || '',
         uiColor: world.ui_color || 'rgba(255,255,255,0.7)'
       });
@@ -6733,7 +7039,6 @@ async function openProfileModal(userId) {
             world: worldRow,
             creator: user,
             backgroundUrl: worldRow.background_url || DEFAULT_BG_URL,
-            fontFamily: worldRow.font_family || '',
             fontColor: worldRow.font_color || '',
             uiColor: worldRow.ui_color || 'rgba(255,255,255,0.7)'
           });
@@ -6837,17 +7142,26 @@ async function openProfileModal(userId) {
 
   applyProfileEditState(false);
 
-  profileEditBtn.onclick = () => {
+  let lastProfileRightClick = 0;
+  profileModal.oncontextmenu = (event) => {
     if (!isOwnProfile) return;
-    applyProfileEditState(true);
-  };
 
-  profileCancelBtn.onclick = async () => {
-    if (!currentProfileUserId) return;
-    await openProfileModal(currentProfileUserId);
-  };
+    event.preventDefault();
+    event.stopPropagation();
 
-  profileSaveBtn.onclick = saveProfileChanges;
+    const now = Date.now();
+    const timeSince = now - lastProfileRightClick;
+    lastProfileRightClick = now;
+
+    if (timeSince < DOUBLE_CLICK_THRESHOLD) {
+      lastProfileRightClick = 0;
+      if (profileEditMode) {
+        exitProfileEditMode();
+      } else {
+        applyProfileEditState(true);
+      }
+    }
+  };
 
   profileOverlay.classList.add('open');
   document.body.classList.add('profile-open');
@@ -6857,6 +7171,8 @@ async function openProfileModal(userId) {
 }
 
 function closeProfileModal() {
+  const profileModal = document.getElementById('profileModal');
+  if (profileModal) profileModal.oncontextmenu = null;
   profileOverlay.classList.remove('open');
   document.body.classList.remove('profile-open');
   document.getElementById('toolbarProfileBtn')?.classList.remove('active');
@@ -6869,14 +7185,14 @@ function closeProfileModal() {
   const profileNewPasswordFields = document.getElementById('profileNewPasswordFields');
   const profileNewPasswordInput = document.getElementById('profileNewPasswordInput');
   const profileConfirmPasswordInput = document.getElementById('profileConfirmPasswordInput');
-  if (profilePasswordInput) profilePasswordInput.value = '';
+  if (profilePasswordInput) setFakePasswordValue(profilePasswordInput, '');
   if (profilePasswordInput) {
     profilePasswordInput.placeholder = 'current password';
     profilePasswordInput.readOnly = false;
   }
   if (profileNewPasswordFields) profileNewPasswordFields.style.display = 'none';
-  if (profileNewPasswordInput) profileNewPasswordInput.value = '';
-  if (profileConfirmPasswordInput) profileConfirmPasswordInput.value = '';
+  if (profileNewPasswordInput) setFakePasswordValue(profileNewPasswordInput, '');
+  if (profileConfirmPasswordInput) setFakePasswordValue(profileConfirmPasswordInput, '');
   updateToolbarModalLockState();
   scheduleUiStatePersist();
 }
@@ -6888,7 +7204,7 @@ async function saveProfileChanges() {
   const passwordInput = document.getElementById('profilePasswordInput');
   const newPasswordInput = document.getElementById('profileNewPasswordInput');
   const confirmPasswordInput = document.getElementById('profileConfirmPasswordInput');
-  const currentPassword = String(passwordInput?.value || '').trim();
+  const currentPassword = String(getFakePasswordValue(passwordInput) || '').trim();
 
   if (profilePasswordChangeLocked) {
     return;
@@ -6909,8 +7225,8 @@ async function saveProfileChanges() {
     profileCurrentPasswordVerified = false;
     const profileNewPasswordFields = document.getElementById('profileNewPasswordFields');
     if (profileNewPasswordFields) profileNewPasswordFields.style.display = 'none';
-    if (newPasswordInput) newPasswordInput.value = '';
-    if (confirmPasswordInput) confirmPasswordInput.value = '';
+    if (newPasswordInput) setFakePasswordValue(newPasswordInput, '');
+    if (confirmPasswordInput) setFakePasswordValue(confirmPasswordInput, '');
     alert('Current password is incorrect');
     return;
   }
@@ -6923,8 +7239,8 @@ async function saveProfileChanges() {
     return;
   }
 
-  const newPassword = String(newPasswordInput?.value || '').trim();
-  const confirmPassword = String(confirmPasswordInput?.value || '').trim();
+  const newPassword = String(getFakePasswordValue(newPasswordInput) || '').trim();
+  const confirmPassword = String(getFakePasswordValue(confirmPasswordInput) || '').trim();
 
   if ((newPassword && !confirmPassword) || (!newPassword && confirmPassword)) {
     alert('Enter both new password fields');
@@ -6996,12 +7312,12 @@ async function saveProfileChanges() {
     profilePasswordChangeLocked = true;
     profileCurrentPasswordVerified = false;
     if (passwordInput) {
-      passwordInput.value = '';
+      setFakePasswordValue(passwordInput, '');
       passwordInput.placeholder = 'password updated';
       passwordInput.readOnly = true;
     }
-    if (newPasswordInput) newPasswordInput.value = '';
-    if (confirmPasswordInput) confirmPasswordInput.value = '';
+    if (newPasswordInput) setFakePasswordValue(newPasswordInput, '');
+    if (confirmPasswordInput) setFakePasswordValue(confirmPasswordInput, '');
     if (profileNewPasswordFields) profileNewPasswordFields.style.display = 'none';
 
     if (Object.keys(updates).length === 0) {
@@ -7348,15 +7664,35 @@ async function updatePost(postId, updates) {
 // ============================================
 
 async function loadCommentsForPost(postId) {
-  const { data: comments, error } = await supabase
+  if (!postId) {
+    commentsList.innerHTML = `<div style="opacity:0.7;">no comments yet</div>`;
+    return;
+  }
+
+  let comments = null;
+  let error = null;
+
+  const primary = await supabase
     .from('comments')
     .select('id, body, created_at, user_id')
     .eq('post_id', postId)
     .order('created_at', { ascending: true });
 
+  comments = primary.data;
+  error = primary.error;
+
+  if (error) {
+    const fallback = await supabase
+      .from('comments')
+      .select('id, body, created_at, user_id')
+      .eq('post_id', postId);
+    comments = fallback.data;
+    error = fallback.error;
+  }
+
   if (error) {
     console.error('Failed to load comments:', error);
-    commentsList.innerHTML = `<div style="opacity:0.7;">failed to load comments</div>`;
+    commentsList.innerHTML = `<div style="opacity:0.7;">comments unavailable right now</div>`;
     return;
   }
 
@@ -7394,15 +7730,18 @@ async function loadCommentsForPost(postId) {
     const uname = u?.username || 'unknown';
     const pfpSrc = resolvePfpUrl(u);
     const isOwn = currentUser && c.user_id === currentUser.id;
-    const stamp = formatTimestamp(c.created_at);
+    const stamp = formatCommentTimestampParts(c.created_at);
 
     row.innerHTML = `
       <div class="comment-header">
-        <img class="comment-pfp" src="${pfpSrc}" alt="" loading="lazy" decoding="async" data-avatar="1">
         <span class="comment-username">${uname}</span>
-        <span class="comment-time">${stamp}</span>
+        <img class="comment-pfp" src="${pfpSrc}" alt="" loading="lazy" decoding="async" data-avatar="1">
       </div>
       <div class="comment-body">${formatBodyTextWithMentions(c.body || '', { clickable: true })}</div>
+      <div class="comment-time-row">
+        <span class="comment-time">${stamp.date}</span>
+        <span class="comment-time">${stamp.time}</span>
+      </div>
     `;
     applyImageRuntimeDefaults(row);
 
@@ -7430,39 +7769,45 @@ async function loadCommentsForPost(postId) {
 }
 
 function openCommentEditMode(row, comment) {
+  if (activeCommentEditCancel && activeCommentEditRow && activeCommentEditRow !== row) {
+    activeCommentEditCancel();
+  }
+
   // Prevent double-opening
   if (row.querySelector('.comment-edit-input')) return;
 
   const bodyEl = row.querySelector('.comment-body');
   const originalText = bodyEl.textContent;
 
-  // Replace body with an inline input + save/delete buttons
+  // Replace body with an inline textarea styled like the main comment input.
   bodyEl.style.display = 'none';
 
   const input = document.createElement('textarea');
   input.className = 'comment-edit-input';
   input.value = originalText;
-
-  const actions = document.createElement('div');
-  actions.className = 'comment-edit-actions';
-  actions.innerHTML = `
-    <button class="comment-edit-save">save</button>
-    <button class="comment-edit-delete">delete</button>
-  `;
+  input.rows = 1;
 
   row.appendChild(input);
-  row.appendChild(actions);
   input.focus();
   input.select();
 
-  // Cancel — restore original view
-    // Double right-click on the row closes edit mode
+  const resizeEditInput = () => {
+    input.style.height = 'auto';
+    input.style.height = `${input.scrollHeight}px`;
+  };
+  resizeEditInput();
+
+  // Double right-click on the row closes edit mode.
   let lastRightClickEdit = 0;
   const cancelEdit = () => {
     input.remove();
-    actions.remove();
     bodyEl.style.display = '';
     row.removeEventListener('contextmenu', editContextHandler);
+    input.removeEventListener('input', resizeEditInput);
+    if (activeCommentEditRow === row) {
+      activeCommentEditRow = null;
+      activeCommentEditCancel = null;
+    }
   };
   const editContextHandler = (e) => {
     e.preventDefault();
@@ -7476,38 +7821,48 @@ function openCommentEditMode(row, comment) {
     }
   };
   row.addEventListener('contextmenu', editContextHandler);
+  activeCommentEditRow = row;
+  activeCommentEditCancel = cancelEdit;
 
-  // Save — update in DB then reload
-  actions.querySelector('.comment-edit-save').addEventListener('click', async () => {
+  const submitEdit = async () => {
     const newText = input.value.trim();
-    if (!newText) return;
-    const { error } = await supabase
-      .from('comments')
-      .update({ body: newText })
-      .eq('id', comment.id)
-      .eq('user_id', currentUser.id);
-    if (error) { alert(`Save failed: ${error.message}`); return; }
-    await loadCommentsForPost(activePostForModal.id);
-  });
+    let error = null;
 
-  // Delete — remove from DB then reload
-  actions.querySelector('.comment-edit-delete').addEventListener('click', async () => {
-    const { error } = await supabase
-      .from('comments')
-      .delete()
-      .eq('id', comment.id)
-      .eq('user_id', currentUser.id);
-    if (error) { alert(`Delete failed: ${error.message}`); return; }
-    await loadCommentsForPost(activePostForModal.id);
-  });
+    if (!newText) {
+      const result = await supabase
+        .from('comments')
+        .delete()
+        .eq('id', comment.id)
+        .eq('user_id', currentUser.id);
+      error = result.error;
+      if (error) { alert(`Delete failed: ${error.message}`); return; }
+    } else {
+      const result = await supabase
+        .from('comments')
+        .update({ body: newText })
+        .eq('id', comment.id)
+        .eq('user_id', currentUser.id);
+      error = result.error;
+      if (error) { alert(`Save failed: ${error.message}`); return; }
+    }
 
-  // Enter = save, Escape = cancel
+    if (activeCommentEditRow === row) {
+      activeCommentEditRow = null;
+      activeCommentEditCancel = null;
+    }
+
+    await loadCommentsForPost(activePostForModal.id);
+  };
+
+  input.addEventListener('input', resizeEditInput);
+
+  // Enter = submit, blank Enter = delete, Escape = cancel.
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      actions.querySelector('.comment-edit-save').click();
+      submitEdit();
     }
-        if (e.key === 'Escape') {
+    if (e.key === 'Escape') {
       cancelEdit();
     }
   });
@@ -7645,7 +8000,7 @@ async function loadPosts(options = {}) {
     lastLoadedWorlds = worlds || [];
 
     // Store + apply tree filter (exclusive)
-    lastLoadedPosts = posts || [];
+    lastLoadedPosts = (posts || []).filter((post) => !deletingPostIds.has(String(post?.id)));
     (lastLoadedPosts || []).forEach((post) => cachePostRecord(post));
 
     if (
@@ -7738,19 +8093,6 @@ function trapScrollInside(el) {
     if (!canScroll) return;
 
     e.stopPropagation();
-
-    const atTop = el.scrollTop <= 0;
-    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
-    const scrollingUp = e.deltaY < 0;
-    const scrollingDown = e.deltaY > 0;
-
-    if ((scrollingUp && !atTop) || (scrollingDown && !atBottom)) {
-      e.preventDefault();
-      el.scrollTop += e.deltaY;
-    } else {
-      /* still prevent canvas zoom when hovering text */
-      e.preventDefault();
-    }
   }, { passive: false });
 }
 
@@ -7759,8 +8101,60 @@ function trapScrollInside(el) {
 // ============================================
 
 function getFileExtension(filename = '') {
-  const parts = filename.split('.');
+  const raw = String(filename || '').trim();
+  if (!raw) return '';
+
+  // Support plain filenames and URL strings with query/hash fragments.
+  const noQuery = raw.split('?')[0].split('#')[0];
+  const basename = noQuery.split('/').pop() || noQuery;
+  const parts = basename.split('.');
   return parts.length > 1 ? parts.pop().toLowerCase() : '';
+}
+
+function getOptimizedCardImageUrl(rawUrl, {
+  width = 720,
+  height = 720,
+  quality = 60,
+  resize = 'contain'
+} = {}) {
+  const normalized = String(rawUrl || '').trim();
+  if (!normalized) return normalized;
+
+  try {
+    const parsed = new URL(normalized, window.location.origin);
+    if (!parsed.pathname.includes('/storage/v1/object/public/') && !parsed.pathname.includes('/storage/v1/render/image/public/')) {
+      return normalized;
+    }
+
+    if (parsed.pathname.includes('/storage/v1/object/public/')) {
+      parsed.pathname = parsed.pathname.replace('/storage/v1/object/public/', '/storage/v1/render/image/public/');
+    }
+
+    parsed.searchParams.set('width', String(width));
+    parsed.searchParams.set('height', String(height));
+    parsed.searchParams.set('resize', resize);
+    parsed.searchParams.set('quality', String(quality));
+    parsed.searchParams.set('format', 'origin');
+    return parsed.toString();
+  } catch {
+    return normalized;
+  }
+}
+
+function getCardImageSources(rawUrl, options = {}) {
+  const original = String(rawUrl || '').trim();
+  return {
+    original,
+    optimized: getOptimizedCardImageUrl(original, options)
+  };
+}
+
+function ensurePreviewVideoSource(previewVideo) {
+  if (!previewVideo) return;
+  if (previewVideo.getAttribute('src')) return;
+  const deferredSrc = String(previewVideo.dataset.src || '').trim();
+  if (!deferredSrc) return;
+  previewVideo.src = deferredSrc;
 }
 
 function isImageExtension(ext) {
@@ -8144,6 +8538,21 @@ function getPostCardFileLineText(post, mediaState) {
   return String(post.file_name || '').trim();
 }
 
+function getPostCardDisplayFileName(post, mediaState) {
+  if (!post || !mediaState) return '';
+  if (mediaState.hasYoutube) return '';
+
+  if (post.files && post.files.length > 1) {
+    const names = post.files
+      .map((f) => String(f?.name || '').trim())
+      .filter(Boolean);
+    if (names.length === 1) return names[0];
+    if (names.length > 1) return `${names.length} files`;
+  }
+
+  return String(post.file_name || '').trim() || 'file';
+}
+
 function getPostCardMultiFileListMarkup(post, mediaState) {
   if (!post || !mediaState) return '';
   if (mediaState.hasYoutube) return '';
@@ -8186,7 +8595,7 @@ function buildFilePreviewMarkup(post) {
     const hasCover = !!post.cover_image_url;
     const multiIcon = getNonVisualPreviewIconData('', 'other', { isMulti: true });
     return `
-      <div class="post-file-preview post-file-preview-download${hasCover ? ' has-cover' : ''}">
+      <div class="post-file-preview post-file-preview-download${hasCover ? ' has-cover post-file-preview-cover-natural' : ''}">
         ${hasCover ? `<img class="post-file-preview-cover" src="${post.cover_image_url}" alt="" loading="lazy" decoding="async">` : ''}
         ${!hasCover ? `<div class="post-file-preview-icon ${multiIcon.className}" aria-hidden="true">${multiIcon.token}</div>` : ''}
         <div class="post-file-preview-label">+</div>
@@ -8200,21 +8609,36 @@ function buildFilePreviewMarkup(post) {
     `;
   }
 
-  const ext = getFileExtension(post.file_name || '');
+  const extFromName = getFileExtension(post.file_name || '');
+  const extFromUrl = getFileExtension(post.file_url || '');
+  const ext = extFromName || extFromUrl;
   const label = getFilePreviewLabel(post.file_name || '');
+  const safeFileName = escapeHtml(post.file_name || 'file');
   const isImage = post.file_type === 'image' || isImageExtension(ext);
-  const isAudio = post.file_type === 'audio' || isAudioExtension(ext);
+  const isAudio = (post.file_type === 'audio' && !isVideoExtension(ext)) || isAudioExtension(ext);
   const isVideo = (post.file_type === 'video' || isVideoExtension(ext)) && !isAudio;
+  const cardImage = getCardImageSources(post.file_url, {
+    width: 720,
+    height: 720,
+    quality: 60,
+    resize: 'contain'
+  });
+  const cardCover = getCardImageSources(post.cover_image_url, {
+    width: 720,
+    height: 720,
+    quality: 58,
+    resize: 'cover'
+  });
 
   if (isImage && post.file_url) {
-    return `<img class="post-image" src="${post.file_url}" alt="" loading="lazy" decoding="async">`;
+    return `<img class="post-image" src="${cardImage.optimized || cardImage.original}" data-full-src="${escapeHtml(cardImage.original)}" alt="" loading="lazy" decoding="async">`;
   }
 
   if (isVideo && post.file_url) {
     const label = getFilePreviewLabel(post.file_name || '');
     return `
       <div class="post-file-preview post-file-preview-video">
-        <video class="post-preview-video" src="${post.file_url}" muted loop autoplay playsinline preload="metadata" disablepictureinpicture controlslist="nodownload nofullscreen noremoteplayback" x-webkit-airplay="deny"></video>
+        <video class="post-preview-video" data-src="${escapeHtml(post.file_url)}" muted loop autoplay playsinline preload="none" disablepictureinpicture controlslist="nodownload nofullscreen noremoteplayback" x-webkit-airplay="deny"></video>
         <div class="post-file-preview-label">${label}</div>
         <button class="post-preview-mute-btn" type="button" aria-label="toggle sound">x</button>
       </div>
@@ -8225,9 +8649,10 @@ function buildFilePreviewMarkup(post) {
     const hasCover = !!post.cover_image_url;
     const icon = getNonVisualPreviewIconData(post.file_name || '', 'audio');
     return `
-      <div class="post-file-preview post-file-preview-audio ${hasCover ? 'has-cover' : ''}">
-        ${hasCover ? `<img class="post-file-preview-cover" src="${post.cover_image_url}" alt="" loading="lazy" decoding="async">` : ''}
+      <div class="post-file-preview post-file-preview-audio ${hasCover ? 'has-cover post-file-preview-cover-natural' : ''}">
+        ${hasCover ? `<img class="post-file-preview-cover" src="${cardCover.optimized || cardCover.original}" data-full-src="${escapeHtml(cardCover.original)}" alt="" loading="lazy" decoding="async">` : ''}
         ${!hasCover ? `<div class="post-file-preview-icon ${icon.className}" aria-hidden="true">${icon.token}</div>` : ''}
+        <div class="post-file-preview-filename">${safeFileName}</div>
         <div class="post-file-preview-label">${label}</div>
         <button class="post-file-preview-play" type="button" aria-label="play audio">▶︎</button>
         <audio class="post-preview-audio" src="${post.file_url}" preload="none"></audio>
@@ -8240,9 +8665,10 @@ function buildFilePreviewMarkup(post) {
     const hasCover = !!post.cover_image_url;
     const icon = getNonVisualPreviewIconData(post.file_name || '', post.file_type || 'other');
     return `
-      <div class="post-file-preview post-file-preview-download${hasCover ? ' has-cover' : ''}">
-        ${hasCover ? `<img class="post-file-preview-cover" src="${post.cover_image_url}" alt="" loading="lazy" decoding="async">` : ''}
+      <div class="post-file-preview post-file-preview-download${hasCover ? ' has-cover post-file-preview-cover-natural' : ''}">
+        ${hasCover ? `<img class="post-file-preview-cover" src="${cardCover.optimized || cardCover.original}" data-full-src="${escapeHtml(cardCover.original)}" alt="" loading="lazy" decoding="async">` : ''}
         ${!hasCover ? `<div class="post-file-preview-icon ${icon.className}" aria-hidden="true">${icon.token}</div>` : ''}
+        <div class="post-file-preview-filename">${safeFileName}</div>
         <div class="post-file-preview-label">${label}</div>
         <button
           class="post-file-preview-download-btn"
@@ -8266,9 +8692,11 @@ function buildFilePreviewMarkup(post) {
 
 function getPostCardMediaState(post) {
   const isMultiFile = !!(post.files && post.files.length > 1);
-  const fileExt = getFileExtension(post.file_name || '');
+  const fileExtFromName = getFileExtension(post.file_name || '');
+  const fileExtFromUrl = getFileExtension(post.file_url || '');
+  const fileExt = fileExtFromName || fileExtFromUrl;
   const isImageFile = isImageExtension(fileExt) || post.file_type === 'image';
-  const isAudioFile = isAudioExtension(fileExt) || post.file_type === 'audio';
+  const isAudioFile = isAudioExtension(fileExt) || (post.file_type === 'audio' && !isVideoExtension(fileExt));
   const isVideoFile = (isVideoExtension(fileExt) || post.file_type === 'video') && !isAudioFile;
   const isVisualFile = isImageFile || isVideoFile;
   const hasVisualAttachments = isMultiFile && (post.files || []).some((file) => {
@@ -8324,6 +8752,13 @@ function getPostCardContentConfig(post, mediaState) {
     visualSrc
   } = mediaState;
 
+  const visualImageSources = getCardImageSources(visualSrc, {
+    width: 720,
+    height: 720,
+    quality: 60,
+    resize: 'contain'
+  });
+
   const bodyMarkup = renderPostBodyMarkup(post.body, {
     externalUrl: post.youtube_url,
     clickableExternalUrl: !disableCardInteractions
@@ -8335,15 +8770,15 @@ function getPostCardContentConfig(post, mediaState) {
     hasAnyFile &&
     !hasYoutube &&
     !mediaState.isMultiFile &&
-    (isAudioFile || isOtherFile);
+    isAudioFile;
   const fileLineMarkup = shouldShowFileLine
     ? `<div class="post-fileline"><span class="post-fileline-track">${escapeHtml(fileLineText)}</span></div>`
     : '';
 
   const buildPreviewMarkup = () => {
-    if (isImageFile) return `<img class="post-image" src="${visualSrc}" alt="" loading="lazy" decoding="async">`;
+    if (isImageFile) return `<img class="post-image" src="${visualImageSources.optimized || visualImageSources.original}" data-full-src="${escapeHtml(visualImageSources.original)}" alt="" loading="lazy" decoding="async">`;
     if (isVideoFile || isAudioFile || isOtherFile || hasYoutube) return buildFilePreviewMarkup(post);
-    if (hasCoverImage) return `<img class="post-image" src="${visualSrc}" alt="" loading="lazy" decoding="async">`;
+    if (hasCoverImage) return `<img class="post-image" src="${visualImageSources.optimized || visualImageSources.original}" data-full-src="${escapeHtml(visualImageSources.original)}" alt="" loading="lazy" decoding="async">`;
     return '';
   };
 
@@ -8355,8 +8790,8 @@ function getPostCardContentConfig(post, mediaState) {
         ${fileListMarkup}
         ${fileLineMarkup}
         <div class="post-visual-text-row">
-          ${buildPreviewMarkup()}
           ${bodyMarkup}
+          ${buildPreviewMarkup()}
         </div>
       `
     };
@@ -8381,8 +8816,8 @@ function getPostCardContentConfig(post, mediaState) {
         ${fileListMarkup}
         ${fileLineMarkup}
         <div class="post-visual-text-row">
-          ${buildFilePreviewMarkup(post)}
           ${bodyMarkup}
+          ${buildPreviewMarkup()}
         </div>
       `
     };
@@ -8395,8 +8830,8 @@ function getPostCardContentConfig(post, mediaState) {
         ${fileListMarkup}
         ${fileLineMarkup}
         <div class="post-visual-text-row">
-          ${isImageFile ? `<img class="post-image" src="${visualSrc}" alt="" loading="lazy" decoding="async">` : buildFilePreviewMarkup(post)}
           ${bodyMarkup}
+          ${isImageFile ? `<img class="post-image" src="${visualImageSources.optimized || visualImageSources.original}" data-full-src="${escapeHtml(visualImageSources.original)}" alt="" loading="lazy" decoding="async">` : buildFilePreviewMarkup(post)}
         </div>
       `
     };
@@ -8425,7 +8860,7 @@ function getPostCardContentConfig(post, mediaState) {
       };
     }
 
-    if (isOtherFile || hasYoutube) {
+    if (isOtherFile || hasYoutube || isAudioFile) {
       return {
         classes: ['post-layout-visual'],
         html: `${fileListMarkup}${fileLineMarkup}${buildFilePreviewMarkup(post)}`
@@ -8434,7 +8869,7 @@ function getPostCardContentConfig(post, mediaState) {
 
     return {
       classes: ['post-layout-visual'],
-      html: `<img class="post-image" src="${visualSrc}" alt="" loading="lazy" decoding="async">`
+      html: `<img class="post-image" src="${visualImageSources.optimized || visualImageSources.original}" data-full-src="${escapeHtml(visualImageSources.original)}" alt="" loading="lazy" decoding="async">`
     };
   }
 
@@ -8491,11 +8926,15 @@ function closeHelpOverlay() {
   scheduleUiStatePersist();
 }
 
-function toggleHelpOverlay() {
+async function toggleHelpOverlay() {
   const helpOverlay = document.getElementById('helpOverlay');
   if (!helpOverlay) return;
   const isOpen = helpOverlay.style.display !== 'none';
   if (!isOpen && document.body.classList.contains('music-panel-open')) return;
+  if (!isOpen) {
+    const canOpen = await ensureExclusiveSurface('help');
+    if (!canOpen) return;
+  }
   helpOverlay.style.display = isOpen ? 'none' : 'flex';
   document.getElementById('toolbarHelpBtn')?.classList.toggle('active', !isOpen);
   updateToolbarModalLockState();
@@ -8510,7 +8949,9 @@ function closeNotificationsPanel() {
   scheduleUiStatePersist();
 }
 
-function openNotificationsPanel() {
+async function openNotificationsPanel() {
+  const canOpen = await ensureExclusiveSurface('notif');
+  if (!canOpen) return;
   notifPanel.classList.add('open');
   document.body.classList.add('notif-open');
   document.getElementById('toolbarNotifBtn')?.classList.add('active');
@@ -8522,12 +8963,21 @@ function openNotificationsPanel() {
 function closeSettingsPanel() {
   const panel = document.getElementById('settingsPanel');
   if (!panel) return;
+  const fontDropdown = document.getElementById('settingsFontDropdown');
+  const fontDisplay = document.getElementById('settingsFontDisplay');
+  if (fontDropdown) fontDropdown.style.display = 'none';
+  if (fontDisplay) {
+    fontDisplay.classList.remove('is-open');
+    fontDisplay.setAttribute('aria-expanded', 'false');
+  }
   panel.classList.remove('open');
   document.getElementById('toolbarSettingsBtn')?.classList.remove('active');
   updateToolbarModalLockState();
 }
 
-function openSettingsPanel() {
+async function openSettingsPanel() {
+  const canOpen = await ensureExclusiveSurface('settings');
+  if (!canOpen) return;
   const panel = document.getElementById('settingsPanel');
   if (!panel) return;
   panel.classList.add('open');
@@ -8726,17 +9176,16 @@ async function restoreUiPanelsAndModals(snapshot) {
   activeLinkTreeRootPostId = snapshot.activeLinkTreeRootPostId || null;
 
   if (snapshot.notifOpen) {
-    openNotificationsPanel();
+    await openNotificationsPanel();
   }
 
   if (snapshot.postFormOpen && !editMode) {
-    openPostForm();
+    await openPostForm();
   }
 
   const helpOverlay = document.getElementById('helpOverlay');
   if (snapshot.helpOpen && helpOverlay) {
-    helpOverlay.style.display = 'flex';
-    document.getElementById('toolbarHelpBtn')?.classList.add('active');
+    await toggleHelpOverlay();
   }
 
   if (snapshot.profileUserId) {
@@ -9044,6 +9493,10 @@ function buildPostCard(post, user) {
   card.dataset.lod = 'near';
 
   const mediaState = getPostCardMediaState(post);
+  const shouldUseVisualContainer = mediaState.hasVisual || mediaState.isAudioFile || mediaState.isOtherFile;
+  if (shouldUseVisualContainer) {
+    card.classList.add('post-card-has-visual');
+  }
 
   const content = document.createElement('div');
   content.className = 'post-card-content';
@@ -9053,6 +9506,65 @@ function buildPostCard(post, user) {
   if (contentConfig.cardClasses?.length) {
     card.classList.add(...contentConfig.cardClasses);
   }
+
+  const isTitleOnlyLayout = content.classList.contains('post-layout-title');
+  const isTextOnlyLayout = content.classList.contains('post-layout-text');
+  const isTitleTextLayout = content.classList.contains('post-layout-title-text');
+  const isTitleVisualLayout = content.classList.contains('post-layout-title-visual');
+  const isTitleVisualTextLayout = content.classList.contains('post-layout-title-visual-text');
+  const isVisualTextLayout = content.classList.contains('post-layout-visual-text');
+
+  if (isTitleOnlyLayout) {
+    card.classList.add('post-card-title-only');
+  }
+
+  const shouldBlackoutTextOnZoom =
+    isTitleOnlyLayout ||
+    isTextOnlyLayout ||
+    isTitleTextLayout ||
+    isTitleVisualLayout ||
+    isTitleVisualTextLayout ||
+    isVisualTextLayout;
+
+  if (shouldBlackoutTextOnZoom) {
+    card.classList.add('post-card-blackout-on-zoom');
+  }
+
+  const isNonVisualNoCoverCard =
+    (mediaState.isOtherFile || mediaState.isAudioFile) &&
+    !mediaState.hasCoverImage &&
+    !mediaState.hasVisual;
+
+  const isNonVisualCoverCard =
+    (mediaState.isOtherFile || mediaState.isAudioFile) &&
+    mediaState.hasCoverImage;
+
+  const isNonVisualCoverStandalone =
+    isNonVisualCoverCard &&
+    !(isTitleVisualLayout || isTitleVisualTextLayout || isVisualTextLayout);
+
+  if (isNonVisualNoCoverCard) {
+    card.classList.add('post-card-nonvisual-no-cover');
+  }
+
+  if (isNonVisualCoverCard) {
+    card.classList.add('post-card-nonvisual-cover');
+  }
+
+  if (isNonVisualCoverStandalone) {
+    card.classList.add('post-card-nonvisual-cover-standalone');
+  }
+
+  const shouldUseSplitLayout =
+    isTitleVisualLayout ||
+    isTitleVisualTextLayout ||
+    isVisualTextLayout;
+
+  const isVisualWithBodyTextLayout =
+    isTitleVisualTextLayout ||
+    isVisualTextLayout;
+
+  const useVerticalSplitLayout = false;
   content.innerHTML = contentConfig.html;
   applyImageRuntimeDefaults(content);
   contentConfig.onRender?.(content, card);
@@ -9074,10 +9586,6 @@ function buildPostCard(post, user) {
 }
 
   if (!editMode) {
-    const titleEl = content.querySelector('.post-title');
-    const titleTrackEl = content.querySelector('.post-title-track');
-    applyMarqueeIfNeeded(titleEl, titleTrackEl);
-
     const fileLineEl = content.querySelector('.post-fileline');
     const fileLineTrackEl = content.querySelector('.post-fileline-track');
     applyMarqueeIfNeeded(fileLineEl, fileLineTrackEl, '   ·   ');
@@ -9094,10 +9602,122 @@ function buildPostCard(post, user) {
   wireYouTubePreviewControls(content, { disableInteraction: editMode });
   wireMultiVisualHoverPreview(content, post, { disableInteraction: editMode });
 
-  card.appendChild(content);
+  let visualMetaShell = null;
+  if (shouldUseSplitLayout) {
+    const visualNode = content.querySelector('.post-image, .post-file-preview');
+    if (visualNode) {
+      const visualRow = visualNode.closest('.post-visual-text-row');
+      visualNode.remove();
+
+      if (visualRow) {
+        if (visualRow.children.length === 0) {
+          visualRow.remove();
+        } else if (visualRow.children.length === 1) {
+          visualRow.replaceWith(visualRow.firstElementChild);
+        }
+      }
+
+      const visualSplit = document.createElement('div');
+      visualSplit.className = 'post-visual-split';
+
+      if (useVerticalSplitLayout) {
+        card.classList.add('post-card-visual-stack');
+      } else {
+        card.classList.add('post-card-visual-row');
+      }
+
+      if (isVisualWithBodyTextLayout) {
+        card.classList.add('post-card-visual-with-text');
+      }
+
+      if (isNonVisualNoCoverCard) {
+        card.classList.add('post-card-blackout-media-on-zoom');
+      }
+
+      const visualColumn = document.createElement('div');
+      visualColumn.className = 'post-visual-column';
+      visualColumn.appendChild(visualNode);
+
+      if (visualNode.classList.contains('post-image')) {
+        const src = String(visualNode.getAttribute('src') || '').toLowerCase();
+        const cleanSrc = src.split('?')[0].split('#')[0];
+        if (/\.(jpe?g)$/.test(cleanSrc)) {
+          card.classList.add('post-card-visual-jpeg');
+        }
+
+        if (isTitleVisualLayout) {
+          card.classList.add('post-card-visual-title-image');
+        }
+      }
+
+      if (visualNode.classList.contains('post-file-preview-video')) {
+        card.classList.add('post-card-visual-video');
+      }
+
+      if (
+        content.classList.contains('is-long-text') &&
+        visualNode.classList.contains('post-image')
+      ) {
+        card.classList.add('post-card-visual-image-match-height');
+      }
+
+      visualMetaShell = document.createElement('div');
+      visualMetaShell.className = 'post-visual-meta-shell';
+      visualMetaShell.appendChild(content);
+
+      visualSplit.appendChild(visualColumn);
+      visualSplit.appendChild(visualMetaShell);
+      card.appendChild(visualSplit);
+
+      requestAnimationFrame(() => {
+        if (!visualMetaShell?.isConnected) return;
+        const cardRect = card.getBoundingClientRect();
+        const shellRect = visualMetaShell.getBoundingClientRect();
+        const shellLeft = shellRect.left - cardRect.left;
+        const shellRight = cardRect.right - shellRect.right;
+        card.style.setProperty('--post-meta-shell-w', `${visualMetaShell.offsetWidth}px`);
+        card.style.setProperty('--post-meta-shell-left', `${shellLeft}px`);
+        card.style.setProperty('--post-meta-shell-right', `${shellRight}px`);
+
+      });
+    } else {
+      card.appendChild(content);
+    }
+  } else {
+    if (mediaState.hasVisual || mediaState.isAudioFile || mediaState.isOtherFile) {
+      card.classList.add('post-card-visual-standalone');
+    }
+    card.appendChild(content);
+
+    if (isNonVisualCoverStandalone) {
+      const syncNonVisualCoverWidth = () => {
+        if (!card.isConnected) return;
+        const visualNode = content.querySelector('.post-file-preview, .post-image');
+        const visualWidth = Math.round(visualNode?.getBoundingClientRect().width || 0);
+        if (visualWidth >= 300) {
+          card.style.setProperty('--post-nonvisual-cover-w', `${visualWidth}px`);
+        }
+      };
+      requestAnimationFrame(syncNonVisualCoverWidth);
+      const coverImage = content.querySelector('.post-file-preview-cover, .post-image');
+      if (coverImage && !coverImage.complete) {
+        coverImage.addEventListener('load', syncNonVisualCoverWidth, { once: true });
+      }
+    }
+  }
 
   const footer = document.createElement('div');
   footer.className = 'post-footer';
+
+  let fileNameMetaBox = null;
+  if (mediaState.isOtherFile) {
+    const displayFileName = getPostCardDisplayFileName(post, mediaState);
+    if (displayFileName) {
+      fileNameMetaBox = document.createElement('div');
+      fileNameMetaBox.className = 'post-file-name-box';
+      fileNameMetaBox.innerHTML = `<span class="post-file-name-track">${escapeHtml(displayFileName)}</span>`;
+    }
+  }
 
   const pfpSrc = resolvePfpUrl(user);
 
@@ -9106,7 +9726,6 @@ function buildPostCard(post, user) {
     footer.innerHTML = `
       <img class="post-footer-pfp" src="${pfpSrc}" alt="" data-user-id="${post.user_id}" data-avatar="1" loading="lazy" decoding="async" style="cursor:pointer;">
       <span class="post-footer-username"><span class="post-footer-username-track">${user?.username || 'unknown'}</span></span>
-      <span class="post-footer-category"><span class="post-footer-category-track">${post.category || 'none'}</span></span>
     `;
 
     const editChrome = document.createElement('div');
@@ -9115,56 +9734,36 @@ function buildPostCard(post, user) {
       <div class="post-edit-top-actions" aria-label="post edit actions">
         <button class="post-edit-button post-edit-button-thread ${String(activeThreadSourcePostId) === String(post.id) ? 'active' : ''}" type="button" title="thread">𓍯</button>
         <button class="post-edit-button post-edit-button-edit" type="button" title="edit">☰</button>
-        <button class="post-edit-button post-edit-button-move" type="button" title="move">𖦏</button>
       </div>
       <button class="post-edit-button post-edit-button-delete" type="button" title="delete">x</button>
     `;
-    card.appendChild(editChrome);
+
+    ['nw', 'ne', 'sw', 'se'].forEach((corner) => {
+      const resizeTab = document.createElement('button');
+      resizeTab.type = 'button';
+      resizeTab.className = `post-resize-tab post-resize-tab-${corner}`;
+      resizeTab.title = 'drag to resize';
+      resizeTab.dataset.corner = corner;
+      resizeTab.addEventListener('mousedown', (e) => beginPostResize(e, card, post.id, corner));
+      editChrome.appendChild(resizeTab);
+    });
+
+    if (visualMetaShell) {
+      visualMetaShell.appendChild(editChrome);
+    } else {
+      card.appendChild(editChrome);
+    }
 
     const threadBtn = editChrome.querySelector('.post-edit-button-thread');
     const editBtn = editChrome.querySelector('.post-edit-button-edit');
-    const moveBtn = editChrome.querySelector('.post-edit-button-move');
     const deleteBtn = editChrome.querySelector('.post-edit-button-delete');
-
-    moveBtn?.addEventListener('pointerdown', (e) => {
-      if (e.button !== 0) return;
-      e.stopPropagation();
-      e.preventDefault();
-
-      const selectedPosts = getSelectedEditablePosts();
-      const canUseBulkMove = isEditPostSelected(post.id) && selectedPosts.length > 1;
-      if (canUseBulkMove) {
-        startBulkPlacement(selectedPosts, e);
-        return;
-      }
-
-      startPlacement(post, card, e);
-    });
-
-    moveBtn?.addEventListener('mousedown', (e) => {
-      if (e.button !== 0) return;
-      e.stopPropagation();
-      e.preventDefault();
-    });
-
-    moveBtn?.addEventListener('click', (e) => {
-      if (e.detail !== 0) return;
-      e.stopPropagation();
-      e.preventDefault();
-
-      const syntheticEvent = window.__lastMouseEventForPlacement || { clientX: 200, clientY: 200 };
-      const selectedPosts = getSelectedEditablePosts();
-      const canUseBulkMove = isEditPostSelected(post.id) && selectedPosts.length > 1;
-      if (canUseBulkMove) {
-        startBulkPlacement(selectedPosts, syntheticEvent);
-        return;
-      }
-
-      startPlacement(post, card, window.__lastMouseEventForPlacement || { clientX: 200, clientY: 200 });
-    });
 
     editBtn?.addEventListener('click', (e) => {
       e.stopPropagation();
+      const selectedIds = getSelectedEditablePostIds();
+      if (isEditPostSelected(post.id) && selectedIds.length > 1) {
+        return;
+      }
       openEditForm(post);
     });
 
@@ -9188,22 +9787,75 @@ function buildPostCard(post, user) {
 
     deleteBtn?.addEventListener('click', async (e) => {
       e.stopPropagation();
+      e.preventDefault();
+
+      if (deleteBtn.disabled) return;
+      deleteBtn.disabled = true;
 
       const selectedIds = getSelectedEditablePostIds();
       const canUseBulkDelete = isEditPostSelected(post.id) && selectedIds.length > 1;
-      if (canUseBulkDelete) {
-        await handleDeletePosts(selectedIds);
+      try {
+        if (canUseBulkDelete) {
+          await handleDeletePosts(selectedIds);
+          return;
+        }
+
+        await handleDeletePost(post.id);
+      } finally {
+        if (deleteBtn.isConnected) {
+          deleteBtn.disabled = false;
+        }
+      }
+    });
+
+    card.addEventListener('mousedown', async (e) => {
+      if (!editMode || !canEditThisPost) return;
+      if (e.button !== 0) return;
+
+      if (e.ctrlKey || e.metaKey) {
+        e.stopPropagation();
+        e.preventDefault();
+        suppressEditSelectionClickPostId = String(post.id);
+        toggleEditPostSelection(post.id);
+        await loadPosts();
         return;
       }
 
-      await handleDeletePost(post.id);
+      if (isPlacing && placingCardEl === card) {
+        e.stopPropagation();
+        e.preventDefault();
+        updatePlacementPosition(e);
+        suppressPlacementClickPostId = String(post.id);
+        await tryDropPlacement(e);
+        return;
+      }
+
+      if (
+        e.target.closest('.post-edit-button') ||
+        e.target.closest('.post-resize-tab') ||
+        e.target.closest('.post-footer-pfp') ||
+        e.target.closest('.post-footer-username')
+      ) {
+        return;
+      }
+
+      e.stopPropagation();
+      e.preventDefault();
+
+      const selectedPosts = getSelectedEditablePosts();
+      const canUseBulkMove = isEditPostSelected(post.id) && selectedPosts.length > 1;
+      if (canUseBulkMove) {
+        startBulkPlacement(selectedPosts, e);
+        return;
+      }
+
+      startPlacement(post, card, e);
     });
 
   } else {
     footer.innerHTML = `
     <img class="post-footer-pfp" src="${pfpSrc}" alt="" data-user-id="${post.user_id}" data-avatar="1" loading="lazy" decoding="async" style="cursor:pointer;">
     <span class="post-footer-username post-footer-filter-btn"><span class="post-footer-username-track">${user?.username || 'unknown'}</span></span>
-    <span class="post-footer-category post-footer-filter-btn"><span class="post-footer-category-track">${post.category || 'none'}</span></span>
   `;
 
     const usernameEl = footer.querySelector('.post-footer-username');
@@ -9215,16 +9867,6 @@ function buildPostCard(post, user) {
       });
     }
 
-    const categoryEl = footer.querySelector('.post-footer-category');
-    if (!editMode && categoryEl) {
-      categoryEl.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const isNone = post.category == null;
-        const nextFilter = isNone ? NONE_CATEGORY_FILTER : post.category;
-        activeCategoryFilter = (activeCategoryFilter === nextFilter) ? null : nextFilter;
-        loadPosts();
-      });
-    }
   }
 
   applyImageRuntimeDefaults(footer);
@@ -9237,22 +9879,32 @@ function buildPostCard(post, user) {
     });
   }
 
-  card.appendChild(footer);
+  if (visualMetaShell) {
+    if (fileNameMetaBox) {
+      visualMetaShell.appendChild(fileNameMetaBox);
+    }
+    visualMetaShell.appendChild(footer);
+    if (!isVisualWithBodyTextLayout) {
+      requestAnimationFrame(() => {
+        if (!card.isConnected) return;
+        const visualNode = card.querySelector('.post-visual-column .post-image, .post-visual-column .post-file-preview');
+        const visualHeight = Math.round(visualNode?.getBoundingClientRect().height || 0);
+        if (visualHeight > 0) {
+          card.style.setProperty('--post-visual-media-h', `${visualHeight}px`);
+        }
+      });
+    }
+  } else {
+    if (fileNameMetaBox) {
+      card.appendChild(fileNameMetaBox);
+    }
+    card.appendChild(footer);
+  }
 
   const lodBadge = document.createElement('div');
   lodBadge.className = 'post-lod-badge';
   lodBadge.textContent = String(post.title || post.file_name || post.category || 'post').slice(0, 52);
   card.appendChild(lodBadge);
-
-  if (editMode && canEditThisPost) {
-    const resizeHandle = document.createElement('button');
-    resizeHandle.type = 'button';
-    resizeHandle.className = 'post-resize-handle post-edit-button width-right';
-    resizeHandle.title = 'drag left/right to resize width';
-    resizeHandle.textContent = '↔';
-    resizeHandle.addEventListener('mousedown', (e) => beginPostResize(e, card, post.id));
-    card.appendChild(resizeHandle);
-  }
 
   if (editMode && activeThreadSourcePostId) {
     const postId = String(post.id);
@@ -9269,24 +9921,45 @@ function buildPostCard(post, user) {
   }
 
   if (!editMode) {
-    const categoryEl = card.querySelector('.post-footer-category');
-    const categoryTrackEl = card.querySelector('.post-footer-category-track');
-    applyMarqueeIfNeeded(categoryEl, categoryTrackEl);
-
     const usernameEl = card.querySelector('.post-footer-username');
     const usernameTrackEl = card.querySelector('.post-footer-username-track');
     applyMarqueeIfNeeded(usernameEl, usernameTrackEl, '\u00A0');
+
+    const fileNameEl = card.querySelector('.post-file-name-box');
+    const fileNameTrackEl = card.querySelector('.post-file-name-track');
+    applyMarqueeIfNeeded(fileNameEl, fileNameTrackEl, '\u00A0');
   }
 
   card.addEventListener('click', async (e) => {
     if (!editMode) return;
+
+    if (suppressEditSelectionClickPostId === String(post.id)) {
+      suppressEditSelectionClickPostId = null;
+      e.stopPropagation();
+      e.preventDefault();
+      return;
+    }
+
+    if (suppressPlacementClickPostId === String(post.id)) {
+      suppressPlacementClickPostId = null;
+      e.stopPropagation();
+      e.preventDefault();
+      return;
+    }
+
+    if (isPlacing && placingCardEl === card) {
+      e.stopPropagation();
+      e.preventDefault();
+      updatePlacementPosition(e);
+      await tryDropPlacement(e);
+      return;
+    }
 
     if (
       e.target.closest('.post-footer-action') ||
       e.target.closest('.post-edit-button') ||
       e.target.closest('.post-footer-pfp') ||
       e.target.closest('.post-footer-username') ||
-      e.target.closest('.post-footer-category') ||
       e.target.closest('.post-preview-mute-btn') ||
       e.target.closest('.post-file-preview-play') ||
       e.target.closest('.post-file-preview-download-btn') ||
@@ -9296,7 +9969,7 @@ function buildPostCard(post, user) {
       return;
     }
 
-    if (canEditThisPost && e.ctrlKey) {
+    if (canEditThisPost && (e.ctrlKey || e.metaKey)) {
       e.stopPropagation();
       e.preventDefault();
       toggleEditPostSelection(post.id);
@@ -9321,9 +9994,8 @@ function buildPostCard(post, user) {
       e.target.closest('.post-edit-button') ||
       e.target.closest('.post-footer-pfp') ||
       e.target.closest('.post-footer-username') ||
-      e.target.closest('.post-footer-category') ||
       e.target.closest('.post-footer-action') ||
-      e.target.closest('.post-resize-handle') ||
+      e.target.closest('.post-resize-tab') ||
       e.target.closest('.post-preview-mute-btn') ||
       e.target.closest('.post-file-preview-play') ||
       e.target.closest('.post-file-preview-download-btn')
@@ -9334,9 +10006,8 @@ function buildPostCard(post, user) {
         e.target.closest('.post-edit-button') ||
         e.target.closest('.post-footer-pfp') ||
         e.target.closest('.post-footer-username') ||
-        e.target.closest('.post-footer-category') ||
         e.target.closest('.post-footer-action') ||
-        e.target.closest('.post-resize-handle') ||
+        e.target.closest('.post-resize-tab') ||
         e.target.closest('.post-preview-mute-btn') ||
         e.target.closest('.post-file-preview-play') ||
         e.target.closest('.post-file-preview-download-btn') ||
@@ -9954,26 +10625,34 @@ function initializeEventListeners() {
   });
 
 
-  logoutBtn?.addEventListener('click', async () => {
-    const { error } = await supabase.auth.signOut();
-    if (error) {
-      alert(`Logout failed: ${error.message}`);
-      return;
-    }
-    window.location.replace('/login');
-  });
-
   postDeleteBtn.addEventListener('click', async () => {
-  if (!editingPostId) return;
-  await handleDeletePost(editingPostId);
-  closePostForm();
-});
+    if (!editingPostId || postDeleteBtn.disabled) return;
+    postDeleteBtn.disabled = true;
+    try {
+      await handleDeletePost(editingPostId);
+      closePostForm();
+    } finally {
+      postDeleteBtn.disabled = false;
+    }
+  });
 
   postDetailOverlay?.addEventListener('click', (e) => {
     if (e.target === postDetailOverlay) closePostDetailModal();
   });
 
   commentSubmitBtn?.addEventListener('click', submitComment);
+  commentInput?.addEventListener('pointerdown', (e) => {
+    e.stopPropagation();
+  });
+  commentInput?.addEventListener('mousedown', (e) => {
+    e.stopPropagation();
+  });
+  commentInput?.addEventListener('click', (e) => {
+    e.stopPropagation();
+  });
+  commentInput?.addEventListener('contextmenu', (e) => {
+    e.stopPropagation();
+  });
   commentInput?.addEventListener('input', resizeCommentInput);
   commentInput?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -9999,18 +10678,19 @@ function initializeEventListeners() {
   const toolbarSettingsBtn = document.getElementById('toolbarSettingsBtn');
   const toolbarHelpBtn     = document.getElementById('toolbarHelpBtn');
 
-  toolbarNotifBtn?.addEventListener('click', () => {
+  toolbarNotifBtn?.addEventListener('click', async () => {
+    closeMusicPanel();
     if (editMode) return;
     const isOpen = notifPanel.classList.contains('open');
     if (isOpen) {
       closeNotificationsPanel();
     } else {
-      closeToolbarPanels('notif');
-      openNotificationsPanel();
+      await openNotificationsPanel();
     }
   });
 
-  toolbarProfileBtn?.addEventListener('click', () => {
+  toolbarProfileBtn?.addEventListener('click', async () => {
+    closeMusicPanel();
     if (editMode) return;
     const isOpen = profileOverlay?.classList.contains('open');
     if (isOpen) {
@@ -10018,41 +10698,37 @@ function initializeEventListeners() {
       return;
     }
     if (currentUser) {
-      closeToolbarPanels('profile');
-      openProfileModal(currentUser.id);
+      await openProfileModal(currentUser.id);
     }
   });
 
-  toolbarPostBtn?.addEventListener('click', () => {
+  toolbarPostBtn?.addEventListener('click', async () => {
+    closeMusicPanel();
     if (editMode) return;
     const isOpen = postFormOverlay?.style.display === 'flex';
     if (isOpen) {
-      closePostForm();
+      await maybeClosePostForm();
     } else {
-      closeToolbarPanels('post');
-      openPostForm();
+      await openPostForm();
       toolbarPostBtn.classList.add('active');
     }
   });
 
-  toolbarSettingsBtn?.addEventListener('click', () => {
+  toolbarSettingsBtn?.addEventListener('click', async () => {
+    closeMusicPanel();
     const panel = document.getElementById('settingsPanel');
     if (!panel) return;
     const isOpen = panel.classList.contains('open');
     if (isOpen) {
       closeSettingsPanel();
     } else {
-      closeToolbarPanels('settings');
-      openSettingsPanel();
+      await openSettingsPanel();
     }
   });
 
-  toolbarHelpBtn?.addEventListener('click', () => {
-    const helpIsOpen = document.getElementById('helpOverlay')?.style.display !== 'none';
-    if (!helpIsOpen) {
-      closeToolbarPanels('help');
-    }
-    toggleHelpOverlay();
+  toolbarHelpBtn?.addEventListener('click', async () => {
+    closeMusicPanel();
+    await toggleHelpOverlay();
   });
 
   window.addEventListener('beforeunload', persistUiStateNow);
@@ -10121,6 +10797,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (restoredUiState?.editMode) {
     editMode = true;
     mainPageContainer.classList.add('edit-mode');
+    document.body.classList.add('app-edit-mode');
   }
 
   if (restoredUiState) {
@@ -10138,8 +10815,47 @@ document.addEventListener('DOMContentLoaded', async () => {
     baseUrl: import.meta.env.BASE_URL,
     getCurrentUser: () => currentUser,
     getIsEditMode: () => editMode,
+    isMusicPanelOpen,
+    onCloseMusicPanel: closeMusicPanel,
     getCategories: () => categoryRecords,
+    getCategoryRecords: () => categoryRecords,
+    getCategoryColor: getCategoryColorValue,
+    canEditCategory: canCurrentUserEditCategory,
+    onAddCategory: async (name) => {
+      const normalized = name.toLowerCase();
+      if (categoryRecords.some((cat) => String(cat.name || '').trim().toLowerCase() === normalized)) {
+        alert('That category already exists.');
+        return false;
+      }
+      try {
+        const insertRecord = { name, group_id: 'group0' };
+        if (categoryOwnerColumn && currentUser?.id) insertRecord[categoryOwnerColumn] = currentUser.id;
+        const { error } = await supabase.from('categories').insert([insertRecord]);
+        if (error) throw error;
+        await loadCategories();
+        return true;
+      } catch (e) {
+        alert(`Failed to add category: ${e.message}`);
+        return false;
+      }
+    },
+    onDeleteCategory: handleDeleteCategory,
+    onRenameCategory: handleRenameCategory,
+    onUpdateCategoryColor: handleUpdateCategoryColor,
     onWorldCreated: async (world, options = {}) => {
+      // If this is an edit of the currently active world, refresh the visuals
+      if (world?.id && activeWorldContext?.world?.id === world.id) {
+        const updatedPayload = {
+          ...activeWorldContext,
+          world,
+          backgroundUrl: world.background_url || activeWorldContext.backgroundUrl,
+          fontColor: world.font_color || '',
+          uiColor: world.ui_color || world.font_color || 'rgba(255,255,255,0.7)'
+        };
+        activeWorldContext = updatedPayload;
+        applyWorldModeVisuals(updatedPayload);
+      }
+
       await loadPosts();
       await loadLinks();
       renderLinks(lastLoadedPosts, lastLoadedLinks);
@@ -10179,6 +10895,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     },
     onOpenProfile: async (userId) => {
       await openProfileModal(userId);
+    },
+    onBeforeOpenMaker: async () => {
+      return ensureExclusiveSurface('world-maker');
+    },
+    onRequestCloseEditorMode: async () => {
+      if (!editMode) return true;
+      toggleEditMode();
+      return !editMode;
     }
   });
 

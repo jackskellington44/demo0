@@ -15,17 +15,14 @@
 import { api } from './api.js';
 import { supabase } from './supabase-config.js';
 import { installPrettyAlerts } from './ui-alerts.js';
+import { attachFakePasswordInput, getFakePasswordValue } from './password-mask.js';
 
 // ============================================
 // 0. PROFILE PICTURE GRID SETUP
 // ============================================
 
-const PFP_LIST = [
-  'pfp1.webp',  'pfp2.webp',  'pfp3.webp',  'pfp4.webp',  'pfp5.webp',
-  'pfp6.webp',  'pfp7.webp',  'pfp8.webp',  'pfp9.webp',  'pfp10.webp',
-  'pfp11.webp', 'pfp12.webp', 'pfp13.webp', 'pfp14.webp', 'pfp15.webp',
-  'pfp16.webp', 'pfp17.webp', 'pfp18.webp', 'pfp19.webp'
-];
+const PFP_BASE_NAMES = Array.from({ length: 41 }, (_, index) => `pfp${index + 1}`);
+const PFP_EXTENSIONS = ['gif', 'webp', 'png', 'jpg', 'jpeg'];
 
 const MAX_PFP_UPLOAD_BYTES = 2 * 1024 * 1024;
 const ALLOWED_PFP_MIME_TYPES = new Set([
@@ -74,22 +71,6 @@ function getPostAuthRedirectTarget() {
   }
 }
 
-async function applyLandingWorldTheme(worldId) {
-  if (!worldId) return;
-
-  const { data: world } = await api.worlds.getTheme(worldId);
-
-  if (!world) return;
-
-  const defaultBackground = `url(${import.meta.env.BASE_URL}images/background.jpg)`;
-  document.documentElement.style.setProperty('--bg-url', world.background_url ? `url(${world.background_url})` : defaultBackground);
-  document.documentElement.style.setProperty('--font-family', world.font_family || 'Arial, Helvetica, sans-serif');
-  document.body.style.color = world.font_color || '';
-  if (world.ui_color) {
-    document.documentElement.style.setProperty('--ui-tint-bg', world.ui_color);
-  }
-}
-
 function getPfpValidationError(file) {
   if (!file) return null;
 
@@ -131,10 +112,38 @@ function deselectPFPContainers() {
   });
 }
 
-function loadPFPGrid() {
-  const pfpGrid = document.getElementById('pfpGrid');
+function loadImageProbe(src) {
+  return new Promise((resolve, reject) => {
+    const probe = new Image();
+    probe.onload = () => resolve(src);
+    probe.onerror = () => reject(new Error(`Image failed to load: ${src}`));
+    probe.src = src;
+  });
+}
 
-  PFP_LIST.forEach(pfpName => {
+async function resolveBuiltInPfpName(baseName) {
+  for (const extension of PFP_EXTENSIONS) {
+    const candidate = `${baseName}.${extension}`;
+    const src = `${import.meta.env.BASE_URL}images/pfps/${candidate}`;
+
+    try {
+      await loadImageProbe(src);
+      return candidate;
+    } catch {
+      // Keep trying alternate extensions until one exists.
+    }
+  }
+
+  return null;
+}
+
+async function loadPFPGrid() {
+  const pfpGrid = document.getElementById('pfpGrid');
+  const resolvedPfpNames = (await Promise.all(
+    PFP_BASE_NAMES.map(resolveBuiltInPfpName)
+  )).filter(Boolean);
+
+  resolvedPfpNames.forEach(pfpName => {
     const container = document.createElement('div');
     container.className = 'pfp-container';
     container.dataset.pfp = pfpName;
@@ -172,6 +181,10 @@ function loadPFPGrid() {
     container.appendChild(img);
     pfpGrid.appendChild(container);
   });
+
+  if (resolvedPfpNames.length === 0) {
+    console.warn('No built-in profile pictures were found in /images/pfps.');
+  }
 
   // Add upload tile at the end of the grid
   const uploadContainer = document.createElement('div');
@@ -286,16 +299,17 @@ function initializePFPUpload() {
 // ============================================
 
 function validateLoginForm() {
-  if (!loginUsername.value.trim()) { alert('Please enter a username'); return false; }
-  if (!loginPassword.value)        { alert('Please enter a password'); return false; }
+  if (!loginUsername.value.trim()) { alert('Please enter a codename'); return false; }
+  if (!getFakePasswordValue(loginPassword)) { alert('Please enter a password'); return false; }
   return true;
 }
 
 function validateSignupForm() {
   const u = signupUsername.value.trim();
-  if (!u || u.length > 12)    { alert('Username must be 1–12 characters'); return false; }
-  if (!signupPassword.value)  { alert('Please enter a password'); return false; }
-  if (signupPassword.value.length < 6) { alert('Password must be at least 6 characters'); return false; }
+  const password = getFakePasswordValue(signupPassword);
+  if (!u || u.length > 12)    { alert('Codename must be 1–12 characters'); return false; }
+  if (!password)  { alert('Please enter a password'); return false; }
+  if (password.length < 6) { alert('Password must be at least 6 characters'); return false; }
   if (!selectedPFP && !uploadedPFPFile) { alert('Please select or upload a profile picture'); return false; }
   if (uploadedPFPFile) {
     const pfpError = getPfpValidationError(uploadedPFPFile);
@@ -311,7 +325,7 @@ function validateSignupForm() {
 async function handleLogin() {
   if (!validateLoginForm()) return;
   const username = loginUsername.value.trim();
-  const password = loginPassword.value;
+  const password = getFakePasswordValue(loginPassword);
 
   try {
     const { data, error } = await api.auth.signIn({ username, password });
@@ -334,7 +348,7 @@ async function handleSignup() {
 
   signupInFlight = true;
   const username = signupUsername.value.trim();
-  const password = signupPassword.value;
+  const password = getFakePasswordValue(signupPassword);
 
   // Track created resources so we can roll back partial work on failure.
   let createdUserId = null;
@@ -448,11 +462,16 @@ function initializeFormSubmission() {
   });
 }
 
+function initializePasswordMasking() {
+  attachFakePasswordInput(loginPassword);
+  attachFakePasswordInput(signupPassword);
+}
+
 // ============================================
 // 9. APP BOOTSTRAP
 // ============================================
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   installPrettyAlerts({ baseUrl: import.meta.env.BASE_URL });
 
   document.documentElement.style.setProperty(
@@ -460,10 +479,11 @@ document.addEventListener('DOMContentLoaded', () => {
     `url(${import.meta.env.BASE_URL}images/background.jpg)`
   );
 
-  loadPFPGrid();
+  await loadPFPGrid();
   initializeViews();
   initializePFPSelection();
   initializePFPUpload();
+  initializePasswordMasking();
   initializeFormSubmission();
 
   // If already authenticated, skip the login page entirely.
@@ -477,7 +497,4 @@ document.addEventListener('DOMContentLoaded', () => {
       // Ignore — just show the login form.
     });
 
-  applyLandingWorldTheme(getLandingWorldId()).catch((error) => {
-    console.warn('Failed to apply landing world theme:', error);
-  });
 });

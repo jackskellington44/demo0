@@ -40,6 +40,10 @@
     /* Shared text size for inner system modals (slightly above chrome bars) */
     --inner-system-modal-font: calc(var(--chrome-bar-font) + 0.1rem);
 
+    /* Shared backdrop blur tiers */
+    --overlay-blur-utility: blur(6px) saturate(106%);
+    --overlay-blur-form: blur(10px) saturate(114%);
+
     /* Font scale */
     --font-size-base: 0.875rem;
     --font-size-sm:   1rem;

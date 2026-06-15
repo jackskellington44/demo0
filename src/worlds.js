@@ -1,6 +1,7 @@
 import JSZip from 'jszip';
 
 const WORLD_TRIGGER = 'world';
+const WORLD_EDIT_TRIGGER = 'edit';
 const WORLD_BUCKET = 'worlds';
 const WORLD_QUERY_PARAM = 'world';
 const MY_WORLDS_STORAGE_PREFIX = 'demo0-my-worlds-v1';
@@ -32,11 +33,10 @@ const WORLD_COVER_ALLOWED_MIME_TYPES = new Set([
 ]);
 
 const WORLD_FONTS = [
-  { value: '', label: 'site default' },
-  { value: 'Georgia, serif', label: 'Georgia' },
-  { value: 'Trebuchet MS, sans-serif', label: 'Trebuchet' },
-  { value: 'Palatino Linotype, serif', label: 'Palatino' },
-  { value: 'Courier New, monospace', label: 'Courier New' }
+  { value: "'Liberation Sans', Arial, sans-serif", label: 'Liberation Sans' },
+  { value: "'Liberation Mono', 'Courier New', monospace", label: 'Liberation Mono' },
+  { value: "'Liberation Serif', 'Times New Roman', serif", label: 'Liberation Serif' },
+  { value: "'Linux Biolinum G', 'Liberation Sans', Arial, sans-serif", label: 'Linux Biolinum G' }
 ];
 
 function escapeHtml(value = '') {
@@ -527,41 +527,13 @@ function getWorldAccent(world) {
   return String(world?.ui_color || world?.font_color || DEFAULT_UI_COLOR).trim() || DEFAULT_UI_COLOR;
 }
 
-function applyWorldTitleMarquee(titleEl, trackEl, separator = '\u00A0\u00A0') {
-  if (!titleEl || !trackEl) return;
-
-  requestAnimationFrame(() => {
-    if (trackEl.scrollWidth <= titleEl.clientWidth) return;
-
-    const originalText = trackEl.textContent;
-    trackEl.textContent = `${originalText}${separator}${originalText}`;
-
-    requestAnimationFrame(() => {
-      const totalWidth = trackEl.scrollWidth;
-      if (totalWidth <= 0) return;
-
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-
-      const style = getComputedStyle(trackEl);
-      ctx.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
-
-      const firstHalfWidth = ctx.measureText(`${originalText}${separator}`).width;
-      const pct = (firstHalfWidth / totalWidth) * 100;
-      trackEl.style.setProperty('--marquee-end-pct', `-${pct.toFixed(3)}%`);
-      titleEl.classList.add('is-marquee');
-    });
-  });
-}
-
 function createWorldsDom(baseUrl) {
   const host = document.createElement('div');
   host.id = 'worldsFeatureHost';
   host.innerHTML = `
     <div class="world-maker-overlay" id="worldMakerOverlay" style="display:none;">
       <div class="world-maker-modal" id="worldMakerModal">
-        <button type="button" class="world-maker-close" id="worldMakerClose" aria-label="close world maker">×</button>
+        <button type="button" class="world-maker-close" id="worldMakerClose" aria-label="close world maker">close</button>
         <div class="world-maker-shell" id="worldMakerShell" data-step="mode">
           <section class="world-maker-step is-active" data-step-panel="mode">
             <div class="world-maker-mode-grid">
@@ -575,20 +547,25 @@ function createWorldsDom(baseUrl) {
             <h2 class="world-maker-title">build a reskinned world</h2>
             <div class="world-maker-form-grid world-maker-form-grid--plug">
               <input class="world-maker-input" type="text" id="worldPlugName" maxlength="80" autocomplete="off" placeholder="world name">
-              <textarea class="world-maker-input world-maker-textarea" id="worldPlugDescription" rows="4" maxlength="500" placeholder="description"></textarea>
-              <div class="world-maker-field world-maker-field--wide world-maker-inline-row world-maker-inline-row--style">
-                <label class="world-maker-inline-control world-maker-inline-control--font" for="worldPlugFont">
-                  <select id="worldPlugFont" aria-label="font choice"></select>
-                  <span class="world-maker-inline-label">font</span>
-                </label>
-                <label class="world-maker-inline-control world-maker-inline-control--color" for="worldPlugFontColor">
-                  <input type="color" id="worldPlugFontColor" value="#f5f5f5" aria-label="font color">
-                  <span class="world-maker-inline-label">font color</span>
-                </label>
-                <label class="world-maker-inline-control world-maker-inline-control--color" for="worldPlugBgColor">
-                  <input type="color" id="worldPlugBgColor" value="#cfd8e3" aria-label="background color">
-                  <span class="world-maker-inline-label">bg color</span>
-                </label>
+              <div class="post-form-category-row">
+                <input type="hidden" id="worldPlugCategory" value="">
+                <div class="post-form-category-custom" id="worldPlugCategoryCustom">
+                  <div class="post-form-category-display" id="worldPlugCategoryDisplay" role="button" tabindex="0">
+                    <span id="worldPlugCategoryDisplayText" class="is-placeholder">select category</span>
+                    <span class="post-form-category-display-actions">
+                      <button type="button" class="post-form-category-inline-btn" id="worldPlugCategoryDropdownToggle" aria-label="open category dropdown">v</button>
+                      <button type="button" class="post-form-category-inline-btn" id="worldPlugCategoryEditorToggle" aria-label="open category editor">☰</button>
+                    </span>
+                  </div>
+                  <div class="post-form-category-dropdown" id="worldPlugCategoryDropdown"></div>
+                </div>
+              </div>
+              <div class="post-form-category-panel" id="worldPlugCategoryPanel" style="display:none;">
+                <div class="post-form-category-create-row">
+                  <input type="text" class="post-form-category-input" id="worldPlugCategoryInput" placeholder="new category" autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="off">
+                  <button type="button" class="post-form-category-create-btn" id="worldPlugCategoryCreateBtn">+</button>
+                </div>
+                <div class="post-form-category-list" id="worldPlugCategoryList"></div>
               </div>
               <label class="world-maker-field world-maker-field--upload world-maker-field--wide">
                 <label class="world-maker-upload world-maker-upload--compact world-maker-input-box">
@@ -602,30 +579,47 @@ function createWorldsDom(baseUrl) {
                   <input type="file" id="worldPlugBackground" accept="image/jpeg,image/png,image/gif,image/webp,image/heic,image/heif,.heic,.heif">
                 </label>
               </label>
-              <div class="world-maker-field world-maker-field--wide world-maker-mode-setting" id="worldPlugViewModeRow" data-private="false">
-                <label class="world-maker-inline-control world-maker-inline-control--font world-maker-inline-control--mode" for="worldPlugVisibility">
-                  <span class="world-maker-inline-prefix">view mode</span>
-                  <select id="worldPlugVisibility" aria-label="view mode">
-                    <option value="true">public</option>
-                    <option value="false">private</option>
-                  </select>
-                </label>
-                <input class="world-maker-mode-password" type="password" id="worldPlugViewPassword" autocomplete="new-password" placeholder="password" style="display:none;">
-              </div>
-              <div class="world-maker-field world-maker-field--wide world-maker-mode-setting" id="worldPlugEditModeRow" data-private="false">
-                <label class="world-maker-inline-control world-maker-inline-control--font world-maker-inline-control--mode" for="worldPlugEditing">
-                  <span class="world-maker-inline-prefix">edit mode</span>
-                  <select id="worldPlugEditing" aria-label="edit mode">
-                    <option value="true">public</option>
-                    <option value="false">private</option>
-                  </select>
-                </label>
-                <input class="world-maker-mode-password" type="password" id="worldPlugEditPassword" autocomplete="new-password" placeholder="password" style="display:none;">
+              <div class="world-maker-mode-row world-maker-field--wide">
+                <div class="world-maker-mode-setting" id="worldPlugViewModeRow" data-private="false">
+                  <label class="world-maker-inline-control world-maker-inline-control--font world-maker-inline-control--mode" for="worldPlugVisibility">
+                    <span class="world-maker-mode-label-box">view mode</span>
+                    <div class="world-maker-dropdown world-maker-dropdown--compact ui-dropdown ui-dropdown--world" data-world-dropdown>
+                      <select id="worldPlugVisibility" class="world-maker-native-select" aria-label="view mode">
+                        <option value="true">public</option>
+                        <option value="false">private</option>
+                      </select>
+                      <div class="world-maker-dropdown-display ui-dropdown-display" data-world-dropdown-display role="button" tabindex="0" aria-haspopup="listbox" aria-expanded="false" aria-controls="worldPlugVisibilityDropdown">
+                        <span data-world-dropdown-text>public</span>
+                        <span class="world-maker-dropdown-chevron ui-dropdown-chevron" aria-hidden="true">v</span>
+                      </div>
+                      <div id="worldPlugVisibilityDropdown" class="world-maker-dropdown-list ui-dropdown-list" data-world-dropdown-list role="listbox"></div>
+                    </div>
+                  </label>
+                  <input class="world-maker-mode-password" type="password" id="worldPlugViewPassword" autocomplete="new-password" placeholder="password" style="display:none;">
+                </div>
+                <div class="world-maker-mode-setting" id="worldPlugEditModeRow" data-private="false">
+                  <label class="world-maker-inline-control world-maker-inline-control--font world-maker-inline-control--mode" for="worldPlugEditing">
+                    <span class="world-maker-mode-label-box">edit mode</span>
+                    <div class="world-maker-dropdown world-maker-dropdown--compact ui-dropdown ui-dropdown--world" data-world-dropdown>
+                      <select id="worldPlugEditing" class="world-maker-native-select" aria-label="edit mode">
+                        <option value="true">public</option>
+                        <option value="false">private</option>
+                      </select>
+                      <div class="world-maker-dropdown-display ui-dropdown-display" data-world-dropdown-display role="button" tabindex="0" aria-haspopup="listbox" aria-expanded="false" aria-controls="worldPlugEditingDropdown">
+                        <span data-world-dropdown-text>public</span>
+                        <span class="world-maker-dropdown-chevron ui-dropdown-chevron" aria-hidden="true">v</span>
+                      </div>
+                      <div id="worldPlugEditingDropdown" class="world-maker-dropdown-list ui-dropdown-list" data-world-dropdown-list role="listbox"></div>
+                    </div>
+                  </label>
+                  <input class="world-maker-mode-password" type="password" id="worldPlugEditPassword" autocomplete="new-password" placeholder="password" style="display:none;">
+                </div>
               </div>
             </div>
             <div class="world-maker-actions">
-              <button type="button" class="world-maker-secondary" id="worldPlugBack" aria-label="cancel world maker">x</button>
-              <button type="button" class="world-maker-primary" id="worldPlugPublish" aria-label="submit world maker">✓</button>
+              <button type="button" class="world-maker-danger" id="worldMakerDelete" style="display:none;">delete world</button>
+              <button type="button" class="world-maker-secondary" id="worldPlugBack" aria-label="close world maker">close</button>
+              <button type="button" class="world-maker-primary" id="worldPlugPublish" aria-label="submit world maker">submit</button>
             </div>
           </section>
 
@@ -646,51 +640,65 @@ function createWorldsDom(baseUrl) {
                   <input type="file" id="worldCodeCss" accept=".css,text/css">
                 </label>
               </label>
-              <div class="world-maker-field world-maker-field--wide world-maker-mode-setting" id="worldCodeViewModeRow" data-private="false">
-                <label class="world-maker-inline-control world-maker-inline-control--font world-maker-inline-control--mode" for="worldCodeVisibility">
-                  <span class="world-maker-inline-prefix">view mode</span>
-                  <select id="worldCodeVisibility" aria-label="view mode">
-                    <option value="true">public</option>
-                    <option value="false">private</option>
-                  </select>
-                </label>
-                <input class="world-maker-mode-password" type="password" id="worldCodeViewPassword" autocomplete="new-password" placeholder="password" style="display:none;">
-              </div>
-              <div class="world-maker-field world-maker-field--wide world-maker-mode-setting" id="worldCodeEditModeRow" data-private="false">
-                <label class="world-maker-inline-control world-maker-inline-control--font world-maker-inline-control--mode" for="worldCodeEditing">
-                  <span class="world-maker-inline-prefix">edit mode</span>
-                  <select id="worldCodeEditing" aria-label="edit mode">
-                    <option value="true">public</option>
-                    <option value="false">private</option>
-                  </select>
-                </label>
-                <input class="world-maker-mode-password" type="password" id="worldCodeEditPassword" autocomplete="new-password" placeholder="password" style="display:none;">
+              <div class="world-maker-mode-row world-maker-field--wide">
+                <div class="world-maker-mode-setting" id="worldCodeViewModeRow" data-private="false">
+                  <label class="world-maker-inline-control world-maker-inline-control--font world-maker-inline-control--mode" for="worldCodeVisibility">
+                    <span class="world-maker-mode-label-box">view mode</span>
+                    <div class="world-maker-dropdown world-maker-dropdown--compact ui-dropdown ui-dropdown--world" data-world-dropdown>
+                      <select id="worldCodeVisibility" class="world-maker-native-select" aria-label="view mode">
+                        <option value="true">public</option>
+                        <option value="false">private</option>
+                      </select>
+                      <div class="world-maker-dropdown-display ui-dropdown-display" data-world-dropdown-display role="button" tabindex="0" aria-haspopup="listbox" aria-expanded="false" aria-controls="worldCodeVisibilityDropdown">
+                        <span data-world-dropdown-text>public</span>
+                        <span class="world-maker-dropdown-chevron ui-dropdown-chevron" aria-hidden="true">v</span>
+                      </div>
+                      <div id="worldCodeVisibilityDropdown" class="world-maker-dropdown-list ui-dropdown-list" data-world-dropdown-list role="listbox"></div>
+                    </div>
+                  </label>
+                  <input class="world-maker-mode-password" type="password" id="worldCodeViewPassword" autocomplete="new-password" placeholder="password" style="display:none;">
+                </div>
+                <div class="world-maker-mode-setting" id="worldCodeEditModeRow" data-private="false">
+                  <label class="world-maker-inline-control world-maker-inline-control--font world-maker-inline-control--mode" for="worldCodeEditing">
+                    <span class="world-maker-mode-label-box">edit mode</span>
+                    <div class="world-maker-dropdown world-maker-dropdown--compact ui-dropdown ui-dropdown--world" data-world-dropdown>
+                      <select id="worldCodeEditing" class="world-maker-native-select" aria-label="edit mode">
+                        <option value="true">public</option>
+                        <option value="false">private</option>
+                      </select>
+                      <div class="world-maker-dropdown-display ui-dropdown-display" data-world-dropdown-display role="button" tabindex="0" aria-haspopup="listbox" aria-expanded="false" aria-controls="worldCodeEditingDropdown">
+                        <span data-world-dropdown-text>public</span>
+                        <span class="world-maker-dropdown-chevron ui-dropdown-chevron" aria-hidden="true">v</span>
+                      </div>
+                      <div id="worldCodeEditingDropdown" class="world-maker-dropdown-list ui-dropdown-list" data-world-dropdown-list role="listbox"></div>
+                    </div>
+                  </label>
+                  <input class="world-maker-mode-password" type="password" id="worldCodeEditPassword" autocomplete="new-password" placeholder="password" style="display:none;">
+                </div>
               </div>
             </div>
             <div class="world-maker-actions">
-              <button type="button" class="world-maker-secondary" id="worldCodeBack" aria-label="cancel code world maker">x</button>
-              <button type="button" class="world-maker-primary" id="worldCodePublish" aria-label="submit code world maker">✓</button>
+              <button type="button" class="world-maker-danger" id="worldCodeDelete" style="display:none;">delete world</button>
+              <button type="button" class="world-maker-secondary" id="worldCodeBack" aria-label="close code world maker">close</button>
+              <button type="button" class="world-maker-primary" id="worldCodePublish" aria-label="submit code world maker">submit</button>
             </div>
           </section>
         </div>
-        <button type="button" class="world-maker-danger" id="worldMakerDelete" style="display:none;">delete world</button>
       </div>
     </div>
 
     <div class="world-mode-chrome" id="worldModeChrome" style="display:none;">
       <div class="world-mode-nav-bar" id="worldModeNavBar">
         <nav class="world-mode-breadcrumbs" id="worldModeTabs" aria-label="world navigation"></nav>
+        <div class="world-mode-nav-actions" id="worldModeNavActions">
+          <button type="button" class="world-mode-breadcrumb world-mode-edit-world" id="worldModeEditBtn" style="display:none;">edit world</button>
+          <button type="button" class="world-mode-breadcrumb world-mode-logout" id="logoutBtn">log out</button>
+        </div>
       </div>
       <div class="world-mode-myworlds-menu" id="worldModeMyWorldsMenu" style="display:none;"></div>
-      <button type="button" class="world-mode-recompress" id="worldModeRecompress" style="display:none;">recompress covers</button>
-      <button type="button" class="view-toggle world-mode-edit-toggle" id="worldModeEdit" style="display:none;">edit world</button>
       <button type="button" class="world-mode-delete" id="worldModeDelete" style="display:none;">delete</button>
       <div class="world-mode-pfp-wrap">
         <img id="worldModePfp" class="world-mode-pfp" src="${baseUrl}images/pfps/default.png" alt="">
-      </div>
-      <div class="world-mode-identity-panel">
-        <div class="world-mode-name" id="worldModeName"></div>
-        <div class="world-mode-description" id="worldModeDescription"></div>
       </div>
       <iframe id="worldModeFrame" class="world-mode-frame" sandbox="allow-scripts allow-same-origin" referrerpolicy="no-referrer" style="display:none;"></iframe>
     </div>
@@ -698,7 +706,7 @@ function createWorldsDom(baseUrl) {
     <div class="world-loader-overlay" id="worldLoaderOverlay" data-mode="loading" style="display:none;">
       <div class="world-loader-backdrop" id="worldLoaderBackdrop"></div>
       <div class="world-loader-wash" id="worldLoaderWash"></div>
-
+      <img class="world-loader-pfp" id="worldLoaderPfp" src="" alt="" aria-hidden="true">
       <div class="world-loader-copy">
         <div class="world-loader-kicker" id="worldLoaderKicker">world</div>
         <h2 class="world-loader-title" id="worldLoaderTitle">untitled world</h2>
@@ -710,10 +718,6 @@ function createWorldsDom(baseUrl) {
           </div>
           <div class="world-loader-status-text" id="worldLoaderStatus">loading world...</div>
         </div>
-      </div>
-
-      <div class="world-loader-cover-shell" id="worldLoaderCoverShell">
-        <img class="world-loader-cover" id="worldLoaderCover" src="${baseUrl}images/background.jpg" alt="">
       </div>
 
       <div class="world-password-panel" id="worldPasswordPanel">
@@ -739,11 +743,17 @@ function createWorldsDom(baseUrl) {
     makerShell: host.querySelector('#worldMakerShell'),
     makerClose: host.querySelector('#worldMakerClose'),
     plugName: host.querySelector('#worldPlugName'),
-    plugDescription: host.querySelector('#worldPlugDescription'),
-    plugCategory: host.querySelector('#worldPlugCategory'),
-    plugFont: host.querySelector('#worldPlugFont'),
-    plugFontColor: host.querySelector('#worldPlugFontColor'),
-    plugBgColor: host.querySelector('#worldPlugBgColor'),
+    plugDescription: host.querySelector('#worldPlugDescription'),    plugCategoryHidden: host.querySelector('#worldPlugCategory'),
+    plugCategoryDisplay: host.querySelector('#worldPlugCategoryDisplay'),
+    plugCategoryDisplayText: host.querySelector('#worldPlugCategoryDisplayText'),
+    plugCategoryDropdownToggle: host.querySelector('#worldPlugCategoryDropdownToggle'),
+    plugCategoryEditorToggle: host.querySelector('#worldPlugCategoryEditorToggle'),
+    plugCategoryDropdown: host.querySelector('#worldPlugCategoryDropdown'),
+    plugCategoryPanel: host.querySelector('#worldPlugCategoryPanel'),
+    plugCategoryInput: host.querySelector('#worldPlugCategoryInput'),
+    plugCategoryCreateBtn: host.querySelector('#worldPlugCategoryCreateBtn'),
+    plugCategoryList: host.querySelector('#worldPlugCategoryList'),
+
     plugCover: host.querySelector('#worldPlugCover'),
     plugCoverLabel: host.querySelector('#worldPlugCoverLabel'),
     plugBackground: host.querySelector('#worldPlugBackground'),
@@ -775,21 +785,24 @@ function createWorldsDom(baseUrl) {
     modeCodeBtn: host.querySelector('#worldModeCodeBtn'),
     modeChrome: host.querySelector('#worldModeChrome'),
     modeNavBar: host.querySelector('#worldModeNavBar'),
+    modeNavActions: host.querySelector('#worldModeNavActions'),
     modeTabs: host.querySelector('#worldModeTabs'),
     modeMyWorldsMenu: host.querySelector('#worldModeMyWorldsMenu'),
-    modeRecompress: host.querySelector('#worldModeRecompress'),
-    modeEdit: host.querySelector('#worldModeEdit'),
+    modeEditBtn: host.querySelector('#worldModeEditBtn'),
+    logoutBtn: host.querySelector('#logoutBtn'),
     modeDelete: host.querySelector('#worldModeDelete'),
     modePfpWrap: host.querySelector('.world-mode-pfp-wrap'),
     modePfp: host.querySelector('#worldModePfp'),
     modeIdentityPanel: host.querySelector('.world-mode-identity-panel'),
-    modeName: host.querySelector('#worldModeName'),
+    titleCard: host.querySelector('#worldModeTitleCard'),
+    modeDescription: host.querySelector('#worldModeDescription'),
     modeDescription: host.querySelector('#worldModeDescription'),
     modeFrame: host.querySelector('#worldModeFrame'),
     loaderOverlay: host.querySelector('#worldLoaderOverlay'),
     loaderBackdrop: host.querySelector('#worldLoaderBackdrop'),
     loaderWash: host.querySelector('#worldLoaderWash'),
     loaderKicker: host.querySelector('#worldLoaderKicker'),
+    loaderPfp: host.querySelector('#worldLoaderPfp'),
     loaderTitle: host.querySelector('#worldLoaderTitle'),
     loaderMeta: host.querySelector('#worldLoaderMeta'),
     loaderDescription: host.querySelector('#worldLoaderDescription'),
@@ -805,7 +818,8 @@ function createWorldsDom(baseUrl) {
     passwordError: host.querySelector('#worldPasswordError'),
     passwordCancel: host.querySelector('#worldPasswordCancel'),
     passwordSubmit: host.querySelector('#worldPasswordSubmit'),
-    makerDelete: host.querySelector('#worldMakerDelete')
+    makerDelete: host.querySelector('#worldMakerDelete'),
+    makerDeleteButtons: [...host.querySelectorAll('.world-maker-danger')]
   };
 }
 
@@ -900,11 +914,22 @@ export function initWorldsFeature(options) {
     getCurrentUser,
     getIsEditMode,
     getCategories,
+    getCategoryRecords,
+    getCategoryColor,
+    canEditCategory,
+    onAddCategory,
+    onDeleteCategory,
+    onRenameCategory,
+    onUpdateCategoryColor,
     onWorldCreated,
     onWorldDeleted,
     onEnterWorld,
     onExitWorld,
-    onOpenProfile
+    onOpenProfile,
+    onBeforeOpenMaker,
+    isMusicPanelOpen,
+    onCloseMusicPanel,
+    onRequestCloseEditorMode
   } = options;
 
   const dom = createWorldsDom(baseUrl);
@@ -926,9 +951,530 @@ export function initWorldsFeature(options) {
   let myWorldMap = new Map();
   let myWorldsHydrated = false;
   let makerSourceWorldId = '';
+  const worldDropdownControllers = new Map();
+  let makerBaselineState = null;
   let parentTabAction = async () => {
     await exitWorldMode();
   };
+
+  // ─── Plug Category Widget ─────────────────────────────────────────────────
+  let plugCategorySelected = '';
+  let plugCategoryEditingName = null;
+  let plugColorPickerState = { h: 200, s: 0.5, v: 0.9, categoryName: null };
+  let plugColorPickerEl = null;
+
+  function clampNum(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
+
+  function plugHsvToHex(h, s, v) {
+    const hue = ((Number(h) % 360) + 360) % 360;
+    const sat = clampNum(Number(s), 0, 1);
+    const val = clampNum(Number(v), 0, 1);
+    const c = val * sat;
+    const x = c * (1 - Math.abs(((hue / 60) % 2) - 1));
+    const m = val - c;
+    let r = 0, g = 0, b = 0;
+    if (hue < 60) { r = c; g = x; }
+    else if (hue < 120) { r = x; g = c; }
+    else if (hue < 180) { g = c; b = x; }
+    else if (hue < 240) { g = x; b = c; }
+    else if (hue < 300) { r = x; b = c; }
+    else { r = c; b = x; }
+    const toH = (n) => Math.round((n + m) * 255).toString(16).padStart(2, '0');
+    return `#${toH(r)}${toH(g)}${toH(b)}`;
+  }
+
+  function plugHexToHsv(hex) {
+    const raw = String(hex || '#808080').replace(/^#/, '');
+    const full = raw.length === 3 ? raw.split('').map((c) => c + c).join('') : raw.padEnd(6, '0');
+    const r = parseInt(full.slice(0, 2), 16) / 255;
+    const g = parseInt(full.slice(2, 4), 16) / 255;
+    const b = parseInt(full.slice(4, 6), 16) / 255;
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const delta = max - min;
+    let hh = 0;
+    if (delta !== 0) {
+      if (max === r) hh = ((g - b) / delta) % 6;
+      else if (max === g) hh = ((b - r) / delta) + 2;
+      else hh = ((r - g) / delta) + 4;
+      hh *= 60;
+      if (hh < 0) hh += 360;
+    }
+    return { h: hh, s: max === 0 ? 0 : delta / max, v: max };
+  }
+
+  function getPlugPickerHex() {
+    return plugHsvToHex(plugColorPickerState.h, plugColorPickerState.s, plugColorPickerState.v);
+  }
+
+  function setPlugCategory(val) {
+    plugCategorySelected = val || '';
+    if (dom.plugCategoryHidden) dom.plugCategoryHidden.value = plugCategorySelected;
+    if (dom.plugCategoryDisplayText) {
+      dom.plugCategoryDisplayText.textContent = plugCategorySelected || 'select category';
+      dom.plugCategoryDisplayText.classList.toggle('is-placeholder', !plugCategorySelected);
+    }
+  }
+
+  function openPlugCategoryDropdown() {
+    closePlugCategoryPanel();
+    if (dom.plugCategoryDropdown) dom.plugCategoryDropdown.style.display = 'flex';
+    dom.plugCategoryDisplay?.classList.add('is-open');
+    dom.plugCategoryDropdownToggle?.classList.add('is-open');
+  }
+
+  function closePlugCategoryDropdown() {
+    if (dom.plugCategoryDropdown) dom.plugCategoryDropdown.style.display = 'none';
+    dom.plugCategoryDisplay?.classList.remove('is-open');
+    dom.plugCategoryDropdownToggle?.classList.remove('is-open');
+  }
+
+  function openPlugCategoryPanel() {
+    plugCategoryEditingName = null;
+    closePlugCategoryDropdown();
+    closePlugColorPicker();
+    renderPlugCategoryEditor();
+    if (dom.plugCategoryPanel) {
+      dom.plugCategoryPanel.style.display = 'flex';
+      dom.plugCategoryPanel.classList.add('is-open');
+    }
+    dom.plugCategoryEditorToggle?.classList.add('is-open');
+  }
+
+  function closePlugCategoryPanel() {
+    plugCategoryEditingName = null;
+    closePlugColorPicker();
+    renderPlugCategoryEditor();
+    if (dom.plugCategoryPanel) {
+      dom.plugCategoryPanel.style.display = 'none';
+      dom.plugCategoryPanel.classList.remove('is-open');
+    }
+    dom.plugCategoryEditorToggle?.classList.remove('is-open');
+  }
+
+  function renderPlugCategoryDropdown() {
+    if (!dom.plugCategoryDropdown) return;
+    const categories = getCategories?.() || [];
+    dom.plugCategoryDropdown.innerHTML = '';
+    const noneItem = document.createElement('div');
+    noneItem.className = 'post-form-category-option';
+    noneItem.dataset.value = '';
+    noneItem.textContent = 'none';
+    noneItem.addEventListener('click', () => { setPlugCategory(''); closePlugCategoryDropdown(); });
+    dom.plugCategoryDropdown.appendChild(noneItem);
+    categories.forEach((cat) => {
+      const item = document.createElement('div');
+      item.className = 'post-form-category-option';
+      item.dataset.value = cat.name;
+      item.textContent = cat.name;
+      item.addEventListener('click', () => { setPlugCategory(cat.name); closePlugCategoryDropdown(); });
+      dom.plugCategoryDropdown.appendChild(item);
+    });
+  }
+
+  function renderPlugCategoryEditor() {
+    if (!dom.plugCategoryList) return;
+    const records = getCategoryRecords?.() || [];
+    const editable = records.filter((cat) => canEditCategory?.(cat) ?? true);
+    if (!editable.length) {
+      dom.plugCategoryList.innerHTML = '<div class="post-form-category-empty">no editable categories yet</div>';
+      return;
+    }
+    dom.plugCategoryList.innerHTML = editable.map((cat) => {
+      const name = String(cat.name || '');
+      const enc = encodeURIComponent(name);
+      const isEditing = plugCategoryEditingName === name;
+      const color = getCategoryColor?.(cat) || '#888';
+      const swatch = `<button type="button" class="post-form-category-color-swatch" data-action="recolor" data-category-name="${enc}" aria-label="set category color" style="background:${escapeHtml(color)};"></button>`;
+      if (isEditing) {
+        return `<div class="post-form-category-item" data-category-name="${enc}">${swatch}<input type="text" class="post-form-category-edit-input" value="${escapeHtml(name)}" data-category-edit-input="${enc}"><div class="post-form-category-actions"><button type="button" class="post-form-category-action delete" data-action="delete" data-category-name="${enc}">x</button></div></div>`;
+      }
+      return `<div class="post-form-category-item" data-category-name="${enc}">${swatch}<span class="post-form-category-name">${escapeHtml(name)}</span><div class="post-form-category-actions"><button type="button" class="post-form-category-action delete" data-action="delete" data-category-name="${enc}">x</button></div></div>`;
+    }).join('');
+    if (plugCategoryEditingName) {
+      const input = dom.plugCategoryList.querySelector('.post-form-category-edit-input');
+      input?.focus();
+      const pos = input?.value?.length || 0;
+      input?.setSelectionRange(pos, pos);
+    }
+  }
+
+  function ensurePlugColorPicker() {
+    if (plugColorPickerEl?.root?.isConnected) return plugColorPickerEl;
+    if (!dom.plugCategoryPanel) return null;
+    const root = document.createElement('div');
+    root.className = 'post-form-category-picker';
+    root.style.display = 'none';
+    root.innerHTML = `
+      <div class="post-form-category-picker-sv" data-role="sv">
+        <div class="post-form-category-picker-sv-cursor" data-role="sv-cursor"></div>
+      </div>
+      <input type="range" min="0" max="360" step="1" class="post-form-category-picker-hue" data-role="hue" aria-label="category hue">
+      <button type="button" class="post-form-category-picker-submit" data-role="submit" aria-label="save category color">✓</button>
+    `;
+    dom.plugCategoryPanel.appendChild(root);
+    const sv = root.querySelector('[data-role="sv"]');
+    const svCursor = root.querySelector('[data-role="sv-cursor"]');
+    const hueInput = root.querySelector('[data-role="hue"]');
+    const submitButton = root.querySelector('[data-role="submit"]');
+    const syncUi = () => {
+      const hue = clampNum(plugColorPickerState.h, 0, 360);
+      const sat = clampNum(plugColorPickerState.s, 0, 1);
+      const val = clampNum(plugColorPickerState.v, 0, 1);
+      sv.style.setProperty('--picker-hue', String(hue));
+      svCursor.style.left = `${sat * 100}%`;
+      svCursor.style.top = `${(1 - val) * 100}%`;
+      hueInput.value = String(hue);
+      submitButton.style.background = getPlugPickerHex();
+    };
+    const setSvFromPointer = (e) => {
+      const rect = sv.getBoundingClientRect();
+      plugColorPickerState.s = rect.width > 0 ? clampNum(e.clientX - rect.left, 0, rect.width) / rect.width : 0;
+      plugColorPickerState.v = rect.height > 0 ? 1 - clampNum(e.clientY - rect.top, 0, rect.height) / rect.height : 0;
+      syncUi();
+    };
+    let dragging = false;
+    sv.addEventListener('pointerdown', (e) => { dragging = true; sv.setPointerCapture(e.pointerId); setSvFromPointer(e); });
+    sv.addEventListener('pointermove', (e) => { if (dragging) setSvFromPointer(e); });
+    sv.addEventListener('pointerup', () => { dragging = false; });
+    sv.addEventListener('pointercancel', () => { dragging = false; });
+    hueInput.addEventListener('input', () => { plugColorPickerState.h = Number(hueInput.value || 0); syncUi(); });
+    submitButton.addEventListener('click', async () => {
+      if (!plugColorPickerState.categoryName) return;
+      const ok = await onUpdateCategoryColor?.(plugColorPickerState.categoryName, getPlugPickerHex());
+      if (ok) { closePlugColorPicker(); renderPlugCategoryEditor(); }
+    });
+    plugColorPickerEl = { root, syncUi };
+    return plugColorPickerEl;
+  }
+
+  function openPlugColorPicker(categoryName, currentColor, anchorEl) {
+    const picker = ensurePlugColorPicker();
+    if (!picker || !dom.plugCategoryPanel) return;
+    const hsv = plugHexToHsv(currentColor);
+    plugColorPickerState = { categoryName, h: hsv.h, s: hsv.s, v: hsv.v };
+    picker.root.style.display = 'grid';
+    picker.syncUi();
+    // Position relative to the panel
+    const panelRect = dom.plugCategoryPanel.getBoundingClientRect();
+    const anchorRect = anchorEl.getBoundingClientRect();
+    let left = (anchorRect.right - panelRect.left) + 10;
+    let top = anchorRect.top - panelRect.top - 4;
+    const pw = picker.root.offsetWidth || 148;
+    const ph = picker.root.offsetHeight || 180;
+    const panelW = dom.plugCategoryPanel.clientWidth;
+    const panelH = dom.plugCategoryPanel.clientHeight;
+    if (left + pw > panelW - 8) left = (anchorRect.left - panelRect.left) - pw - 10;
+    if (left < 8) left = 8;
+    if (top + ph > panelH - 8) top = panelH - ph - 8;
+    if (top < 8) top = 8;
+    picker.root.style.left = `${Math.round(left)}px`;
+    picker.root.style.top = `${Math.round(top)}px`;
+  }
+
+  function closePlugColorPicker() {
+    if (!plugColorPickerEl) return;
+    plugColorPickerEl.root.style.display = 'none';
+    plugColorPickerState.categoryName = null;
+  }
+
+  function wirePlugCategoryEvents() {
+    dom.plugCategoryDropdownToggle?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (dom.plugCategoryDropdown?.style.display === 'flex') {
+        closePlugCategoryDropdown();
+      } else {
+        openPlugCategoryDropdown();
+      }
+    });
+
+    dom.plugCategoryEditorToggle?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closePlugCategoryDropdown();
+      if (dom.plugCategoryPanel?.style.display === 'none' || dom.plugCategoryPanel?.style.display === '') {
+        openPlugCategoryPanel();
+        dom.plugCategoryInput?.focus();
+      } else {
+        closePlugCategoryPanel();
+      }
+    });
+
+    dom.plugCategoryDisplay?.addEventListener('click', (e) => {
+      if (e.target.closest('.post-form-category-inline-btn')) return;
+      if (dom.plugCategoryDropdown?.style.display === 'flex') {
+        closePlugCategoryDropdown();
+      } else {
+        closePlugCategoryPanel();
+        openPlugCategoryDropdown();
+      }
+    });
+
+    dom.plugCategoryDisplay?.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      if (dom.plugCategoryDropdown?.style.display === 'flex') {
+        closePlugCategoryDropdown();
+      } else {
+        closePlugCategoryPanel();
+        openPlugCategoryDropdown();
+      }
+    });
+
+    dom.plugCategoryCreateBtn?.addEventListener('click', async () => {
+      const name = String(dom.plugCategoryInput?.value || '').trim();
+      if (!name) return;
+      const ok = await onAddCategory?.(name);
+      if (ok) {
+        dom.plugCategoryInput.value = '';
+        setPlugCategory(name);
+        renderPlugCategoryEditor();
+        renderPlugCategoryDropdown();
+      }
+    });
+
+    dom.plugCategoryInput?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); dom.plugCategoryCreateBtn?.click(); }
+    });
+
+    dom.plugCategoryList?.addEventListener('click', async (e) => {
+      const btn = e.target.closest('[data-action]');
+      if (!btn) return;
+      const action = btn.dataset.action;
+      const name = decodeURIComponent(btn.dataset.categoryName || '');
+      if (action === 'recolor') {
+        const records = getCategoryRecords?.() || [];
+        const rec = records.find((r) => String(r?.name || '') === name) || null;
+        const color = getCategoryColor?.(rec) || '#888';
+        openPlugColorPicker(name, color, btn);
+        return;
+      }
+      if (action === 'delete') {
+        closePlugColorPicker();
+        await onDeleteCategory?.(name);
+        if (plugCategorySelected === name) setPlugCategory('');
+        renderPlugCategoryEditor();
+        renderPlugCategoryDropdown();
+      }
+    });
+
+    dom.plugCategoryList?.addEventListener('dblclick', (e) => {
+      const nameEl = e.target.closest('.post-form-category-name');
+      if (!nameEl) return;
+      const item = nameEl.closest('.post-form-category-item');
+      const name = decodeURIComponent(item?.dataset.categoryName || '');
+      if (!name) return;
+      const records = getCategoryRecords?.() || [];
+      const rec = records.find((r) => String(r?.name || '') === name) || null;
+      if (!(canEditCategory?.(rec) ?? false)) return;
+      plugCategoryEditingName = name;
+      closePlugColorPicker();
+      renderPlugCategoryEditor();
+    });
+
+    dom.plugCategoryList?.addEventListener('keydown', async (e) => {
+      const input = e.target.closest('.post-form-category-edit-input');
+      if (!input) return;
+      const oldName = decodeURIComponent(input.dataset.categoryEditInput || '');
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        await onRenameCategory?.(oldName, input.value || '');
+        plugCategoryEditingName = null;
+        renderPlugCategoryEditor();
+        renderPlugCategoryDropdown();
+        if (plugCategorySelected === oldName) setPlugCategory(input.value || '');
+      }
+      if (e.key === 'Escape') {
+        plugCategoryEditingName = null;
+        renderPlugCategoryEditor();
+      }
+    });
+
+    dom.plugCategoryPanel?.addEventListener('click', (e) => {
+      if (!plugColorPickerEl?.root || plugColorPickerEl.root.style.display === 'none') return;
+      if (!e.target.closest('.post-form-category-picker') && !e.target.closest('.post-form-category-color-swatch')) {
+        closePlugColorPicker();
+      }
+    });
+
+    document.addEventListener('click', (e) => {
+      if (!dom.plugCategoryDropdown) return;
+      if (!e.target.closest('#worldPlugCategoryCustom')) {
+        closePlugCategoryDropdown();
+      }
+    });
+  }
+  // ─── End Plug Category Widget ─────────────────────────────────────────────
+
+  function captureMakerState() {
+    return {
+      plugName: String(dom.plugName?.value || '').trim(),
+
+      plugVisibility: String(dom.plugVisibility?.value || ''),
+      plugEditing: String(dom.plugEditing?.value || ''),
+      plugViewPassword: String(dom.plugViewPassword?.value || ''),
+      plugEditPassword: String(dom.plugEditPassword?.value || ''),
+      plugCoverSelected: Boolean(dom.plugCover?.files?.length),
+      plugBackgroundSelected: Boolean(dom.plugBackground?.files?.length),
+      codeName: String(dom.codeName?.value || '').trim(),
+      codeDescription: String(dom.codeDescription?.value || '').trim(),
+      codeVisibility: String(dom.codeVisibility?.value || ''),
+      codeEditing: String(dom.codeEditing?.value || ''),
+      codeViewPassword: String(dom.codeViewPassword?.value || ''),
+      codeEditPassword: String(dom.codeEditPassword?.value || ''),
+      codeHtmlSelected: Boolean(dom.codeHtml?.files?.length),
+      codeCssSelected: Boolean(dom.codeCss?.files?.length)
+    };
+  }
+
+  function hasUnsavedMakerChanges() {
+    if (!isMakerOpen() || !makerBaselineState) return false;
+    const current = captureMakerState();
+    const keys = Object.keys(makerBaselineState);
+    return keys.some((key) => current[key] !== makerBaselineState[key]);
+  }
+
+  async function maybeCloseMaker(options = {}) {
+    if (!isMakerOpen()) return true;
+
+    const {
+      title: customTitle = '',
+      message: customMessage = ''
+    } = options;
+
+    if (hasUnsavedMakerChanges()) {
+      let shouldClose = false;
+      const title = customTitle || 'discard world maker changes?';
+      const message = customMessage || 'You have unsaved world maker changes. Closing now will lose them.';
+
+      if (typeof window.__prettyConfirm === 'function') {
+        shouldClose = await window.__prettyConfirm({
+          title,
+          message,
+          confirmLabel: 'discard',
+          cancelLabel: 'keep editing',
+          danger: true
+        });
+      } else {
+        shouldClose = window.confirm('Unsaved changes will be lost. Close anyway?');
+      }
+
+      if (!shouldClose) return false;
+    }
+
+    closeMaker();
+    return true;
+  }
+
+  function closeWorldDropdowns(exceptSelect = null) {
+    worldDropdownControllers.forEach((controller, selectEl) => {
+      if (exceptSelect && selectEl === exceptSelect) return;
+      controller.close();
+    });
+  }
+
+  function syncWorldDropdown(selectEl) {
+    worldDropdownControllers.get(selectEl)?.sync();
+  }
+
+  function renderWorldDropdown(selectEl) {
+    worldDropdownControllers.get(selectEl)?.render();
+  }
+
+  function syncWorldDropdowns() {
+    worldDropdownControllers.forEach((controller) => controller.sync());
+  }
+
+  function setupWorldDropdown(selectEl, options = {}) {
+    if (!selectEl) return null;
+    const wrapper = selectEl.closest('[data-world-dropdown]');
+    const display = wrapper?.querySelector('[data-world-dropdown-display]');
+    const text = wrapper?.querySelector('[data-world-dropdown-text]');
+    const list = wrapper?.querySelector('[data-world-dropdown-list]');
+    if (!wrapper || !display || !text || !list) return null;
+
+    const placeholder = options.placeholder || '';
+    const useOptionFontFamily = Boolean(options.useOptionFontFamily);
+
+    const sync = () => {
+      const optionEls = Array.from(selectEl.options || []);
+      const selected = optionEls.find((option) => option.value === selectEl.value) || optionEls[0] || null;
+      text.textContent = selected?.textContent || placeholder;
+      text.classList.toggle('is-placeholder', !(selected?.value ?? '').trim() && Boolean(placeholder));
+
+      Array.from(list.children).forEach((item) => {
+        item.classList.toggle('is-selected', item.dataset.value === selectEl.value);
+        item.setAttribute('aria-selected', item.dataset.value === selectEl.value ? 'true' : 'false');
+      });
+    };
+
+    const close = () => {
+      list.style.display = 'none';
+      display.classList.remove('is-open');
+      display.setAttribute('aria-expanded', 'false');
+    };
+
+    const open = () => {
+      closeWorldDropdowns(selectEl);
+      list.style.display = 'flex';
+      display.classList.add('is-open');
+      display.setAttribute('aria-expanded', 'true');
+    };
+
+    const render = () => {
+      list.innerHTML = '';
+      Array.from(selectEl.options || []).forEach((option) => {
+        const item = document.createElement('div');
+        item.className = 'world-maker-dropdown-option ui-dropdown-option';
+        item.dataset.value = option.value;
+        item.setAttribute('role', 'option');
+        item.textContent = option.textContent || option.value;
+        if (useOptionFontFamily) item.style.fontFamily = option.value || 'inherit';
+        item.addEventListener('click', (event) => {
+          event.stopPropagation();
+          if (selectEl.value !== option.value) {
+            selectEl.value = option.value;
+            selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+          } else {
+            sync();
+          }
+          close();
+        });
+        list.appendChild(item);
+      });
+      sync();
+    };
+
+    display.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (list.style.display === 'flex') {
+        close();
+      } else {
+        open();
+      }
+    });
+
+    display.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        if (list.style.display === 'flex') close();
+        else open();
+        return;
+      }
+
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        close();
+      }
+    });
+
+    selectEl.addEventListener('change', sync);
+
+    const controller = { sync, close, open, render };
+    worldDropdownControllers.set(selectEl, controller);
+    render();
+    return controller;
+  }
 
   function getMyWorldStorageKey(userId) {
     return `${MY_WORLDS_STORAGE_PREFIX}:${String(userId || 'guest')}`;
@@ -999,6 +1545,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         title: 'nested worlds detected',
         message,
         cancelLabel: 'cancel',
+        theme: 'post-delete',
         choices: [
           { value: 'delete-children', label: 'delete contained worlds', danger: true },
           { value: 'transfer-children', label: 'move child worlds to main' }
@@ -1132,6 +1679,38 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     worldNavStack = [...worldNavStack, world];
   }
 
+  async function ensureEditorModeClosed() {
+    if (!getIsEditMode?.()) return true;
+
+    if (typeof onRequestCloseEditorMode === 'function') {
+      try {
+        const closedViaCallback = await onRequestCloseEditorMode();
+        if (!getIsEditMode?.()) return true;
+        if (closedViaCallback === false) return false;
+      } catch {
+        // Fall back to legacy button click behavior.
+      }
+    }
+
+    const editModeBtn = document.getElementById('editModeBtn');
+    if (!editModeBtn) return false;
+
+    const waitForEditorClose = async (maxFrames = 40) => {
+      for (let i = 0; i < maxFrames; i += 1) {
+        if (!getIsEditMode?.()) return true;
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+      return !getIsEditMode?.();
+    };
+
+    editModeBtn.click();
+    if (await waitForEditorClose()) return true;
+
+    // Retry once in case another handler reopened edit mode in the same tick.
+    editModeBtn.click();
+    return waitForEditorClose(20);
+  }
+
   function renderBreadcrumbBar(entries = []) {
     if (!dom.modeTabs) return;
 
@@ -1151,6 +1730,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       const navTarget = String(entry?.navTarget || 'root');
       const isStatic = navTarget === 'static';
       const isMakerHome = navTarget === 'maker-home';
+      const fontFamily = String(entry?.fontFamily || '').trim();
 
       if (isCurrent || (isStatic && !isMakerHome)) {
         const current = document.createElement('span');
@@ -1160,6 +1740,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         if (isCurrent) {
           current.setAttribute('aria-current', 'page');
         }
+        if (fontFamily) current.style.fontFamily = fontFamily;
         current.textContent = label;
         dom.modeTabs.appendChild(current);
         return;
@@ -1171,12 +1752,29 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       button.className = 'world-mode-breadcrumb';
       button.dataset.worldNav = navTarget;
       button.dataset.worldId = worldId;
+      if (fontFamily) button.style.fontFamily = fontFamily;
       button.textContent = label;
       button.addEventListener('click', async (event) => {
         event.preventDefault();
         event.stopPropagation();
 
+        const inEditMode = Boolean(getIsEditMode?.());
+
         if (navTarget === 'root') {
+          const currentWorldId = String(activeWorld?.id || '').trim();
+          if (isMusicPanelOpen?.()) {
+            onCloseMusicPanel?.();
+          }
+          if (inEditMode) {
+            const editorClosed = await ensureEditorModeClosed();
+            if (!editorClosed && getIsEditMode?.()) {
+              return;
+            }
+          }
+          if (!currentWorldId) {
+            await renderMainNavigationChrome();
+            return;
+          }
           if (isMakerOpen()) {
             closeMaker();
             return;
@@ -1208,6 +1806,24 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         }
 
         if (navTarget === 'crumb' && worldId) {
+          const currentWorldId = String(activeWorld?.id || '').trim();
+          if (isMusicPanelOpen?.()) {
+            onCloseMusicPanel?.();
+            if (currentWorldId && currentWorldId === worldId) {
+              return;
+            }
+          }
+          if (inEditMode) {
+            const editorClosed = await ensureEditorModeClosed();
+            if (!editorClosed) {
+              return;
+            }
+            if (currentWorldId && currentWorldId === worldId) {
+              return;
+            }
+            await openWorldById(worldId);
+            return;
+          }
           if (isMakerOpen()) {
             const sourceWorldId = String(makerSourceWorldId || '').trim();
             const currentWorldId = String(activeWorld?.id || '').trim();
@@ -1264,6 +1880,8 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
 
     if (!world || !dom.modeTabs) return;
 
+    const inEditMode = Boolean(getIsEditMode?.());
+
     parentTabAction = async () => {
       await exitWorldMode();
     };
@@ -1279,19 +1897,29 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         label: stackWorld?.name || DEFAULT_WORLD_TITLE,
         navTarget: 'crumb',
         worldId: String(stackWorld?.id || ''),
+        fontFamily: String(stackWorld?.font_family || '').trim(),
         current: index === worldNavStack.length - 1
       }))
     ];
 
     const makerEntries = getMakerBreadcrumbEntries();
     if (breadcrumbEntries.length > 0) {
-      breadcrumbEntries[breadcrumbEntries.length - 1].current = makerEntries.length === 0;
+      breadcrumbEntries[breadcrumbEntries.length - 1].current = makerEntries.length === 0 && !inEditMode;
       if (makerEntries.length > 0 && breadcrumbEntries.length > 1) {
         const lastWorldCrumb = breadcrumbEntries[breadcrumbEntries.length - 1];
         if (String(lastWorldCrumb?.worldId || '').trim()) {
           lastWorldCrumb.navTarget = 'maker-return';
         }
       }
+    }
+
+    if (inEditMode) {
+      breadcrumbEntries.push({
+        label: 'editor',
+        navTarget: 'static',
+        worldId: '',
+        current: true
+      });
     }
 
     renderBreadcrumbBar([...breadcrumbEntries, ...makerEntries]);
@@ -1311,14 +1939,9 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       : '<option value="">no categories</option>';
   }
 
-  function fillFontSelect() {
-    dom.plugFont.innerHTML = WORLD_FONTS
-      .map((font) => `<option value="${escapeHtml(font.value)}">${escapeHtml(font.label)}</option>`)
-      .join('');
-  }
-
   function syncCategories() {
-    fillCategorySelect(dom.plugCategory);
+    renderPlugCategoryDropdown();
+    renderPlugCategoryEditor();
   }
 
   function syncPlugAccessPasswordVisibility() {
@@ -1428,10 +2051,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     makerEditingWorld = null;
     makerEditingType = 'plug';
     dom.plugName.value = '';
-    dom.plugDescription.value = '';
-    dom.plugFont.value = '';
-    dom.plugFontColor.value = '#f5f5f5';
-    dom.plugBgColor.value = DEFAULT_UI_COLOR;
+
     dom.plugCover.value = '';
     dom.plugCoverLabel.textContent = 'use world background as cover';
     dom.plugBackground.value = '';
@@ -1450,16 +2070,26 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     dom.codeEditing.value = 'true';
     if (dom.codeViewPassword) dom.codeViewPassword.value = '';
     if (dom.codeEditPassword) dom.codeEditPassword.value = '';
-    dom.plugPublish.textContent = '✓';
-    dom.codePublish.textContent = '✓';
-    dom.makerDelete.style.display = 'none';
+    dom.plugPublish.textContent = 'submit';
+    dom.codePublish.textContent = 'submit';
+    dom.makerDeleteButtons.forEach((button) => { button.style.display = 'none'; });
+    setPlugCategory('');
+    closePlugCategoryDropdown();
+    closePlugCategoryPanel();
     syncCategories();
+    syncWorldDropdowns();
     syncPlugAccessPasswordVisibility();
     syncCodeAccessPasswordVisibility();
+    makerBaselineState = captureMakerState();
     showStep('mode');
   }
 
-  function openMaker() {
+  async function openMaker() {
+    if (typeof onBeforeOpenMaker === 'function') {
+      const canOpen = await onBeforeOpenMaker({ source: 'world-maker-open' });
+      if (!canOpen) return false;
+    }
+
     makerMode = 'create';
     makerEditingWorld = null;
     makerEditingType = 'plug';
@@ -1467,26 +2097,31 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     fillFontSelect();
     makerSourceWorldId = String(activeWorld?.id || '').trim();
     dom.makerOverlay.style.display = 'flex';
-    dom.plugPublish.textContent = '✓';
-    dom.codePublish.textContent = '✓';
+    dom.plugPublish.textContent = 'submit';
+    dom.codePublish.textContent = 'submit';
+    syncWorldDropdowns();
     showStep('mode');
+    makerBaselineState = captureMakerState();
+    return true;
   }
 
-  function openMakerForEdit(world) {
-    if (!world?.id) return;
+  async function openMakerForEdit(world) {
+    if (!world?.id) return false;
+
+    if (typeof onBeforeOpenMaker === 'function') {
+      const canOpen = await onBeforeOpenMaker({ source: 'world-maker-edit' });
+      if (!canOpen) return false;
+    }
 
     makerMode = 'edit';
     makerEditingWorld = world;
     makerEditingType = canUseCustomWorldFrame(world) ? 'code' : 'plug';
 
     syncCategories();
-    fillFontSelect();
 
     dom.plugName.value = world.name || '';
-    dom.plugDescription.value = world.description || '';
-    dom.plugFont.value = world.font_family || '';
-    dom.plugFontColor.value = world.font_color || '#f5f5f5';
-    dom.plugBgColor.value = world.ui_color || world.font_color || DEFAULT_UI_COLOR;
+    setPlugCategory(world.category || '');
+
     dom.plugCover.value = '';
     dom.plugCoverLabel.textContent = world.cover_url
       ? 'keep current world cover (choose file to replace)'
@@ -1509,21 +2144,25 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     dom.codeHtmlLabel.textContent = 'keep current html (choose file to replace)';
     dom.codeCssLabel.textContent = 'keep current css (choose file to replace)';
 
-    dom.plugPublish.textContent = '✓';
-    dom.codePublish.textContent = '✓';
-    dom.makerDelete.style.display = 'inline-flex';
+    dom.plugPublish.textContent = 'submit';
+    dom.codePublish.textContent = 'submit';
+    dom.makerDeleteButtons.forEach((button) => { button.style.display = 'inline-flex'; });
+    syncWorldDropdowns();
     syncPlugAccessPasswordVisibility();
     syncCodeAccessPasswordVisibility();
 
     makerSourceWorldId = String(activeWorld?.id || '').trim();
     dom.makerOverlay.style.display = 'flex';
     showStep(makerEditingType);
+    makerBaselineState = captureMakerState();
+    return true;
   }
 
   function closeMaker() {
     const wasOpen = isMakerOpen();
     dom.makerOverlay.style.display = 'none';
     makerSourceWorldId = '';
+    makerBaselineState = null;
     resetMaker();
     if (wasOpen) {
       void syncNavigationChrome();
@@ -1540,70 +2179,79 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
 
   function renderWorldModeChrome(world, creator) {
     const creatorPfp = getPfpSrc(creator, baseUrl);
-    const currentUserId = getCurrentUser?.()?.id || null;
     const inEditMode = Boolean(getIsEditMode?.());
-    const canEditWorld = Boolean(currentUserId) && String(currentUserId) === String(world?.user_id || '');
-    const canUseRecompress = Boolean(currentUserId);
-    const worldFont = world.font_family || 'inherit';
-    const worldColor = world.font_color || 'inherit';
+    const currentUserId = String(getCurrentUser?.()?.id || '').trim();
+    const canEditWorld = Boolean(currentUserId) && currentUserId === String(world?.user_id || '').trim();
     const useCustomFrame = canUseCustomWorldFrame(world);
 
-    dom.modeName.textContent = world.name || DEFAULT_WORLD_TITLE;
-    dom.modeDescription.textContent = world.description || DEFAULT_WORLD_DESCRIPTION;
-    dom.modeChrome.style.setProperty('--world-mode-font-family', worldFont);
-    dom.modeChrome.style.setProperty('--world-mode-font-color', worldColor);
+    if (dom.titleCard) {
+      dom.titleCard.textContent = world.name || DEFAULT_WORLD_TITLE;
+      dom.titleCard.style.display = '';
+    }
     dom.modePfp.src = creatorPfp;
     dom.modePfp.onclick = creator?.id ? () => onOpenProfile?.(creator.id) : null;
     dom.modePfp.style.cursor = creator?.id ? 'pointer' : '';
     if (dom.modePfpWrap) dom.modePfpWrap.style.display = '';
-    if (dom.modeIdentityPanel) dom.modeIdentityPanel.style.display = '';
-    if (dom.modeNavBar) dom.modeNavBar.style.display = inEditMode ? 'none' : 'flex';
-    dom.modeTabs.style.display = inEditMode ? 'none' : 'inline-flex';
-    dom.modeRecompress.style.display = canUseRecompress && inEditMode ? 'inline-flex' : 'none';
-    dom.modeEdit.style.display = canEditWorld && inEditMode ? 'inline-flex' : 'none';
+    if (dom.modeNavBar) dom.modeNavBar.style.display = 'flex';
+    const showLogout = inEditMode;
+    const showEditWorld = inEditMode && canEditWorld;
+    if (dom.modeNavActions) dom.modeNavActions.style.display = (showLogout || showEditWorld) ? 'inline-flex' : 'none';
+    dom.modeTabs.style.display = 'inline-flex';
+    if (dom.logoutBtn) dom.logoutBtn.style.display = showLogout ? 'inline-flex' : 'none';
+    if (dom.modeEditBtn) dom.modeEditBtn.style.display = showEditWorld ? 'inline-flex' : 'none';
     dom.modeDelete.style.display = 'none';
     dom.modeFrame.style.display = useCustomFrame ? 'block' : 'none';
     dom.modeFrame.src = useCustomFrame ? world.custom_code_url : 'about:blank';
   }
 
   async function renderMainNavigationChrome() {
-    if (getIsEditMode?.()) {
-      clearWorldModeChrome();
-      return;
-    }
-
+    const inEditMode = Boolean(getIsEditMode?.());
     clearWorldTabs();
+
     dom.modeChrome.style.display = 'block';
     dom.modeChrome.style.removeProperty('--world-mode-font-family');
     dom.modeChrome.style.removeProperty('--world-mode-font-color');
     if (dom.modeNavBar) dom.modeNavBar.style.display = 'flex';
+    if (dom.modeNavActions) dom.modeNavActions.style.display = inEditMode ? 'inline-flex' : 'none';
+    if (dom.logoutBtn) dom.logoutBtn.style.display = inEditMode ? 'inline-flex' : 'none';
+    if (dom.modeEditBtn) dom.modeEditBtn.style.display = 'none';
     dom.modeTabs.style.display = 'inline-flex';
-    dom.modeRecompress.style.display = 'none';
-    dom.modeEdit.style.display = 'none';
     dom.modeDelete.style.display = 'none';
     dom.modeFrame.style.display = 'none';
     dom.modeFrame.src = 'about:blank';
     if (dom.modeMyWorldsMenu) dom.modeMyWorldsMenu.style.display = 'none';
 
+    if (dom.titleCard) dom.titleCard.style.display = 'none';
     if (dom.modePfpWrap) dom.modePfpWrap.style.display = 'none';
-    if (dom.modeIdentityPanel) dom.modeIdentityPanel.style.display = 'none';
 
-    const makerEntries = getMakerBreadcrumbEntries();
-    renderBreadcrumbBar([
+    const makerEntries = [
       {
         label: MAIN_WORLD_LABEL,
         navTarget: 'root',
         worldId: '',
-        current: makerEntries.length === 0
+        current: false
       },
-      ...makerEntries
-    ]);
+    ];
+
+    if (inEditMode) {
+      makerEntries.push({
+        label: 'editor',
+        navTarget: 'static',
+        worldId: '',
+        current: true
+      });
+    }
+
+    renderBreadcrumbBar(makerEntries);
     parentTabAction = async () => {};
   }
 
   async function syncNavigationChrome() {
     if (activeWorld?.id) {
       await renderWorldNavigation(activeWorld);
+      if (isInWorldMode()) {
+        renderWorldModeChrome(activeWorld, activeWorldCreator);
+      }
       return;
     }
     await renderMainNavigationChrome();
@@ -1634,7 +2282,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     dom.loaderOverlay.style.setProperty('--world-loader-progress', `${normalized}%`);
   }
 
-  function populateWorldLoader(world, creator = null, options = {}) {
+  function populateWorldLoader(world, _creator = null, options = {}) {
     const {
       mode = 'loading',
       kicker = 'world',
@@ -1642,30 +2290,44 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       progress = 0,
       title,
       meta,
-      description,
-      backgroundUrl: explicitBackgroundUrl,
-      coverUrl: explicitCoverUrl,
-      showCover = true
+      description
     } = options;
 
-    const backgroundUrl = explicitBackgroundUrl || world?.background_url || getDefaultBackgroundUrl(baseUrl);
-    const coverUrl = explicitCoverUrl || getWorldCardCoverUrl(world, baseUrl);
-    const creatorName = String(creator?.username || 'unknown').trim() || 'unknown';
+    const nextTitle = title ?? world?.name ?? DEFAULT_WORLD_TITLE;
+    const nextMeta = meta ?? '';
+    const nextDescription = description ?? '';
     if (dom.loaderOverlay) dom.loaderOverlay.dataset.mode = mode;
+    if (dom.loaderOverlay) {
+      dom.loaderOverlay.style.removeProperty('--world-loader-font-family');
+      dom.loaderOverlay.style.removeProperty('--world-loader-font-color');
+      dom.loaderOverlay.style.removeProperty('--world-loader-ui-color');
+      delete dom.loaderOverlay.dataset.loaderTintKey;
+    }
     if (dom.loaderKicker) dom.loaderKicker.textContent = kicker;
-    if (dom.loaderTitle) dom.loaderTitle.textContent = title || world?.name || DEFAULT_WORLD_TITLE;
-    if (dom.loaderMeta) dom.loaderMeta.textContent = meta || `by ${creatorName}`;
-    if (dom.loaderDescription) dom.loaderDescription.textContent = description || world?.description || DEFAULT_WORLD_DESCRIPTION;
+    const pfpSrc = getPfpSrc(_creator, baseUrl);
+    if (dom.loaderPfp) {
+      dom.loaderPfp.src = pfpSrc;
+      dom.loaderPfp.style.display = pfpSrc ? '' : 'none';
+    }
+    if (dom.loaderTitle) dom.loaderTitle.textContent = nextTitle;
+    if (dom.loaderMeta) {
+      dom.loaderMeta.textContent = nextMeta;
+      dom.loaderMeta.style.display = nextMeta ? '' : 'none';
+    }
+    if (dom.loaderDescription) {
+      dom.loaderDescription.textContent = nextDescription;
+      dom.loaderDescription.style.display = 'none';
+    }
     if (dom.loaderStatus) dom.loaderStatus.textContent = status;
     setWorldLoaderProgress(progress);
     if (dom.loaderCoverShell) {
-      dom.loaderCoverShell.style.display = showCover ? '' : 'none';
+      dom.loaderCoverShell.style.display = 'none';
     }
     if (dom.loaderBackdrop) {
-      dom.loaderBackdrop.style.backgroundImage = `url("${getOptimizedWorldLoaderBackdropUrl(backgroundUrl)}")`;
+      dom.loaderBackdrop.style.backgroundImage = 'none';
     }
     if (dom.loaderCover) {
-      dom.loaderCover.src = getOptimizedWorldLoaderCoverUrl(coverUrl) || coverUrl;
+      dom.loaderCover.removeAttribute('src');
       dom.loaderCover.alt = world?.name ? `${world.name} cover` : 'World cover';
     }
   }
@@ -1692,9 +2354,24 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     setWorldLoaderVisible(false);
   }
 
-  function showPasswordPrompt(world, creator = null, message = '') {
+  function showPasswordPrompt(world, creator = null, options = {}) {
+    const {
+      message = '',
+      title = `unlock ${world?.name || DEFAULT_WORLD_TITLE}`,
+      copy = 'Enter the viewing password for this world.',
+      submitLabel = 'unlock',
+      cancelLabel = 'cancel',
+      allowEmpty = false,
+      emptyError = 'Enter a password.'
+    } = options;
+
     return new Promise((resolve) => {
-      passwordPromptState = { resolve, worldId: world?.id || null };
+      passwordPromptState = {
+        resolve,
+        worldId: world?.id || null,
+        allowEmpty: Boolean(allowEmpty),
+        emptyError: String(emptyError || 'Enter a password.')
+      };
       populateWorldLoader(world, creator, {
         mode: 'password',
         kicker: 'world access',
@@ -1702,11 +2379,13 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         progress: 0
       });
       if (dom.passwordTitle) {
-        dom.passwordTitle.textContent = `unlock ${world?.name || DEFAULT_WORLD_TITLE}`;
+        dom.passwordTitle.textContent = title;
       }
       if (dom.passwordCopy) {
-        dom.passwordCopy.textContent = 'Enter the password for this world.';
+        dom.passwordCopy.textContent = copy;
       }
+      if (dom.passwordSubmit) dom.passwordSubmit.textContent = submitLabel;
+      if (dom.passwordCancel) dom.passwordCancel.textContent = cancelLabel;
       if (dom.passwordError) dom.passwordError.textContent = message || '';
       setPasswordPromptVisible(true);
       dom.passwordInput?.focus();
@@ -1787,13 +2466,23 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
   }
 
   async function openWorldById(worldId, options = {}) {
-    const loaderWorld = options?.world || getKnownWorldById(worldId);
+    const targetWorldId = String(worldId || '').trim();
+    if (!targetWorldId) return;
+
+    const editorClosed = await ensureEditorModeClosed();
+    if (!editorClosed && getIsEditMode?.()) return;
+
+    const activeWorldId = String(activeWorld?.id || '').trim();
+    if (activeWorldId && activeWorldId === targetWorldId) {
+      return;
+    }
+
+    const loaderWorld = options?.world || getKnownWorldById(targetWorldId);
     if (loaderWorld) {
       showTransitionLoader({
         mode: 'loading',
         kicker: 'world',
         title: loaderWorld.name || DEFAULT_WORLD_TITLE,
-        meta: 'opening world',
         description: loaderWorld.description || DEFAULT_WORLD_DESCRIPTION,
         backgroundUrl: loaderWorld.background_url || getDefaultBackgroundUrl(baseUrl),
         coverUrl: getWorldCardCoverUrl(loaderWorld, baseUrl),
@@ -1803,10 +2492,10 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       });
     }
 
-    const nextWorld = await loadWorldById(worldId);
+    const nextWorld = await loadWorldById(targetWorldId);
     if (!nextWorld) {
       setWorldLoaderVisible(false);
-      pruneRememberedWorld(worldId);
+      pruneRememberedWorld(targetWorldId);
       alert('Could not load that world.');
       return;
     }
@@ -1822,14 +2511,14 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     dom.modeChrome.style.removeProperty('--world-mode-font-color');
     clearWorldTabs();
     if (dom.modeNavBar) dom.modeNavBar.style.display = '';
+    if (dom.modeNavActions) dom.modeNavActions.style.display = '';
+    if (dom.logoutBtn) dom.logoutBtn.style.display = '';
     dom.modeTabs.style.display = '';
-    dom.modeRecompress.style.display = 'none';
-    dom.modeEdit.style.display = 'none';
     dom.modeDelete.style.display = 'none';
     dom.modeFrame.style.display = 'none';
     dom.modeFrame.src = 'about:blank';
+    if (dom.titleCard) dom.titleCard.style.display = 'none';
     if (dom.modePfpWrap) dom.modePfpWrap.style.display = '';
-    if (dom.modeIdentityPanel) dom.modeIdentityPanel.style.display = '';
     if (dom.modeMyWorldsMenu) dom.modeMyWorldsMenu.style.display = 'none';
   }
 
@@ -1975,7 +2664,14 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
   }
 
   async function openWorldMode(world, creator = null) {
-    if (getIsEditMode?.()) return;
+    const targetWorldId = String(world?.id || '').trim();
+    const activeWorldId = String(activeWorld?.id || '').trim();
+    const editorClosed = await ensureEditorModeClosed();
+    if (!editorClosed && getIsEditMode?.()) return;
+
+    if (targetWorldId && activeWorldId && targetWorldId === activeWorldId && isInWorldMode()) {
+      return;
+    }
 
     populateWorldLoader(world, creator, {
       mode: 'loading',
@@ -2006,7 +2702,13 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
           let nextMessage = '';
 
           while (true) {
-            const password = await showPasswordPrompt(world, resolvedCreator, nextMessage);
+            const password = await showPasswordPrompt(world, resolvedCreator, {
+              message: nextMessage,
+              title: `view ${world?.name || DEFAULT_WORLD_TITLE}`,
+              copy: 'Enter the viewing password for this world.',
+              submitLabel: 'unlock',
+              cancelLabel: 'cancel'
+            });
             if (!password) return;
 
             try {
@@ -2027,7 +2729,13 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
           let nextMessage = '';
 
           while (true) {
-            const password = await showPasswordPrompt(world, resolvedCreator, nextMessage);
+            const password = await showPasswordPrompt(world, resolvedCreator, {
+              message: nextMessage,
+              title: `view ${world?.name || DEFAULT_WORLD_TITLE}`,
+              copy: 'Enter the viewing password for this world.',
+              submitLabel: 'unlock',
+              cancelLabel: 'cancel'
+            });
             if (!password) return;
 
             try {
@@ -2045,9 +2753,49 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         }
       }
 
+      if (world.password_hash && world.is_public_edit === false && currentUserId !== world.user_id) {
+        let editMessage = '';
+        while (true) {
+          const editPassword = await showPasswordPrompt(world, resolvedCreator, {
+            message: editMessage,
+            title: 'editor password (optional)',
+            copy: 'Enter the editor password to unlock edit access, or skip to continue viewing.',
+            submitLabel: 'unlock edit',
+            cancelLabel: 'skip',
+            allowEmpty: true
+          });
+
+          if (editPassword === null || editPassword === '') {
+            break;
+          }
+
+          try {
+            const unlocked = currentUserId
+              ? await unlockWorldAccess(world.id, editPassword)
+              : await verifyWorldPassword(world.id, editPassword);
+
+            if (unlocked) {
+              if (!currentUserId) {
+                rememberGuestWorldAccess(world.id, true);
+              }
+              break;
+            }
+
+            editMessage = 'Incorrect editor password. You can try again or skip.';
+          } catch (error) {
+            console.error('Failed to verify editor password:', error);
+            editMessage = (error?.message || 'Could not verify editor password.') + ' You can try again or skip.';
+          }
+        }
+      }
+
       activeWorld = world;
       activeWorldCreator = resolvedCreator;
       updateWorldNavStack(world);
+      renderWorldModeChrome(world, activeWorldCreator);
+      dom.modeChrome.style.display = 'block';
+      await renderWorldNavigation(world);
+
       await hydrateMyWorlds();
       await rememberWorld(world);
       setWorldUrl(world.id);
@@ -2059,15 +2807,10 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         progress: 32
       });
 
-      renderWorldModeChrome(world, activeWorldCreator);
-      dom.modeChrome.style.display = 'block';
-      await renderWorldNavigation(world);
-
       await onEnterWorld?.({
         world,
         creator: activeWorldCreator,
         backgroundUrl: world.background_url || getDefaultBackgroundUrl(baseUrl),
-        fontFamily: world.font_family || '',
         fontColor: world.font_color || '',
         uiColor: getWorldAccent(world)
       });
@@ -2077,18 +2820,6 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
   }
 
   async function exitWorldMode() {
-    showTransitionLoader({
-      mode: 'loading',
-      kicker: 'main',
-      title: 'main page',
-      meta: 'monkey space',
-      description: 'Loading the main canvas and bringing everything back into view.',
-      status: 'loading main...',
-      backgroundUrl: getDefaultBackgroundUrl(baseUrl),
-      coverUrl: getDefaultBackgroundUrl(baseUrl),
-      showCover: false,
-      progress: 0
-    });
     activeWorld = null;
     activeWorldCreator = null;
     worldNavStack = [];
@@ -2096,8 +2827,19 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     parentTabAction = async () => {
       await exitWorldMode();
     };
-    clearWorldTabs();
-    clearWorldModeChrome();
+    await renderMainNavigationChrome();
+    showTransitionLoader({
+      mode: 'loading',
+      kicker: 'main',
+      title: '4thworld',
+      meta: '',
+      description: '',
+      status: 'loading main...',
+      backgroundUrl: getDefaultBackgroundUrl(baseUrl),
+      coverUrl: getDefaultBackgroundUrl(baseUrl),
+      showCover: false,
+      progress: 0
+    });
     await onExitWorld?.();
     await renderMainNavigationChrome();
   }
@@ -2154,16 +2896,21 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
               : (descendantWorlds.length > 0 ? 'Contained worlds will also be deleted.' : '');
 
             return includePosts
-              ? `This deletes the world and all the posts inside it. ${nestedMessage} Existing uploaded assets may remain in storage if bucket policies block cleanup.`.trim()
+              ? `This deletes the world and all the posts inside it.  ${nestedMessage ? `${nestedMessage} ` : ''}Existing uploaded assets may remain in storage if bucket policies block cleanup.`.trim()
               : `This removes the world from the feed. ${nestedMessage} Existing uploaded assets may remain in storage if bucket policies block cleanup.`.trim();
           })(),
           confirmLabel: 'delete',
           cancelLabel: 'cancel',
+          theme: 'delete',
           danger: true
         })
       : window.confirm('Delete this world?');
 
     if (!confirmed) return;
+
+    if (fromForm && isMakerOpen()) {
+      closeMaker();
+    }
 
     const isActive = activeWorld?.id === world.id;
     if (isActive) {
@@ -2214,10 +2961,6 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     }
 
     pruneRememberedWorld(world.id);
-
-    if (fromForm && isMakerOpen()) {
-      closeMaker();
-    }
 
     if (!isActive) {
       if (activeWorld?.id) {
@@ -2338,9 +3081,8 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     if (publishInFlight) return;
 
     const name = dom.plugName.value.trim();
-    const description = dom.plugDescription.value.trim();
-    if (!name || !description) {
-      alert('World name and description are required.');
+    if (!name) {
+      alert('World name is required.');
       return;
     }
 
@@ -2358,14 +3100,12 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     dom.plugPublish.textContent = isEdit ? 'updating...' : 'publishing...';
 
     try {
-      const uiColor = dom.plugBgColor.value || DEFAULT_UI_COLOR;
       const draft = {
         name,
-        description,
-        category: null,
-        font_family: dom.plugFont.value || null,
-        font_color: dom.plugFontColor.value || null,
-        ui_color: uiColor,
+        category: String(dom.plugCategoryHidden?.value || '').trim() || null,
+        font_family: null,
+        font_color: null,
+        ui_color: null,
         is_public_view: dom.plugVisibility.value !== 'false',
         is_public_edit: dom.plugEditing.value !== 'false',
         update_mode: 'auto'
@@ -2449,7 +3189,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     } finally {
       publishInFlight = false;
       dom.plugPublish.disabled = false;
-      dom.plugPublish.textContent = '✓';
+      dom.plugPublish.textContent = 'submit';
     }
   }
 
@@ -2561,7 +3301,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     } finally {
       publishInFlight = false;
       dom.codePublish.disabled = false;
-      dom.codePublish.textContent = '✓';
+      dom.codePublish.textContent = 'submit';
     }
   }
 
@@ -2688,183 +3428,6 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     return report;
   }
 
-  async function optimizeExistingWorldCovers(options = {}) {
-    const {
-      dryRun = false,
-      onlyWorldId = null
-    } = options;
-
-    const currentUser = getCurrentUser?.();
-    if (!currentUser?.id) {
-      throw new Error('You must be signed in to recompress world covers.');
-    }
-
-    let query = supabase
-      .from('worlds')
-      .select('id, user_id, name, cover_url, background_url')
-      .eq('user_id', currentUser.id)
-      .order('created_at', { ascending: false });
-
-    if (onlyWorldId) {
-      query = query.eq('id', onlyWorldId);
-    }
-
-    const { data: worlds, error } = await query;
-    if (error) throw error;
-
-    const candidates = (worlds || []).filter((world) => {
-      const sourceUrl = String(world?.cover_url || world?.background_url || '').trim();
-      return Boolean(sourceUrl);
-    });
-
-    const report = {
-      totalWorlds: candidates.length,
-      optimized: 0,
-      skipped: 0,
-      failed: 0,
-      bytesBefore: 0,
-      bytesAfter: 0,
-      details: []
-    };
-
-    const initialRetryProfile = {
-      retries: 5,
-      baseDelayMs: 700,
-      maxDelayMs: 9000
-    };
-
-    const cooldownRetryProfile = {
-      retries: 7,
-      baseDelayMs: 1400,
-      maxDelayMs: 14000
-    };
-
-    async function recompressOneCover(world, retryProfile) {
-      const worldId = String(world.id || '').trim();
-      const sourceUrl = String(world.cover_url || world.background_url || '').trim();
-      if (!worldId || !sourceUrl) {
-        return { skipped: true };
-      }
-
-      const response = await withRateLimitRetry(async () => {
-        const nextResponse = await fetch(sourceUrl, { cache: 'no-store' });
-        if (nextResponse.status === 429) {
-          const rateErr = new Error('Too many requests, please try again later.');
-          rateErr.status = 429;
-          throw rateErr;
-        }
-        if (!nextResponse.ok) {
-          throw new Error(`download failed (${nextResponse.status})`);
-        }
-        return nextResponse;
-      }, retryProfile);
-
-      const originalBlob = await response.blob();
-      const inputFileName = getFileNameFromUrl(sourceUrl, `cover-${worldId}`);
-      const blobMime = String(originalBlob.type || '').toLowerCase();
-      const fallbackMime = guessMimeFromFileName(inputFileName);
-      const inputType = blobMime.startsWith('image/')
-        ? blobMime
-        : (fallbackMime || 'image/jpeg');
-      const inputFile = new File([originalBlob], inputFileName, { type: inputType });
-
-      const optimizedFile = await optimizeWorldCoverImage(inputFile);
-      if (!optimizedFile) {
-        return {
-          skipped: true,
-          detail: { worldId, name: world.name || DEFAULT_WORLD_TITLE, reason: 'optimizer returned no file' }
-        };
-      }
-
-      if (!dryRun) {
-        const optimizedName = `cover-${Date.now()}-${normalizeStorageName(optimizedFile.name || inputFile.name)}`;
-        const nextCoverUrl = await uploadWorldFile(worldId, optimizedName, optimizedFile);
-        const updated = await updateWorldCoverAsset(worldId, currentUser.id, nextCoverUrl);
-
-        if (activeWorld?.id === worldId) {
-          activeWorld = updated;
-        }
-      }
-
-      return {
-        skipped: false,
-        bytesBefore: originalBlob.size || 0,
-        bytesAfter: optimizedFile.size || 0
-      };
-    }
-
-    const deferredRateLimited = [];
-
-    for (const world of candidates) {
-      const worldId = String(world.id || '').trim();
-      const sourceUrl = String(world.cover_url || world.background_url || '').trim();
-      if (!worldId || !sourceUrl) {
-        report.skipped += 1;
-        continue;
-      }
-
-      try {
-        const result = await recompressOneCover(world, initialRetryProfile);
-        if (result?.skipped) {
-          report.skipped += 1;
-          if (result.detail) {
-            report.details.push(result.detail);
-          }
-          continue;
-        }
-
-        report.bytesBefore += result.bytesBefore || 0;
-        report.bytesAfter += result.bytesAfter || 0;
-
-        report.optimized += 1;
-      } catch (err) {
-        if (isRateLimitedError(err)) {
-          deferredRateLimited.push(world);
-        } else {
-          report.failed += 1;
-          report.details.push({
-            worldId,
-            name: world.name || DEFAULT_WORLD_TITLE,
-            reason: getErrorMessage(err)
-          });
-        }
-      }
-
-      await sleep(220);
-    }
-
-    if (deferredRateLimited.length > 0) {
-      await sleep(2500);
-      for (const world of deferredRateLimited) {
-        const worldId = String(world.id || '').trim();
-        try {
-          const result = await recompressOneCover(world, cooldownRetryProfile);
-          if (result?.skipped) {
-            report.skipped += 1;
-            if (result.detail) {
-              report.details.push(result.detail);
-            }
-          } else {
-            report.bytesBefore += result.bytesBefore || 0;
-            report.bytesAfter += result.bytesAfter || 0;
-            report.optimized += 1;
-          }
-        } catch (err) {
-          report.failed += 1;
-          report.details.push({
-            worldId,
-            name: world.name || DEFAULT_WORLD_TITLE,
-            reason: getErrorMessage(err)
-          });
-        }
-
-        await sleep(420);
-      }
-    }
-
-    return report;
-  }
-
   async function downloadTemplateZip() {
     const blob = await buildTemplateZip();
     const url = URL.createObjectURL(blob);
@@ -2887,23 +3450,19 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     card.style.left = `${options.x ?? fallbackX}px`;
     card.style.top = `${options.y ?? fallbackY}px`;
     card.style.setProperty('--world-ui-color', getWorldAccent(world));
-    const worldFontColor = String(world?.font_color || '').trim();
-    const worldFontFamily = String(world?.font_family || '').trim();
     const containerFontColor = String(options?.containerFontColor || '').trim();
-    const hasContainerFontColor = Object.prototype.hasOwnProperty.call(options || {}, 'containerFontColor');
-    if (worldFontColor) {
-      card.style.color = worldFontColor;
+    // Color: always use the containing world's color; only fall back to card's own color
+    // when there is no container context at all (e.g. old call-sites that never pass the option)
+    const hasContainerContext = Object.prototype.hasOwnProperty.call(options || {}, 'containerFontColor');
+    const effectiveColor = containerFontColor || (!hasContainerContext ? String(world?.font_color || '').trim() : '');
+    if (effectiveColor) {
+      card.style.color = effectiveColor;
     } else {
       card.style.removeProperty('color');
     }
-    if (worldFontFamily) {
-      card.style.fontFamily = worldFontFamily;
-    } else {
-      card.style.removeProperty('font-family');
-    }
+    // Font family: always use the card world's own font
+    // (removed — world cards now use system default font)
 
-    const creatorPfp = getPfpSrc(creator, baseUrl);
-    const creatorName = creator?.username || 'unknown';
     const coverUrl = getOptimizedWorldCardCoverUrl(getWorldCardCoverUrl(world, baseUrl));
     const currentUserId = getCurrentUser?.()?.id || null;
     const canEdit = typeof options.canEditWorld === 'function'
@@ -2918,10 +3477,6 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
           </div>
         </div>
       </div>
-      <div class="post-footer world-card-footer">
-        <img class="post-footer-pfp world-card-pfp" src="${escapeHtml(creatorPfp)}" alt="">
-        <span class="post-footer-username post-footer-filter-btn"><span class="post-footer-username-track">${escapeHtml(creatorName)}</span></span>
-      </div>
       ${showMoveControl ? `
         <div class="post-edit-chrome world-edit-chrome" aria-hidden="false">
           <div class="post-edit-top-actions" aria-label="world edit actions">
@@ -2931,8 +3486,23 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       ` : ''}
     `;
 
+    if (showMoveControl) {
+      ['nw', 'ne', 'sw', 'se'].forEach((corner) => {
+        const resizeTab = document.createElement('button');
+        resizeTab.type = 'button';
+        resizeTab.className = `post-resize-tab post-resize-tab-${corner}`;
+        resizeTab.title = 'drag to resize';
+        resizeTab.dataset.corner = corner;
+        resizeTab.addEventListener('mousedown', (e) => {
+          options.onBeginResize?.(e, card, world.id, corner);
+        });
+        card.appendChild(resizeTab);
+      });
+    }
+
     const coverScreen = card.querySelector('.world-card-screen');
     const coverImage = card.querySelector('.world-card-cover');
+
     if (coverScreen && coverImage) {
       coverScreen.classList.add('is-loading');
 
@@ -2948,21 +3518,6 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         coverImage.addEventListener('load', markReady, { once: true });
         coverImage.addEventListener('error', markReady, { once: true });
       }
-    }
-
-    card.querySelector('.world-card-pfp')?.addEventListener('click', async (event) => {
-      event.stopPropagation();
-      if (options.editMode) return;
-      if (creator?.id) {
-        await onOpenProfile?.(creator.id);
-      }
-    });
-
-    if (!options.editMode) {
-      card.querySelector('.post-footer-username')?.addEventListener('click', (event) => {
-        event.stopPropagation();
-        options.onFilterUser?.(creator?.id || null);
-      });
     }
 
     card.querySelector('.world-card-move')?.addEventListener('pointerdown', (event) => {
@@ -2988,6 +3543,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
 
     card.addEventListener('click', async () => {
       if (options.editMode) return;
+      if (options.isPlacementActive?.()) return;
       await openWorldMode(world, creator);
     });
 
@@ -2997,10 +3553,6 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
   function handleCheatCode(event) {
     if (event.defaultPrevented) return;
     if (event.ctrlKey || event.metaKey || event.altKey) return;
-    if (getIsEditMode?.()) {
-      keyBuffer = '';
-      return;
-    }
     if (isTypingSurface()) {
       keyBuffer = '';
       return;
@@ -3009,11 +3561,18 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     const key = String(event.key || '').toLowerCase();
     if (!/^[a-z]$/.test(key)) return;
 
-    keyBuffer = `${keyBuffer}${key}`.slice(-WORLD_TRIGGER.length);
-    if (keyBuffer === WORLD_TRIGGER) {
+    keyBuffer = `${keyBuffer}${key}`.slice(-Math.max(WORLD_TRIGGER.length, WORLD_EDIT_TRIGGER.length));
+    if (keyBuffer.endsWith(WORLD_EDIT_TRIGGER) && activeWorld?.id && String(getCurrentUser?.()?.id || '') === String(activeWorld?.user_id || '')) {
       keyBuffer = '';
       event.preventDefault();
-      openMaker();
+      void openMakerForEdit(activeWorld);
+      return;
+    }
+
+    if (keyBuffer.endsWith(WORLD_TRIGGER)) {
+      keyBuffer = '';
+      event.preventDefault();
+      void openMaker();
     }
   }
 
@@ -3033,58 +3592,37 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
   dom.plugPublish.addEventListener('click', publishPlugWorld);
   dom.codePublish.addEventListener('click', publishCodeWorld);
   dom.codeDownload.addEventListener('click', downloadTemplateZip);
+  wirePlugCategoryEvents();
+  dom.logoutBtn?.addEventListener('click', async () => {
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      alert(`Logout failed: ${error.message}`);
+      return;
+    }
+    window.location.replace('/login');
+  });
+  dom.modeEditBtn?.addEventListener('click', async () => {
+    if (!activeWorld?.id) return;
+    const currentUserId = String(getCurrentUser?.()?.id || '').trim();
+    const ownerId = String(activeWorld?.user_id || '').trim();
+    if (!currentUserId || !ownerId || currentUserId !== ownerId) return;
+    const latestWorld = await loadWorldById(activeWorld.id);
+    await openMakerForEdit(latestWorld || activeWorld);
+  });
   dom.modeDelete.addEventListener('click', async () => {
     if (activeWorld) {
       await deleteWorld(activeWorld);
     }
   });
-  dom.modeEdit.addEventListener('click', async () => {
-    if (!activeWorld?.id) return;
-    const latestWorld = await loadWorldById(activeWorld.id);
-    openMakerForEdit(latestWorld || activeWorld);
-  });
-  dom.modeRecompress.addEventListener('click', async () => {
-    const confirmed = typeof window.__prettyConfirm === 'function'
-      ? await window.__prettyConfirm({
-          title: 'recompress world covers?',
-          message: 'This scans your worlds and recompresses their covers into faster-loading files.',
-          confirmLabel: 'recompress',
-          cancelLabel: 'cancel'
-        })
-      : window.confirm('Recompress your world covers?');
-
-    if (!confirmed) return;
-
-    const previousLabel = dom.modeRecompress.textContent;
-    dom.modeRecompress.disabled = true;
-    dom.modeRecompress.textContent = 'recompressing...';
-
-    try {
-      const report = await optimizeExistingWorldCovers();
-      const beforeMB = (report.bytesBefore / (1024 * 1024)).toFixed(2);
-      const afterMB = (report.bytesAfter / (1024 * 1024)).toFixed(2);
-      const savedMB = ((report.bytesBefore - report.bytesAfter) / (1024 * 1024)).toFixed(2);
-      const failurePreview = report.details.slice(0, 3)
-        .map((item) => `${item.name || item.worldId}: ${item.reason}`)
-        .join('\n');
-      const failureSummary = report.failed > 0
-        ? `\n\nfailures:\n${failurePreview}${report.details.length > 3 ? '\n...' : ''}`
-        : '';
-      alert(`covers recompressed\n\noptimized: ${report.optimized}/${report.totalWorlds}\nskipped: ${report.skipped}\nfailed: ${report.failed}\n\nsize before: ${beforeMB} MB\nsize after: ${afterMB} MB\nsaved: ${savedMB} MB${failureSummary}`);
-      await onWorldCreated?.(activeWorld || null, { startPlacement: false });
-    } catch (error) {
-      alert(`Cover recompress failed: ${getErrorMessage(error)}`);
-    } finally {
-      dom.modeRecompress.disabled = false;
-      dom.modeRecompress.textContent = previousLabel;
-    }
-  });
-  dom.makerDelete.addEventListener('click', async () => {
+  const handleMakerDeleteClick = async () => {
     if (!makerEditingWorld?.id) return;
     await deleteWorld(makerEditingWorld, {
       includePosts: true,
       fromForm: true
     });
+  };
+  dom.makerDeleteButtons.forEach((button) => {
+    button.addEventListener('click', handleMakerDeleteClick);
   });
 
   dom.passwordCancel?.addEventListener('click', () => {
@@ -3103,8 +3641,10 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     }
 
     const nextPassword = dom.passwordInput.value.trim();
-    if (!nextPassword) {
-      if (dom.passwordError) dom.passwordError.textContent = 'Enter a password.';
+    if (!nextPassword && !passwordPromptState?.allowEmpty) {
+      if (dom.passwordError) {
+        dom.passwordError.textContent = passwordPromptState?.emptyError || 'Enter a password.';
+      }
       return;
     }
 
@@ -3138,6 +3678,12 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     }
   });
 
+  document.addEventListener('click', (event) => {
+    if (!event.target.closest('[data-world-dropdown]')) {
+      closeWorldDropdowns();
+    }
+  });
+
   dom.plugCover.addEventListener('change', () => {
     dom.plugCoverLabel.textContent = dom.plugCover.files?.[0]?.name || 'use world background as cover';
   });
@@ -3155,7 +3701,11 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     dom.codeCssLabel.textContent = dom.codeCss.files?.[0]?.name || 'choose css';
   });
 
-  fillFontSelect();
+  setupWorldDropdown(dom.plugVisibility);
+  setupWorldDropdown(dom.plugEditing);
+  setupWorldDropdown(dom.codeVisibility);
+  setupWorldDropdown(dom.codeEditing);
+
   syncCategories();
   syncCodeAccessPasswordVisibility();
   document.addEventListener('keydown', handleCheatCode);
@@ -3173,17 +3723,18 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     hideTransitionLoader,
     setWorldLoaderProgress,
     syncCategories,
+    maybeCloseMaker,
     closeActiveUi,
     isMakerOpen,
     isInWorldMode,
     openWorldById,
     optimizeExistingWorldBackgrounds,
-    optimizeExistingWorldCovers,
     refreshActiveWorldChrome: async (nextWorld = null) => {
       if (nextWorld && activeWorld && nextWorld.id === activeWorld.id) {
         activeWorld = nextWorld;
       }
       if (activeWorld && activeWorldCreator && isInWorldMode()) {
+        await renderWorldNavigation(activeWorld);
         renderWorldModeChrome(activeWorld, activeWorldCreator);
       } else {
         await renderMainNavigationChrome();

@@ -10,6 +10,35 @@ function hashText(input) {
   return hash >>> 0;
 }
 
+function readCssVar(styles, name, fallback = '') {
+  return String(styles.getPropertyValue(name) || fallback).trim();
+}
+
+function applyDeleteConfirmTheme(overlay) {
+  const root = document.documentElement;
+  const rootStyles = getComputedStyle(root);
+  const worldSource = document.querySelector('.main-page-container.world-mode-active');
+  const sourceStyles = worldSource ? getComputedStyle(worldSource) : rootStyles;
+
+  const sysBg = readCssVar(rootStyles, '--sys-bg', '#000');
+  const sysFg = readCssVar(rootStyles, '--sys-fg', '#fff');
+  const isWorld = Boolean(worldSource);
+  const fg = isWorld
+    ? readCssVar(sourceStyles, '--world-mode-font-color', readCssVar(sourceStyles, '--post-overlay-color', sysFg))
+    : sysFg;
+  const ui = isWorld
+    ? readCssVar(sourceStyles, '--world-mode-ui-color', fg)
+    : sysFg;
+  const bg = isWorld
+    ? readCssVar(rootStyles, '--sys-bg', sysBg)
+    : sysBg;
+
+  overlay.classList.add(isWorld ? 'pretty-confirm-world-theme' : 'pretty-confirm-system-theme');
+  overlay.style.setProperty('--pretty-confirm-bg', bg);
+  overlay.style.setProperty('--pretty-confirm-fg', fg);
+  overlay.style.setProperty('--pretty-confirm-ui', ui);
+}
+
 export function installPrettyAlerts(options = {}) {
   if (prettyAlertInstalled) return;
   if (typeof window === 'undefined' || typeof document === 'undefined') return;
@@ -284,6 +313,38 @@ export function installPrettyAlerts(options = {}) {
       border-color: rgba(255, 185, 185, 0.78);
     }
 
+    .pretty-confirm-overlay.pretty-confirm-delete-theme {
+      background: color-mix(in srgb, var(--pretty-confirm-bg, var(--sys-bg)) 72%, transparent);
+    }
+
+    .pretty-confirm-delete-theme .pretty-confirm-modal {
+      background: var(--pretty-confirm-bg, var(--sys-bg));
+      color: var(--pretty-confirm-fg, var(--sys-fg));
+      border-color: var(--pretty-confirm-ui, currentColor);
+      box-shadow: none;
+    }
+
+    .pretty-confirm-delete-theme .pretty-confirm-modal::before {
+      background: var(--pretty-confirm-ui, currentColor);
+    }
+
+    .pretty-confirm-delete-theme .pretty-confirm-title,
+    .pretty-confirm-delete-theme .pretty-confirm-message {
+      color: var(--pretty-confirm-fg, var(--sys-fg));
+    }
+
+    .pretty-confirm-delete-theme .pretty-confirm-btn {
+      color: var(--pretty-confirm-fg, var(--sys-fg));
+      border-color: var(--pretty-confirm-ui, currentColor);
+    }
+
+    .pretty-confirm-delete-theme .pretty-confirm-btn:hover,
+    .pretty-confirm-delete-theme .pretty-confirm-btn.danger,
+    .pretty-confirm-delete-theme .pretty-confirm-btn.danger:hover {
+      color: var(--pretty-confirm-fg, var(--sys-fg));
+      border-color: var(--pretty-confirm-fg, var(--sys-fg));
+    }
+
     @media (max-width: 720px) {
       .pretty-confirm-overlay {
         padding: 10px;
@@ -379,10 +440,15 @@ export function installPrettyAlerts(options = {}) {
     message = 'This action cannot be undone.',
     confirmLabel = 'continue',
     cancelLabel = 'cancel',
-    danger = false
+    danger = false,
+    theme = ''
   } = {}) => new Promise((resolve) => {
     const overlay = document.createElement('div');
     overlay.className = 'pretty-confirm-overlay';
+    if (theme === 'delete' || theme === 'post-delete') {
+      overlay.classList.add('pretty-confirm-delete-theme');
+      applyDeleteConfirmTheme(overlay);
+    }
 
     const modal = document.createElement('div');
     modal.className = 'pretty-confirm-modal';
@@ -449,7 +515,8 @@ export function installPrettyAlerts(options = {}) {
     title = 'choose an option',
     message = '',
     choices = [],
-    cancelLabel = 'cancel'
+    cancelLabel = 'cancel',
+    theme = ''
   } = {}) => new Promise((resolve) => {
     const safeChoices = Array.isArray(choices)
       ? choices.filter((choice) => choice && choice.value != null)
@@ -462,6 +529,10 @@ export function installPrettyAlerts(options = {}) {
 
     const overlay = document.createElement('div');
     overlay.className = 'pretty-confirm-overlay';
+    if (theme === 'delete' || theme === 'post-delete') {
+      overlay.classList.add('pretty-confirm-delete-theme');
+      applyDeleteConfirmTheme(overlay);
+    }
 
     const modal = document.createElement('div');
     modal.className = 'pretty-confirm-modal';

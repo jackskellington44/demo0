@@ -44,7 +44,6 @@
       <div id="postCanvas"></div>
     </div>
 
-    <button id="logoutBtn" class="view-toggle logout-btn">log out</button>
   </div>
 
   <!-- ================================================ -->
@@ -95,9 +94,9 @@
             <div class="post-form-text" id="postText" contenteditable="true" role="textbox" aria-multiline="true" data-placeholder="text" spellcheck="false" autocorrect="off" autocapitalize="off"></div>
 
             <div class="post-form-buttons">
-            <button id="postDeleteBtn" style="display:none; margin-right:auto; color:rgba(255,100,100,0.6);">delete</button>
-            <button id="postSubmitBtn" aria-label="submit post">✓</button>
-            <button id="postCancelBtn" aria-label="cancel post">x</button>
+            <button id="postDeleteBtn" style="display:none; margin-right:auto;">delete</button>
+            <button id="postCancelBtn" aria-label="close post form">close</button>
+            <button id="postSubmitBtn" aria-label="submit post">submit</button>
             </div>
 
         </div>
@@ -159,7 +158,7 @@
           <div id="commentsList" class="comments-list"></div>
         </div>
         <div class="comment-form">
-          <textarea id="commentInput" class="comment-input" placeholder="write a comment..." autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="off" rows="1"></textarea>
+          <textarea id="commentInput" class="comment-input" placeholder="write a message" autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="off" rows="1"></textarea>
         </div>
       </div>
 
@@ -183,11 +182,12 @@
   <!-- 5. RIGHT TOOLBAR                                 -->
   <!-- ================================================ -->
   <div id="rightToolbar" class="right-toolbar">
-    <button id="toolbarProfileBtn" class="toolbar-btn" type="button" title="your profile" aria-label="your profile">◌</button>
-    <button id="toolbarNotifBtn" class="toolbar-btn" type="button" title="notifications" aria-label="notifications">◉</button>
-    <button id="toolbarPostBtn" class="toolbar-btn" type="button" title="new post" aria-label="new post">+</button>
-    <button id="toolbarSettingsBtn" class="toolbar-btn" type="button" title="settings" aria-label="settings">⚙</button>
-    <button id="toolbarHelpBtn" class="toolbar-btn" type="button" title="help" aria-label="help">?</button>
+    <button id="toolbarProfileBtn" class="toolbar-btn" type="button" title="your profile" aria-label="your profile"><span class="ui-icon icon-profile" aria-hidden="true"></span></button>
+    <button id="toolbarNotifBtn" class="toolbar-btn" type="button" title="notifications" aria-label="notifications"><span class="ui-icon icon-notifications" aria-hidden="true"></span></button>
+    <button id="toolbarPostBtn" class="toolbar-btn" type="button" title="new post" aria-label="new post"><span class="ui-icon icon-post" aria-hidden="true"></span></button>
+    <button id="musicOpenPanel" class="toolbar-btn" type="button" title="music panel" aria-label="open music panel"><span class="ui-icon icon-music-mode" aria-hidden="true"></span></button>
+    <button id="toolbarSettingsBtn" class="toolbar-btn" type="button" title="settings" aria-label="settings"><span class="ui-icon icon-settings" aria-hidden="true"></span></button>
+    <button id="toolbarHelpBtn" class="toolbar-btn" type="button" title="help" aria-label="help"><span class="ui-icon icon-help" aria-hidden="true"></span></button>
   </div>
 
   <!-- Notification panel (slides from behind toolbar) -->
@@ -209,14 +209,18 @@
         <input type="color" id="settingsFgColor" class="settings-color-swatch settings-color-swatch-sm" value="#000000" title="font and outline color">
       </div>
       <div class="settings-control-row settings-control-row-select settings-control-row-select-only">
-        <div class="settings-select-wrap">
-          <select id="settingsFontSelect" class="settings-font-select">
+        <div class="settings-select-wrap ui-dropdown ui-dropdown--system" id="settingsFontDropdownWrap">
+          <select id="settingsFontSelect" class="settings-font-native" tabindex="-1" aria-hidden="true">
             <option value="'Liberation Mono', 'Courier New', monospace">Liberation Mono</option>
             <option value="'Liberation Sans', Arial, sans-serif">Liberation Sans</option>
             <option value="'Liberation Serif', 'Times New Roman', serif">Liberation Serif</option>
             <option value="'Linux Biolinum G', 'Liberation Sans', Arial, sans-serif">Linux Biolinum G</option>
           </select>
-          <span class="settings-select-chevron" aria-hidden="true">▾</span>
+          <div id="settingsFontDisplay" class="settings-font-display ui-dropdown-display" role="button" tabindex="0" aria-haspopup="listbox" aria-expanded="false" aria-controls="settingsFontDropdown">
+            <span id="settingsFontDisplayText">Liberation Mono</span>
+            <span class="settings-select-chevron ui-dropdown-chevron" aria-hidden="true">v</span>
+          </div>
+          <div id="settingsFontDropdown" class="settings-font-dropdown ui-dropdown-list" role="listbox"></div>
         </div>
       </div>
       <div class="settings-toggle-row" role="group" aria-label="animations">
@@ -246,11 +250,6 @@
               <div class="profile-modal-header">
                 <span id="profileUsername" class="profile-username notif-heading"></span>
                 <input id="profileUsernameInput" class="profile-username-input" maxlength="12" style="display:none;" autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="off">
-              </div>
-              <div class="profile-action-group">
-                <button id="profileEditBtn" class="profile-edit-btn" type="button" aria-label="edit profile">✂</button>
-                <button id="profileCancelBtn" class="profile-edit-btn profile-cancel-btn" type="button" style="display:none;" aria-label="cancel profile edit">✕</button>
-                <button id="profileSaveBtn" class="profile-edit-btn profile-save-btn" style="display:none;" type="button" aria-label="save profile changes">✓</button>
               </div>
             </div>
 
@@ -295,9 +294,9 @@
 
       <!-- Left zone: playback controls + track identity -->
       <div class="music-bar-zone music-bar-zone-left">
-        <button id="musicPrev" class="music-bar-box" type="button" title="previous" aria-label="previous">◀</button>
-        <button id="musicPlayPause" class="music-bar-box music-bar-box-big" type="button" title="play / pause" aria-label="play"><span class="music-playpause-icon" aria-hidden="true">▶</span></button>
-        <button id="musicNext" class="music-bar-box" type="button" title="next" aria-label="next">▶</button>
+        <button id="musicPrev" class="music-bar-box" type="button" title="previous" aria-label="previous"><span class="ui-icon icon-previous" aria-hidden="true"></span></button>
+        <button id="musicPlayPause" class="music-bar-box music-bar-box-big" type="button" title="play / pause" aria-label="play"><span class="music-playpause-icon" aria-hidden="true"><span class="ui-icon music-icon-play icon-play"></span><span class="ui-icon music-icon-pause icon-pause"></span></span></button>
+        <button id="musicNext" class="music-bar-box" type="button" title="next" aria-label="next"><span class="ui-icon icon-next" aria-hidden="true"></span></button>
 
         <div class="music-bar-track">
           <span id="musicBarUsername" class="music-bar-username"></span>
@@ -309,9 +308,7 @@
 
       <!-- Right zone: volume + panel + mode controls -->
       <div class="music-bar-zone music-bar-zone-right">
-        <!-- volume wrap inserted by music.js before musicOpenPanel -->
-        <button id="musicOpenPanel" class="music-bar-box" type="button" title="music panel" aria-label="open music panel">♬</button>
-        <button id="musicShuffle" class="music-bar-box" type="button" title="order: in order" aria-label="playback order">↺</button>
+        <!-- volume wrap inserted by music.js -->
         <!-- musicLoop kept hidden for JS compat — logic merged into musicShuffle -->
         <button id="musicLoop" style="display:none;" aria-hidden="true"></button>
       </div>
@@ -331,6 +328,7 @@
           <button id="musicSearchBtn" class="music-ctrl-btn music-panel-top-btn" type="button">search tracks</button>
           <button id="musicDownloadPlaylist" class="music-ctrl-btn music-panel-top-btn" type="button">download csv</button>
           <button id="musicEditBtn" class="music-ctrl-btn music-panel-top-btn" type="button">edit</button>
+          <button id="musicShuffle" class="music-ctrl-btn music-panel-top-btn" type="button" title="order: in order" aria-label="playback order"><span class="ui-icon icon-music-mode" aria-hidden="true"></span></button>
         </div>
 
         <div id="musicTrackList" class="music-track-list"></div>
