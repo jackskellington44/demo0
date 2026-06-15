@@ -1,4 +1,5 @@
 const API_BASE = (import.meta.env.VITE_API_URL || '').trim();
+const AUTH_PATH = '/api/auth';
 const RETRY_DELAY_MS = 1000;
 const MAX_RETRIES = 1;
 
@@ -270,13 +271,13 @@ export function getPublicObjectUrl(bucket, path) {
 export const api = {
   auth: {
     signUp: async ({ username, password, pfp }) => {
-      const result = await apiFetch('/auth/signup', {
+      const result = await apiFetch(`${AUTH_PATH}/signup`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ username, password, pfp }),
       });
       if (result.error) {
-        return { data: null, error: withEndpointContext('/auth/signup', result.error) };
+        return { data: null, error: withEndpointContext(`${AUTH_PATH}/signup`, result.error) };
       }
       if (result.data?.token) {
         setSession(result.data.token, result.data.user);
@@ -285,13 +286,13 @@ export const api = {
     },
 
     signIn: async ({ username, password }) => {
-      const result = await apiFetch('/auth/login', {
+      const result = await apiFetch(`${AUTH_PATH}/login`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ username, password }),
       });
       if (result.error) {
-        return { data: null, error: withEndpointContext('/auth/login', result.error) };
+        return { data: null, error: withEndpointContext(`${AUTH_PATH}/login`, result.error) };
       }
       if (result.data?.token) {
         setSession(result.data.token, result.data.user);
@@ -300,7 +301,7 @@ export const api = {
     },
 
     changePassword: async ({ currentPassword, newPassword }) => {
-      const result = await apiFetch('/auth/change-password', {
+      const result = await apiFetch(`${AUTH_PATH}/change-password`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -309,7 +310,7 @@ export const api = {
         body: JSON.stringify({ currentPassword, newPassword }),
       });
       if (result.error) {
-        return { data: null, error: withEndpointContext('/auth/change-password', result.error) };
+        return { data: null, error: withEndpointContext(`${AUTH_PATH}/change-password`, result.error) };
       }
       return result;
     },
@@ -322,7 +323,7 @@ export const api = {
     getUser: async () => {
       const token = getToken();
       if (!token) return { data: null, error: 'Not authenticated' };
-      return apiFetch('/auth/me', {
+      return apiFetch(`${AUTH_PATH}/me`, {
         headers: { ...authHeaders() },
       });
     },
@@ -330,7 +331,7 @@ export const api = {
     uploadPfp: async (file) => {
       const formData = new FormData();
       formData.append('file', file);
-      return apiFetch('/auth/upload-pfp', {
+      return apiFetch(`${AUTH_PATH}/upload-pfp`, {
         method:  'POST',
         headers: { ...authHeaders() },
         body:    formData,

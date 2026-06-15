@@ -1479,12 +1479,15 @@ body.anim-hard-freeze #categoryLayer path {
 .toolbar-btn.active {
   background: var(--sys-bg);
   color: var(--sys-fg);
-  border-top-width: 5px;
-  border-left-width: 5px;
-  border-right-width: 1px;
-  border-bottom-width: 1px;
   box-shadow: none;
 }
+
+#toolbarProfileBtn.active .icon-profile { --icon-url: url('../toolbaricons/toolbaricons_profile_filled.svg'); }
+#toolbarNotifBtn.active .icon-notifications { --icon-url: url('../toolbaricons/toolbaricons_notifications_filled.svg'); }
+#musicOpenPanel.active .icon-music-mode { --icon-url: url('../toolbaricons/toolbaricons_music%20mode_filled.svg'); }
+#toolbarPostBtn.active .icon-post { --icon-url: url('../toolbaricons/post_filled.svg'); }
+#toolbarSettingsBtn.active .icon-settings { --icon-url: url('../toolbaricons/toolbaricons_settings_filled.svg'); }
+#toolbarHelpBtn.active .icon-help { --icon-url: url('../toolbaricons/toolbaricons_help_filled.svg'); }
 
 body.app-edit-mode .right-toolbar {
   pointer-events: none !important;
@@ -2477,19 +2480,19 @@ body.profile-open.notif-open .help-overlay { left: var(--utility-panel-w); }
   left: 50%;
   top: 50%;
   display: flex;
-  width: 46px;
-  height: 46px;
+  width: 54px;
+  height: 54px;
   align-items: center;
   justify-content: center;
   line-height: 0;
   font-size: 0;
   color: var(--sys-fg);
-  transform: translate(-50%, calc(-50% - 8px));
+  transform: translate(-50%, -50%);
 }
 
 .music-playpause-icon .ui-icon {
-  width: 46px;
-  height: 46px;
+  width: 54px;
+  height: 54px;
 }
 
 .music-icon-pause,
@@ -2504,11 +2507,11 @@ body.profile-open.notif-open .help-overlay { left: var(--utility-panel-w); }
 }
 
 #musicPlayPause[data-state="play"] .music-playpause-icon {
-  transform: translate(calc(-50% + 3px), calc(-50% - 8px));
+  transform: translate(-50%, -80%);
 }
 
 #musicPlayPause[data-state="pause"] .music-playpause-icon {
-  transform: translate(calc(-50% - 1px), calc(-50% - 18px));
+  transform: translate(-50%, -80%);
 }
 
 #musicPrev {
@@ -2885,6 +2888,32 @@ body.post-detail-open .world-mode-title-card {
 
 .music-track-row.edit-mode .music-track-right {
   max-width: none;
+}
+
+.music-track-row.edit-mode {
+  cursor: grab;
+}
+
+.music-track-row.edit-mode.dragging {
+  opacity: 0.45;
+}
+
+.music-track-row.edit-mode.drop-before {
+  box-shadow: inset 0 2px 0 var(--sys-bg);
+}
+
+.music-track-row.edit-mode.drop-after {
+  box-shadow: inset 0 -2px 0 var(--sys-bg);
+}
+
+.music-track-drag-handle {
+  flex-shrink: 0;
+  color: var(--sys-bg);
+  font-size: var(--inner-system-modal-font);
+  line-height: 1;
+  opacity: 0.7;
+  padding-right: 4px;
+  cursor: grab;
 }
 
 .music-track-title {

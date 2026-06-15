@@ -57,7 +57,10 @@ let activeWorldId = null;
 let activeWorldName = '';
 let canModifyCurrentPlaylist = true;
 let supportsWorldScopedPlaylists = true;
+let supportsPlaylistOrder = true;
 let isTracksLoading = false;
+let draggedTrackId = null;
+let lastMusicPanelRightClickAt = 0;
 let crossfadeInProgress = false;
 let nativeOverlapMonitorId = null;
 let soundCloudOverlapMonitorId = null;
@@ -96,7 +99,7 @@ let musicBar, musicBarPfp, musicBarUsername, musicBarTitle, musicBarArtist, musi
 let musicPrev, musicPlayPause, musicNext, musicOpenPanel;
 let musicPanelOverlay, musicTrackList;
 let musicPanelTopControls, musicDownloadPlaylist;
-let musicAddTrackBtn, musicSearchBtn, musicEditBtn;
+let musicAddTrackBtn, musicSearchBtn;
 let musicShuffle, musicLoop;
 let musicVolumeWrap, musicVolumeBtn, musicVolumeSlider;
 let musicAddInput;
@@ -140,19 +143,41 @@ function updatePlaylistAccessUi() {
       : 'you cannot add tracks in this world';
   }
 
-  if (musicEditBtn) {
-    musicEditBtn.disabled = !canModifyCurrentPlaylist;
-    musicEditBtn.title = canModifyCurrentPlaylist
-      ? `edit tracks in ${getActivePlaylistScopeLabel()}`
-      : 'you cannot edit this world playlist';
-  }
-
   if (musicAddInput) {
     musicAddInput.disabled = !canModifyCurrentPlaylist;
     musicAddInput.placeholder = canModifyCurrentPlaylist
       ? 'paste soundcloud link + enter'
       : 'you do not have posting access in this world';
   }
+}
+
+function setMusicEditMode(enabled) {
+  if (enabled && !canModifyCurrentPlaylist) return;
+  isMusicEditMode = Boolean(enabled);
+  const musicPanel = document.querySelector('.music-panel');
+  if (musicPanel) musicPanel.classList.toggle('edit-mode', isMusicEditMode);
+  renderTrackList();
+  updateBarDisplay();
+}
+
+function toggleMusicEditMode() {
+  setMusicEditMode(!isMusicEditMode);
+}
+
+function handleMusicPanelContextMenu(event) {
+  const musicPanel = event.currentTarget;
+  if (!musicPanel || event.target?.closest?.('button, input, a, textarea, select')) return;
+
+  event.preventDefault();
+  if (!canModifyCurrentPlaylist) return;
+
+  const now = Date.now();
+  if (now - lastMusicPanelRightClickAt <= 450) {
+    lastMusicPanelRightClickAt = 0;
+    toggleMusicEditMode();
+    return;
+  }
+  lastMusicPanelRightClickAt = now;
 }
 
 function syncMusicBreadcrumb(isOpen) {
@@ -671,6 +696,7 @@ function updatePlaybackModeButtons() {
     // isShuffled = shuffle mode; otherwise = in-order with playlist repeat
     musicShuffle.title = isShuffled ? 'mode: shuffle' : 'mode: in order (repeat)';
     musicShuffle.setAttribute('aria-label', musicShuffle.title);
+    musicShuffle.textContent = isShuffled ? '⇄' : '↺';
     // active state only when shuffled so the icon alone conveys mode
     musicShuffle.classList.toggle('active', isShuffled);
   }
@@ -970,8 +996,12 @@ export async function loadTracks(options = {}) {
     let query = supabase
       .from('music_tracks')
       .select('*')
-      .eq('group_id', 'group0')
-      .order('created_at', { ascending: true });
+      .eq('group_id', 'group0');
+
+    if (supportsPlaylistOrder) {
+      query = query.order('playlist_order', { ascending: true });
+    }
+    query = query.order('created_at', { ascending: true });
 
     if (supportsWorldScopedPlaylists) {
       if (activeWorldId) {
@@ -983,14 +1013,28 @@ export async function loadTracks(options = {}) {
 
     const { data, error } = await query;
 
+    if (error && /playlist_order|column/i.test(String(error.message || ''))) {
+      supportsPlaylistOrder = false;
+      return loadTracks(options);
+    }
+
     if (error && /world_id|column/i.test(String(error.message || ''))) {
       // Backward-compat: fallback to legacy global playlist if migration is not applied yet.
       supportsWorldScopedPlaylists = false;
-      const fallback = await supabase
+      let fallback = supabase
         .from('music_tracks')
         .select('*')
-        .eq('group_id', 'group0')
-        .order('created_at', { ascending: true });
+        .eq('group_id', 'group0');
+
+      if (supportsPlaylistOrder) {
+        fallback = fallback.order('playlist_order', { ascending: true });
+      }
+      fallback = await fallback.order('created_at', { ascending: true });
+
+      if (fallback.error && /playlist_order|column/i.test(String(fallback.error.message || ''))) {
+        supportsPlaylistOrder = false;
+        return loadTracks(options);
+      }
 
       if (fallback.error) {
         console.error('Failed to load tracks:', fallback.error);
@@ -1085,10 +1129,7 @@ function renderTrackList() {
     return;
   }
 
-  // In edit mode only show the signed-in user's own tracks
-  const visibleTracks = (isMusicEditMode && canModifyCurrentPlaylist)
-    ? tracks.filter(t => t.user_id === currentUser?.id)
-    : tracks;
+  const visibleTracks = tracks;
 
   if (visibleTracks.length === 0) {
     musicTrackList.innerHTML = `<div class="music-empty">${
@@ -1114,17 +1155,25 @@ function renderTrackList() {
     row.dataset.trackId = track.id;
 
     if (isMusicEditMode) {
-      // ── Edit-mode row: delete button only (no rename) ──
+      const canDeleteTrack = String(track.user_id || '') === String(currentUser?.id || '');
+      row.draggable = canModifyCurrentPlaylist;
       row.innerHTML = `
         <div class="music-track-meta-left">
+          <span class="music-track-drag-handle" aria-hidden="true">↕</span>
           <span class="music-track-song" style="opacity:0.7;">${songLabel}</span>
         </div>
         <div class="music-track-right">
-          <button class="music-track-btn music-delete-btn" aria-label="delete track">x</button>
+          ${canDeleteTrack ? '<button class="music-track-btn music-delete-btn" aria-label="delete track">x</button>' : ''}
         </div>
       `;
 
-      row.querySelector('.music-delete-btn').addEventListener('click', (e) => {
+      row.addEventListener('dragstart', handleTrackDragStart);
+      row.addEventListener('dragover', handleTrackDragOver);
+      row.addEventListener('dragleave', handleTrackDragLeave);
+      row.addEventListener('drop', handleTrackDrop);
+      row.addEventListener('dragend', handleTrackDragEnd);
+
+      row.querySelector('.music-delete-btn')?.addEventListener('click', (e) => {
         e.stopPropagation();
         deleteTrack(track.id, idx);
       });
@@ -1151,19 +1200,117 @@ function renderTrackList() {
   });
 }
 
+function getTrackIndexById(trackId) {
+  return tracks.findIndex((track) => String(track.id || '') === String(trackId || ''));
+}
+
+function getDropIndexFromRow(row, clientY) {
+  const targetIndex = Number(row?.dataset?.idx);
+  if (!Number.isInteger(targetIndex)) return -1;
+  const rect = row.getBoundingClientRect();
+  return clientY > rect.top + rect.height / 2 ? targetIndex + 1 : targetIndex;
+}
+
+function clearTrackDropClasses() {
+  musicTrackList?.querySelectorAll('.music-track-row.dragging, .music-track-row.drop-before, .music-track-row.drop-after').forEach((row) => {
+    row.classList.remove('dragging', 'drop-before', 'drop-after');
+  });
+}
+
+function handleTrackDragStart(event) {
+  if (!isMusicEditMode || !canModifyCurrentPlaylist) return;
+  draggedTrackId = event.currentTarget?.dataset?.trackId || null;
+  if (!draggedTrackId) return;
+  event.currentTarget.classList.add('dragging');
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('text/plain', draggedTrackId);
+}
+
+function handleTrackDragOver(event) {
+  if (!draggedTrackId) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'move';
+
+  const row = event.currentTarget;
+  const rect = row.getBoundingClientRect();
+  const isAfter = event.clientY > rect.top + rect.height / 2;
+  row.classList.toggle('drop-before', !isAfter);
+  row.classList.toggle('drop-after', isAfter);
+}
+
+function handleTrackDragLeave(event) {
+  event.currentTarget.classList.remove('drop-before', 'drop-after');
+}
+
+async function handleTrackDrop(event) {
+  if (!draggedTrackId) return;
+  event.preventDefault();
+
+  const sourceIndex = getTrackIndexById(draggedTrackId);
+  let targetIndex = getDropIndexFromRow(event.currentTarget, event.clientY);
+  clearTrackDropClasses();
+
+  if (sourceIndex < 0 || targetIndex < 0) return;
+  if (targetIndex > sourceIndex) targetIndex -= 1;
+  if (targetIndex === sourceIndex) return;
+
+  await reorderTrack(sourceIndex, targetIndex);
+}
+
+function handleTrackDragEnd() {
+  draggedTrackId = null;
+  clearTrackDropClasses();
+}
+
+async function reorderTrack(sourceIndex, targetIndex) {
+  if (!canModifyCurrentPlaylist) return;
+  if (sourceIndex < 0 || sourceIndex >= tracks.length) return;
+  const clampedTarget = Math.max(0, Math.min(targetIndex, tracks.length - 1));
+  if (sourceIndex === clampedTarget) return;
+
+  const activeTrackId = tracks[currentIndex]?.id || null;
+  const [movedTrack] = tracks.splice(sourceIndex, 1);
+  tracks.splice(clampedTarget, 0, movedTrack);
+  currentIndex = activeTrackId ? getTrackIndexById(activeTrackId) : currentIndex;
+  renderTrackList();
+  updateBarDisplay();
+
+  const persistError = await persistPlaylistOrder();
+  if (persistError) {
+    alert(`Reorder failed: ${persistError}`);
+    await loadTracks();
+  }
+}
+
+async function persistPlaylistOrder() {
+  if (!supportsPlaylistOrder) {
+    return 'playlist_order column is missing. Run the latest music_tracks migration first.';
+  }
+
+  for (let idx = 0; idx < tracks.length; idx += 1) {
+    const track = tracks[idx];
+    const { error } = await supabase
+      .from('music_tracks')
+      .update({ playlist_order: idx })
+      .eq('id', track.id);
+
+    if (error) {
+      if (/playlist_order|column/i.test(String(error.message || ''))) {
+        supportsPlaylistOrder = false;
+      }
+      return error.message || String(error);
+    }
+  }
+
+  return null;
+}
+
 // ============================================
 // 7. EDIT MODE HELPERS
 // ============================================
 // Exit edit mode - no longer renames tracks (delete only)
 async function exitMusicEditMode() {
-  isMusicEditMode = false;
-  const musicPanel = document.querySelector('.music-panel');
-  if (musicPanel) musicPanel.classList.remove('edit-mode');
-  if (musicEditBtn) {
-    musicEditBtn.textContent = 'edit';
-  }
-  renderTrackList();
-  updateBarDisplay();
+  setMusicEditMode(false);
 }
 
 // ============================================
@@ -1324,15 +1471,26 @@ async function addSoundCloudTrack(soundcloudUrl) {
     if (supportsWorldScopedPlaylists) {
       insertPayload.world_id = activeWorldId;
     }
+    if (supportsPlaylistOrder) {
+      insertPayload.playlist_order = tracks.length;
+    }
 
     let { error: dbErr } = await supabase
       .from('music_tracks')
       .insert([insertPayload]);
 
+    if (dbErr && /playlist_order|column/i.test(String(dbErr.message || ''))) {
+      supportsPlaylistOrder = false;
+      const fallbackOrder = { ...insertPayload };
+      delete fallbackOrder.playlist_order;
+      ({ error: dbErr } = await supabase.from('music_tracks').insert([fallbackOrder]));
+    }
+
     if (dbErr && /world_id|column/i.test(String(dbErr.message || ''))) {
       supportsWorldScopedPlaylists = false;
       const fallbackWorld = { ...insertPayload };
       delete fallbackWorld.world_id;
+      delete fallbackWorld.playlist_order;
       ({ error: dbErr } = await supabase.from('music_tracks').insert([fallbackWorld]));
     }
 
@@ -1461,7 +1619,6 @@ export async function initMusic(user, userData, options = {}) {
   musicAddTrackBtn      = document.getElementById('musicAddTrackBtn');
   musicDownloadPlaylist = document.getElementById('musicDownloadPlaylist');
   musicSearchBtn        = document.getElementById('musicSearchBtn');
-  musicEditBtn          = document.getElementById('musicEditBtn');
   musicShuffle = document.getElementById('musicShuffle');
   musicLoop    = document.getElementById('musicLoop');
   const musicPanel = document.querySelector('.music-panel');
@@ -1483,7 +1640,6 @@ export async function initMusic(user, userData, options = {}) {
     musicAddTrackBtn,
     musicDownloadPlaylist,
     musicSearchBtn,
-    musicEditBtn,
     musicShuffle,
     musicLoop,
     musicPanel
@@ -1629,6 +1785,7 @@ export async function initMusic(user, userData, options = {}) {
       setMusicPanelOpen(false);
     }
   });
+  musicPanel.addEventListener('contextmenu', handleMusicPanelContextMenu);
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && musicPanelOverlay.classList.contains('open')) {
@@ -1689,18 +1846,6 @@ export async function initMusic(user, userData, options = {}) {
       ? (addInput.value.trim() || 'music')
       : 'music';
     window.open(`https://soundcloud.com/search?q=${encodeURIComponent(query)}`, '_blank');
-  });
-
-  musicEditBtn.addEventListener('click', () => {
-    if (!canModifyCurrentPlaylist) return;
-    if (isMusicEditMode) {
-      exitMusicEditMode();
-      return;
-    }
-    isMusicEditMode = true;
-    musicPanel.classList.add('edit-mode');
-    musicEditBtn.textContent = 'exit edit';
-    renderTrackList();
   });
 
   musicShuffle.addEventListener('click', () => {

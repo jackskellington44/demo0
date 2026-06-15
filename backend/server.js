@@ -212,7 +212,7 @@ function buildWhereClause(filters, startIdx = 1) {
 
 // ─── POST /auth/signup ─────────────────────────────────────────────────────────
 
-app.post('/auth/signup', authLimiter, async (req, res) => {
+app.post(['/auth/signup', '/api/auth/signup'], authLimiter, async (req, res) => {
   const { username, password, pfp, pfp_url } = req.body || {};
 
   if (!username || !password) {
@@ -256,7 +256,7 @@ app.post('/auth/signup', authLimiter, async (req, res) => {
 
 // ─── POST /auth/login ──────────────────────────────────────────────────────────
 
-app.post('/auth/login', authLimiter, async (req, res) => {
+app.post(['/auth/login', '/api/auth/login', '/api/auth/signin'], authLimiter, async (req, res) => {
   const { username, password } = req.body || {};
 
   if (!username || !password) {
@@ -291,7 +291,7 @@ app.post('/auth/login', authLimiter, async (req, res) => {
 
 // ─── GET /auth/me ──────────────────────────────────────────────────────────────
 
-app.get('/auth/me', readLimiter, authMiddleware, async (req, res) => {
+app.get(['/auth/me', '/api/auth/me'], readLimiter, authMiddleware, async (req, res) => {
   try {
     const { rows } = await pool.query(
       'SELECT id, username, pfp, pfp_url FROM public.users WHERE id = $1',
@@ -311,7 +311,7 @@ app.get('/auth/me', readLimiter, authMiddleware, async (req, res) => {
 
 // ─── POST /auth/change-password ───────────────────────────────────────────────
 
-app.post('/auth/change-password', authLimiter, authMiddleware, async (req, res) => {
+app.post(['/auth/change-password', '/api/auth/change-password'], authLimiter, authMiddleware, async (req, res) => {
   const { currentPassword, newPassword } = req.body || {};
 
   if (!currentPassword || !newPassword) {
@@ -357,7 +357,7 @@ app.post('/auth/change-password', authLimiter, authMiddleware, async (req, res) 
 
 // ─── POST /auth/upload-pfp ─────────────────────────────────────────────────────
 
-app.post('/auth/upload-pfp', pfpUploadLimiter, authMiddleware, upload.single('file'), async (req, res) => {
+app.post(['/auth/upload-pfp', '/api/auth/upload-pfp'], pfpUploadLimiter, authMiddleware, upload.single('file'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ data: null, error: 'No file uploaded' });
   }
