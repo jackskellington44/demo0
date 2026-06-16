@@ -14,7 +14,7 @@ function readCssVar(styles, name, fallback = '') {
   return String(styles.getPropertyValue(name) || fallback).trim();
 }
 
-function applyDeleteConfirmTheme(overlay) {
+function applyConfirmTheme(overlay) {
   const root = document.documentElement;
   const rootStyles = getComputedStyle(root);
   const worldSource = document.querySelector('.main-page-container.world-mode-active');
@@ -313,34 +313,34 @@ export function installPrettyAlerts(options = {}) {
       border-color: rgba(255, 185, 185, 0.78);
     }
 
-    .pretty-confirm-overlay.pretty-confirm-delete-theme {
+    .pretty-confirm-overlay.pretty-confirm-themed {
       background: color-mix(in srgb, var(--pretty-confirm-bg, var(--sys-bg)) 72%, transparent);
     }
 
-    .pretty-confirm-delete-theme .pretty-confirm-modal {
+    .pretty-confirm-themed .pretty-confirm-modal {
       background: var(--pretty-confirm-bg, var(--sys-bg));
       color: var(--pretty-confirm-fg, var(--sys-fg));
       border-color: var(--pretty-confirm-ui, currentColor);
       box-shadow: none;
     }
 
-    .pretty-confirm-delete-theme .pretty-confirm-modal::before {
+    .pretty-confirm-themed .pretty-confirm-modal::before {
       background: var(--pretty-confirm-ui, currentColor);
     }
 
-    .pretty-confirm-delete-theme .pretty-confirm-title,
-    .pretty-confirm-delete-theme .pretty-confirm-message {
+    .pretty-confirm-themed .pretty-confirm-title,
+    .pretty-confirm-themed .pretty-confirm-message {
       color: var(--pretty-confirm-fg, var(--sys-fg));
     }
 
-    .pretty-confirm-delete-theme .pretty-confirm-btn {
+    .pretty-confirm-themed .pretty-confirm-btn {
       color: var(--pretty-confirm-fg, var(--sys-fg));
       border-color: var(--pretty-confirm-ui, currentColor);
     }
 
-    .pretty-confirm-delete-theme .pretty-confirm-btn:hover,
-    .pretty-confirm-delete-theme .pretty-confirm-btn.danger,
-    .pretty-confirm-delete-theme .pretty-confirm-btn.danger:hover {
+    .pretty-confirm-themed .pretty-confirm-btn:hover,
+    .pretty-confirm-themed .pretty-confirm-btn.danger,
+    .pretty-confirm-themed .pretty-confirm-btn.danger:hover {
       color: var(--pretty-confirm-fg, var(--sys-fg));
       border-color: var(--pretty-confirm-fg, var(--sys-fg));
     }
@@ -445,10 +445,8 @@ export function installPrettyAlerts(options = {}) {
   } = {}) => new Promise((resolve) => {
     const overlay = document.createElement('div');
     overlay.className = 'pretty-confirm-overlay';
-    if (theme === 'delete' || theme === 'post-delete') {
-      overlay.classList.add('pretty-confirm-delete-theme');
-      applyDeleteConfirmTheme(overlay);
-    }
+    overlay.classList.add('pretty-confirm-themed');
+    applyConfirmTheme(overlay);
 
     const modal = document.createElement('div');
     modal.className = 'pretty-confirm-modal';
@@ -529,10 +527,8 @@ export function installPrettyAlerts(options = {}) {
 
     const overlay = document.createElement('div');
     overlay.className = 'pretty-confirm-overlay';
-    if (theme === 'delete' || theme === 'post-delete') {
-      overlay.classList.add('pretty-confirm-delete-theme');
-      applyDeleteConfirmTheme(overlay);
-    }
+    overlay.classList.add('pretty-confirm-themed');
+    applyConfirmTheme(overlay);
 
     const modal = document.createElement('div');
     modal.className = 'pretty-confirm-modal';

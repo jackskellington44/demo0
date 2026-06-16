@@ -55,6 +55,7 @@ let currentVolume = Number(localStorage.getItem('musicVolume') || '0.8');
 let lastNonZeroVolume = 0.8;
 let activeWorldId = null;
 let activeWorldName = '';
+let activeWorldTheme = null;
 let canModifyCurrentPlaylist = true;
 let supportsWorldScopedPlaylists = true;
 let supportsPlaylistOrder = true;
@@ -149,6 +150,33 @@ function updatePlaylistAccessUi() {
       ? 'paste soundcloud link + enter'
       : 'you do not have posting access in this world';
   }
+}
+
+function applyMusicWorldTheme() {
+  const targets = [
+    document.querySelector('.music-panel'),
+    document.getElementById('musicPanelOverlay')
+  ];
+
+  targets.forEach((el) => {
+    if (!el) return;
+    el.style.removeProperty('--music-panel-bg');
+    el.style.removeProperty('--music-panel-fg');
+    el.style.removeProperty('--music-panel-font');
+  });
+
+  if (!activeWorldId || !activeWorldTheme) return;
+
+  const bg = String(activeWorldTheme.background_color || activeWorldTheme.ui_color || activeWorldTheme.font_color || '').trim();
+  const fg = String(activeWorldTheme.font_color || activeWorldTheme.ui_color || '').trim();
+  const font = String(activeWorldTheme.font_family || '').trim();
+
+  targets.forEach((el) => {
+    if (!el) return;
+    if (bg) el.style.setProperty('--music-panel-bg', bg);
+    if (fg) el.style.setProperty('--music-panel-fg', fg);
+    if (font) el.style.setProperty('--music-panel-font', font);
+  });
 }
 
 function setMusicEditMode(enabled) {
@@ -1879,7 +1907,9 @@ export async function setMusicWorldContext(world = null, options = {}) {
 
   activeWorldId = nextWorldId;
   activeWorldName = nextWorldName;
+  activeWorldTheme = world || null;
   canModifyCurrentPlaylist = nextCanModify;
+  applyMusicWorldTheme();
 
   if (!isMusicInitialized) {
     return;

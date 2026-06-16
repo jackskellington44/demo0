@@ -43,9 +43,9 @@
     bottom: 44px;
     right: var(--toolbar-w);
     padding: 0;
-    background: transparent;
-    backdrop-filter: var(--overlay-blur-form);
-    -webkit-backdrop-filter: var(--overlay-blur-form);
+    background: var(--post-overlay-bg, var(--sys-bg));
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
     display: flex;
     align-items: stretch;
     justify-content: stretch;
@@ -66,9 +66,9 @@
     overflow: auto;
     padding: clamp(16px, 2.4vw, 30px);
     border: none;
-    background: color-mix(in srgb, var(--post-overlay-bg, rgba(4, 8, 16, 0.28)) 20%, transparent);
+    background: var(--post-overlay-bg, var(--sys-bg));
     box-shadow: none;
-    font-family: var(--world-mode-font-family, var(--post-overlay-font, inherit));
+    font-family: var(--post-overlay-font, var(--sys-font, inherit));
     color: var(--post-overlay-color, var(--sys-fg));
 }
 
@@ -78,7 +78,7 @@
 
 .post-form-title {
     background: transparent;
-    border: 1px solid var(--post-overlay-color, var(--sys-fg));
+    border: 1px solid var(--post-overlay-outline, var(--post-overlay-color, var(--sys-fg)));
     color: var(--post-overlay-color, var(--sys-fg));
     font-size: var(--post-input-size);
     font-family: inherit;
@@ -90,6 +90,24 @@
 .post-form-title::placeholder {
     color: color-mix(in srgb, var(--post-overlay-color, var(--sys-fg)) 65%, transparent);
     font-style: italic;
+}
+
+.post-form-password-gate {
+    justify-content: center;
+    align-items: center;
+    gap: 12px;
+}
+
+.post-form-password-input {
+    width: min(360px, 82vw);
+    text-align: center;
+}
+
+.post-form-password-error {
+    min-height: 1.1em;
+    color: color-mix(in srgb, #ff9d9d 88%, var(--post-overlay-color, var(--sys-fg)) 12%);
+    font-size: 0.82rem;
+    text-align: center;
 }
 
 /* === 10.2 POST FORM CATEGORY ROW === */
@@ -117,7 +135,7 @@
     justify-content: space-between;
     gap: 10px;
     background: transparent;
-    border: 1px solid var(--post-overlay-color, var(--sys-fg));
+    border: 1px solid var(--post-overlay-outline, var(--post-overlay-color, var(--sys-fg)));
     color: var(--post-overlay-color, var(--sys-fg));
     font-size: var(--post-input-size);
     font-family: inherit;
@@ -176,15 +194,15 @@
     flex-direction: column;
     position: static;
     width: 100%;
-    background: color-mix(in srgb, var(--post-overlay-bg, rgba(4, 8, 16, 0.28)) 20%, transparent);
+    background: var(--post-overlay-bg, var(--sys-bg));
     border: 1px solid var(--post-overlay-color, var(--sys-fg));
     border-top: none;
     border-radius: 2px;
     z-index: 50;
     max-height: 180px;
     overflow-y: auto;
-    backdrop-filter: blur(8px) saturate(110%);
-    -webkit-backdrop-filter: blur(8px) saturate(110%);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
     box-shadow: none;
 }
 
@@ -338,9 +356,9 @@
     border: 1px solid var(--post-overlay-color, var(--sys-fg));
     border-top: none;
     border-radius: 2px;
-    background: color-mix(in srgb, var(--post-overlay-bg, rgba(4, 8, 16, 0.28)) 20%, transparent);
-    backdrop-filter: blur(8px) saturate(110%);
-    -webkit-backdrop-filter: blur(8px) saturate(110%);
+    background: var(--post-overlay-bg, var(--sys-bg));
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
     position: relative;
     box-shadow: none;
 }
@@ -385,12 +403,12 @@
 .post-form-category-input {
     flex: 1;
     background: transparent;
-    border: none;
+    border: 1px solid var(--post-overlay-outline, var(--post-overlay-color, var(--sys-fg)));
     color: var(--post-overlay-color, var(--sys-fg));
     font-size: var(--post-input-size);
     font-family: inherit;
     outline: none;
-    padding: 2px 0;
+    padding: 8px 10px;
     transition: none;
 }
 
@@ -463,9 +481,9 @@
     padding: 9px;
     border: 1px solid var(--post-overlay-color, var(--sys-fg));
     border-radius: 3px;
-    background: color-mix(in srgb, var(--post-overlay-bg, rgba(4, 8, 16, 0.28)) 20%, transparent);
-    backdrop-filter: blur(8px) saturate(110%);
-    -webkit-backdrop-filter: blur(8px) saturate(110%);
+    background: var(--post-overlay-bg, var(--sys-bg));
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
     box-shadow: none;
 }
 
@@ -939,11 +957,11 @@ a.post-external-link:hover {
     --post-scale: 1;
     --post-card-stroke-w: min(1px, calc(1px / var(--canvas-scale, 1)));
     --post-card-inner-stroke-w: min(0.72px, calc(var(--post-card-stroke-w) * 0.72));
-    --post-card-surface: var(--post-overlay-color, var(--sys-fg));
-    --post-card-ink: var(--post-overlay-bg, var(--sys-bg));
+    --post-card-surface: var(--post-overlay-bg, var(--sys-fg));
+    --post-card-ink: var(--post-overlay-color, var(--sys-bg));
     --post-card-ink-muted: color-mix(in srgb, var(--post-card-ink) 70%, transparent);
-    --post-card-line: color-mix(in srgb, var(--post-card-ink) 70%, transparent);
-    --post-card-line-soft: color-mix(in srgb, var(--post-card-ink) 48%, transparent);
+    --post-card-line: var(--post-overlay-outline, color-mix(in srgb, var(--post-card-ink) 70%, transparent));
+    --post-card-line-soft: color-mix(in srgb, var(--post-card-line) 48%, transparent);
     display: flex;
     flex-direction: column;
     min-width: 220px;
@@ -955,6 +973,7 @@ a.post-external-link:hover {
     background: var(--post-card-surface);
     border: var(--post-card-stroke-w) solid var(--post-card-line);
     box-shadow: inset 0 0 0 var(--post-card-inner-stroke-w) var(--post-card-line-soft);
+    font-family: var(--post-overlay-font, var(--sys-font, inherit));
     backface-visibility: hidden;
 }
 
@@ -985,7 +1004,6 @@ a.post-external-link:hover {
 .post-card[data-lod="far"] .post-footer {
     opacity: 0;
     pointer-events: none;
-    content-visibility: hidden;
 }
 
 .post-card[data-lod="far"] .post-lod-badge {
@@ -1138,6 +1156,7 @@ a.post-external-link:hover {
         display: -webkit-box;
         -webkit-box-orient: vertical;
         -webkit-line-clamp: 4;
+        line-clamp: 4;
         white-space: normal;
     overflow: hidden;
         text-overflow: clip;
@@ -1656,14 +1675,15 @@ body.anim-hard-freeze *::after {
 
 .post-file-preview-icon {
     position: absolute;
-    inset: 0;
-    display: flex;
+    inset: auto auto var(--post-card-space) var(--post-card-space);
+    display: inline-flex;
     align-items: center;
     justify-content: center;
     color: var(--post-card-ink);
-    font-size: clamp(4.2rem, 11vw, 7rem);
+    font-size: clamp(3.4rem, 9vw, 5.4rem);
     font-weight: 700;
     letter-spacing: 0.04em;
+    line-height: 1;
     pointer-events: none;
     user-select: none;
     transition: opacity 0.18s ease;
@@ -1672,11 +1692,11 @@ body.anim-hard-freeze *::after {
 
 .post-file-preview-icon.is-audio,
 .post-file-preview-icon.is-files {
-    font-size: clamp(5.4rem, 14vw, 8.6rem);
+    font-size: clamp(4.1rem, 10.8vw, 6.4rem);
 }
 
 .post-file-preview-icon.is-code {
-    font-size: clamp(4.6rem, 11.8vw, 7.2rem);
+    font-size: clamp(3.6rem, 9.5vw, 5.8rem);
 }
 
 .post-file-name-box {
@@ -1764,59 +1784,44 @@ body.anim-hard-freeze *::after {
 }
 
 /* ---- Shared action button base ---- */
-/* Play/download controls: large and centered */
 .post-file-preview-play,
-.post-file-preview-download-btn {
+.post-file-preview-download-btn,
+.post-preview-mute-btn,
+.post-file-preview-youtube-activate {
   position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
+    top: auto;
+    right: auto;
+    bottom: var(--post-card-space);
+    left: var(--post-card-space);
+    transform: none;
   opacity: 0;
   transition: opacity 0.18s ease;
-    background: color-mix(in srgb, var(--post-card-surface) 86%, transparent);
+    background: var(--post-card-surface);
     border: var(--post-card-stroke-w) solid var(--post-card-line);
     color: var(--post-card-ink);
   font: inherit;
-    font-size: clamp(2rem, 5.8vw, 3rem);
+    font-size: clamp(1.45rem, 4.8vw, 2.15rem);
     line-height: 1;
   cursor: pointer;
     padding: 0;
-    width: clamp(58px, 18vw, 78px);
-    height: clamp(58px, 18vw, 78px);
+    width: clamp(44px, 13vw, 56px);
+    height: clamp(44px, 13vw, 56px);
     border-radius: 2px;
   text-decoration: none;
   pointer-events: auto;
   z-index: 3;
-    box-shadow: 0 0 0 var(--post-card-stroke-w) color-mix(in srgb, var(--post-card-ink) 10%, transparent);
+    box-shadow:
+        inset 0 0 0 var(--post-card-inner-stroke-w) var(--post-card-line-soft),
+        0 0 0 var(--post-card-stroke-w) color-mix(in srgb, var(--post-card-surface) 28%, transparent);
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .post-preview-mute-btn {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    opacity: 0;
-    transition: opacity 0.18s ease;
-    background: transparent;
-    border: none;
-    color: var(--post-card-ink);
-    font: inherit;
-    font-size: clamp(4.6rem, 13vw, 7.1rem);
-    line-height: 0.9;
-    cursor: pointer;
-    padding: 0;
-    text-decoration: none;
-    pointer-events: auto;
-    z-index: 3;
-}
-
-/* Download button uses an <a> tag keep it centered */
-.post-file-preview-download-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+    font-size: clamp(1.35rem, 4.2vw, 2rem);
 }
 
 .post-file-preview-download-btn.is-display-only {
@@ -1850,6 +1855,11 @@ body.anim-hard-freeze *::after {
 /* Video: mute button appears on hover, label fades (matches download behavior) */
 .post-file-preview-video:hover .post-preview-mute-btn {
   opacity: 1;
+}
+
+.post-file-preview-audio:hover .post-file-preview-icon,
+.post-file-preview-download:hover .post-file-preview-icon {
+    opacity: 0;
 }
 
 .post-file-preview-video:hover .post-file-preview-label {
@@ -1889,12 +1899,13 @@ body.anim-hard-freeze *::after {
 
 .post-file-preview-audio.has-cover .post-file-preview-play,
 .post-file-preview-download.has-cover .post-file-preview-download-btn {
-    left: var(--post-card-space);
+    right: auto;
     bottom: var(--post-card-space);
     top: auto;
+    left: var(--post-card-space);
     transform: none;
-    width: clamp(58px, 18vw, 78px);
-    height: clamp(58px, 18vw, 78px);
+    width: clamp(44px, 13vw, 56px);
+    height: clamp(44px, 13vw, 56px);
     min-width: 0;
     padding: 0;
     border: var(--post-card-stroke-w) solid var(--post-card-line);
@@ -1905,7 +1916,7 @@ body.anim-hard-freeze *::after {
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
     color: var(--post-card-ink);
-    font-size: clamp(2rem, 5.8vw, 3rem);
+    font-size: clamp(1.45rem, 4.8vw, 2.15rem);
     line-height: 1;
     display: flex;
     align-items: center;
@@ -1992,7 +2003,6 @@ body.anim-hard-freeze *::after {
     opacity: 0.5;
 }
 
-.post-file-preview-youtube-activate,
 .pd-youtube-activate {
   position: absolute;
   top: 50%;
@@ -2100,6 +2110,7 @@ body.anim-hard-freeze *::after {
 .post-layout-title .post-title,
 .post-layout-title-text .post-title {
     -webkit-line-clamp: 4;
+    line-clamp: 4;
 }
 
 .post-footer {
@@ -2120,6 +2131,14 @@ body.anim-hard-freeze *::after {
     flex-shrink: 0;
     grid-column: 1;
     grid-row: 1;
+}
+
+img[data-default-avatar="1"] {
+    background: currentColor;
+    color: inherit;
+    object-fit: contain;
+    -webkit-mask: url('../toolbaricons/toolbaricons_profile.svg') center / contain no-repeat;
+    mask: url('../toolbaricons/toolbaricons_profile.svg') center / contain no-repeat;
 }
 
 .post-footer-username {
@@ -2578,24 +2597,30 @@ body.anim-hard-freeze *::after {
 
 .post-card.post-card-nonvisual-no-cover .post-visual-column .post-file-preview-play,
 .post-card.post-card-nonvisual-no-cover .post-visual-column .post-file-preview-download-btn {
-    left: var(--post-card-space);
+    right: auto;
     bottom: var(--post-card-space);
     top: auto;
+    left: var(--post-card-space);
     transform: none;
-    width: auto;
-    height: auto;
+    width: clamp(44px, 13vw, 56px);
+    height: clamp(44px, 13vw, 56px);
     min-width: 0;
     padding: 0;
-    border: none;
-    background: transparent;
-    box-shadow: none;
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
+    border: var(--post-card-stroke-w) solid var(--post-card-line);
+    background: var(--post-card-surface);
+    box-shadow:
+        inset 0 0 0 var(--post-card-inner-stroke-w) var(--post-card-line-soft),
+        0 0 0 var(--post-card-stroke-w) color-mix(in srgb, var(--post-card-surface) 28%, transparent);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
     color: var(--post-card-ink);
-    font-size: 88px;
+    font-size: clamp(1.45rem, 4.8vw, 2.15rem);
     line-height: 1;
     opacity: 0;
     z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .post-card.post-card-nonvisual-no-cover .post-visual-column .post-file-preview:hover .post-file-preview-icon {
@@ -2926,24 +2951,30 @@ body.anim-hard-freeze *::after {
 
 .post-card.post-card-nonvisual-no-cover.post-card-visual-standalone .post-card-content.post-layout-visual .post-file-preview-play,
 .post-card.post-card-nonvisual-no-cover.post-card-visual-standalone .post-card-content.post-layout-visual .post-file-preview-download-btn {
-    left: var(--post-card-space);
+    right: auto;
     bottom: var(--post-card-space);
     top: auto;
+    left: var(--post-card-space);
     transform: none;
-    width: auto;
-    height: auto;
+    width: clamp(44px, 13vw, 56px);
+    height: clamp(44px, 13vw, 56px);
     min-width: 0;
     padding: 0;
-    border: none;
-    background: transparent;
-    box-shadow: none;
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
+    border: var(--post-card-stroke-w) solid var(--post-card-line);
+    background: var(--post-card-surface);
+    box-shadow:
+        inset 0 0 0 var(--post-card-inner-stroke-w) var(--post-card-line-soft),
+        0 0 0 var(--post-card-stroke-w) color-mix(in srgb, var(--post-card-surface) 28%, transparent);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
     color: var(--post-card-ink);
-    font-size: 88px;
+    font-size: clamp(1.45rem, 4.8vw, 2.15rem);
     line-height: 1;
     opacity: 0;
     z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .post-card.post-card-nonvisual-no-cover.post-card-visual-standalone .post-card-content.post-layout-visual .post-file-preview:hover .post-file-preview-icon {

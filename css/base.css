@@ -32,7 +32,7 @@
      * ============================================= */
     --sys-bg:   #ffffff;
     --sys-fg:   #000000;
-    --sys-font: inherit;
+    --sys-font: 'Liberation Mono', 'Courier New', monospace;
 
     /* Font size for nav bar and music bar chrome text */
     --chrome-bar-font: 0.9rem;
@@ -84,7 +84,7 @@
 }
 
 body {
-    font-family: var(--font-family);
+    font-family: var(--sys-font, var(--font-family));
     overflow: hidden;
     margin: 0;
     padding: 0;

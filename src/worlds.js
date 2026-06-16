@@ -1,17 +1,19 @@
 import JSZip from 'jszip';
+import { attachFakePasswordInput, getFakePasswordValue, setFakePasswordValue } from './password-mask.js';
 
-const WORLD_TRIGGER = 'world';
-const WORLD_EDIT_TRIGGER = 'edit';
 const WORLD_BUCKET = 'worlds';
 const WORLD_QUERY_PARAM = 'world';
 const MY_WORLDS_STORAGE_PREFIX = 'demo0-my-worlds-v1';
 const WORLD_GUEST_ACCESS_STORAGE_PREFIX = 'demo0-world-guest-access-v1';
+const OPTIONAL_UPDATES_DISABLED_STORAGE_KEY = 'demo0-updates-table-disabled-v1';
 const MY_WORLDS_LIMIT = 48;
 const MAIN_WORLD_LABEL = '4thworld';
+const MAIN_WORLD_USERNAME = 'cu!>.<later';
 const DEFAULT_LOADER_TINT = '23, 27, 34';
 const DEFAULT_UI_COLOR = '#cfd8e3';
 const DEFAULT_WORLD_TITLE = 'untitled world';
 const DEFAULT_WORLD_DESCRIPTION = 'No description yet.';
+const TRANSPARENT_AVATAR_URL = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 const WORLD_BG_MAX_WIDTH = 2560;
 const WORLD_BG_MAX_HEIGHT = 1440;
 const WORLD_BG_TARGET_TYPE = 'image/webp';
@@ -22,6 +24,12 @@ const WORLD_COVER_TARGET_TYPE = 'image/webp';
 const WORLD_COVER_TARGET_QUALITY = 0.74;
 const WORLD_COVER_MAX_STATIC_BYTES = 2 * 1024 * 1024;
 const WORLD_COVER_MAX_SOURCE_BYTES = 20 * 1024 * 1024;
+const WORLD_UI_ASSET_MAX_PNGS = 20;
+const WORLD_UI_ASSET_MAX_JPEGS = 4;
+const WORLD_UI_ASSET_MAX_PNG_BYTES = 2 * 1024 * 1024;
+const WORLD_UI_ASSET_MAX_JPEG_BYTES = 4 * 1024 * 1024;
+const WORLD_UI_ASSET_MAX_TOTAL_BYTES = 32 * 1024 * 1024;
+const PASSWORD_MASK_PLACEHOLDER = '#**^%**+!@*!+^%**+!*%';
 
 const WORLD_COVER_ALLOWED_MIME_TYPES = new Set([
   'image/jpeg',
@@ -445,28 +453,54 @@ function syncWorldLoaderTint(loaderOverlay, backgroundUrl, fallbackTint = '') {
     });
 }
 
-function getGuestWorldAccessStorageKey(worldId) {
-  return `${WORLD_GUEST_ACCESS_STORAGE_PREFIX}:${String(worldId || '').trim()}`;
+function normalizeWorldPasswordMode(mode = 'view') {
+  return String(mode || 'view').toLowerCase() === 'edit' ? 'edit' : 'view';
 }
 
-function hasGuestWorldAccess(worldId) {
-  const storageKey = getGuestWorldAccessStorageKey(worldId);
+function getWorldPasswordUpdatedAt(world, mode = 'view') {
+  const normalizedMode = normalizeWorldPasswordMode(mode);
+  const field = normalizedMode === 'edit' ? 'edit_password_updated_at' : 'view_password_updated_at';
+  return String(world?.[field] || '').trim();
+}
+
+function hasWorldPassword(world, mode = 'view') {
+  const normalizedMode = normalizeWorldPasswordMode(mode);
+  if (normalizedMode === 'edit') {
+    return Boolean(world?.edit_password_hash || world?.password_hash);
+  }
+  return Boolean(world?.view_password_hash || world?.password_hash);
+}
+
+function hasAnyWorldPassword(world) {
+  return Boolean(world?.view_password_hash || world?.edit_password_hash || world?.password_hash);
+}
+
+function getGuestWorldAccessStorageKey(worldId, mode = 'view') {
+  return `${WORLD_GUEST_ACCESS_STORAGE_PREFIX}:${normalizeWorldPasswordMode(mode)}:${String(worldId || '').trim()}`;
+}
+
+function hasGuestWorldAccess(worldId, mode = 'view', passwordUpdatedAt = '') {
+  const storageKey = getGuestWorldAccessStorageKey(worldId, mode);
   if (!storageKey || storageKey.endsWith(':')) return false;
 
   try {
-    return window.localStorage.getItem(storageKey) === '1';
+    const raw = window.localStorage.getItem(storageKey);
+    if (!raw) return false;
+    if (raw === '1') return !passwordUpdatedAt;
+    const parsed = JSON.parse(raw);
+    return String(parsed?.passwordUpdatedAt || '') === String(passwordUpdatedAt || '');
   } catch {
     return false;
   }
 }
 
-function rememberGuestWorldAccess(worldId, unlocked = true) {
-  const storageKey = getGuestWorldAccessStorageKey(worldId);
+function rememberGuestWorldAccess(worldId, mode = 'view', passwordUpdatedAt = '', unlocked = true) {
+  const storageKey = getGuestWorldAccessStorageKey(worldId, mode);
   if (!storageKey || storageKey.endsWith(':')) return;
 
   try {
     if (unlocked) {
-      window.localStorage.setItem(storageKey, '1');
+      window.localStorage.setItem(storageKey, JSON.stringify({ passwordUpdatedAt: String(passwordUpdatedAt || '') }));
     } else {
       window.localStorage.removeItem(storageKey);
     }
@@ -509,8 +543,17 @@ async function optimizeWorldCoverImage(file) {
 
 function isTypingSurface(target = document.activeElement) {
   if (!target) return false;
+  const element = target instanceof Element ? target : null;
+  if (element) {
+    const rects = element.getClientRects?.();
+    const styles = window.getComputedStyle(element);
+    const isVisible = rects?.length > 0 && styles.visibility !== 'hidden' && styles.display !== 'none';
+    if (!isVisible) return false;
+  }
   const tag = target.tagName?.toLowerCase();
-  return tag === 'input' || tag === 'textarea' || target.isContentEditable;
+  if (tag === 'input' || tag === 'textarea' || tag === 'select') return !target.readOnly && !target.disabled;
+  if (!target.isContentEditable) return false;
+  return Boolean(element?.closest?.('.post-form, .comment-input-wrap, .world-maker-modal, .profile-modal, .settings-panel'));
 }
 
 function getDefaultBackgroundUrl(baseUrl) {
@@ -522,14 +565,25 @@ function getPfpSrc(user, baseUrl) {
   if (!user) return fallback;
   return user.pfp_url || (user.pfp ? `${baseUrl}images/pfps/${user.pfp}` : fallback);
 }
+function isDefaultPfpSrc(src = '') {
+  return /(?:^|\/)images\/pfps\/default\.png(?:[?#].*)?$/i.test(String(src || '').trim());
+}
 
 function getWorldAccent(world) {
   return String(world?.ui_color || world?.font_color || DEFAULT_UI_COLOR).trim() || DEFAULT_UI_COLOR;
 }
 
+function normalizeColorInputValue(value, fallback) {
+  const color = String(value || '').trim();
+  return /^#[0-9a-f]{6}$/i.test(color) ? color : fallback;
+}
+
 function createWorldsDom(baseUrl) {
   const host = document.createElement('div');
   host.id = 'worldsFeatureHost';
+  const fontOptions = WORLD_FONTS
+    .map((font) => `<option value="${escapeHtml(font.value)}">${escapeHtml(font.label)}</option>`)
+    .join('');
   host.innerHTML = `
     <div class="world-maker-overlay" id="worldMakerOverlay" style="display:none;">
       <div class="world-maker-modal" id="worldMakerModal">
@@ -547,6 +601,30 @@ function createWorldsDom(baseUrl) {
             <h2 class="world-maker-title">build a reskinned world</h2>
             <div class="world-maker-form-grid world-maker-form-grid--plug">
               <input class="world-maker-input" type="text" id="worldPlugName" maxlength="80" autocomplete="off" placeholder="world name">
+              <div class="world-maker-inline-row world-maker-inline-row--font world-maker-field--wide">
+                <label class="world-maker-inline-control world-maker-inline-control--font" for="worldPlugFont">
+                  <div class="world-maker-dropdown ui-dropdown ui-dropdown--world" data-world-dropdown>
+                    <select id="worldPlugFont" class="world-maker-native-select" aria-label="world font">
+                      ${fontOptions}
+                    </select>
+                    <div class="world-maker-dropdown-display ui-dropdown-display" data-world-dropdown-display role="button" tabindex="0" aria-haspopup="listbox" aria-expanded="false" aria-controls="worldPlugFontDropdown">
+                      <span data-world-dropdown-text>font</span>
+                      <span class="world-maker-dropdown-chevron ui-dropdown-chevron" aria-hidden="true">v</span>
+                    </div>
+                    <div id="worldPlugFontDropdown" class="world-maker-dropdown-list ui-dropdown-list" data-world-dropdown-list role="listbox"></div>
+                  </div>
+                </label>
+              </div>
+              <div class="world-maker-inline-row world-maker-inline-row--colors world-maker-field--wide">
+                <label class="world-maker-inline-control world-maker-inline-control--color" for="worldPlugBackgroundColor">
+                  <input type="color" id="worldPlugBackgroundColor" value="#05070b" aria-label="world background color">
+                  <span class="world-maker-color-label">background color</span>
+                </label>
+                <label class="world-maker-inline-control world-maker-inline-control--color" for="worldPlugFontColor">
+                  <input type="color" id="worldPlugFontColor" value="#cfd8e3" aria-label="world font color">
+                  <span class="world-maker-color-label">font color</span>
+                </label>
+              </div>
               <div class="post-form-category-row">
                 <input type="hidden" id="worldPlugCategory" value="">
                 <div class="post-form-category-custom" id="worldPlugCategoryCustom">
@@ -595,7 +673,8 @@ function createWorldsDom(baseUrl) {
                       <div id="worldPlugVisibilityDropdown" class="world-maker-dropdown-list ui-dropdown-list" data-world-dropdown-list role="listbox"></div>
                     </div>
                   </label>
-                  <input class="world-maker-mode-password" type="password" id="worldPlugViewPassword" autocomplete="new-password" placeholder="password" style="display:none;">
+                  <input class="world-maker-mode-password" type="password" id="worldPlugViewPassword" autocomplete="new-password" placeholder="${PASSWORD_MASK_PLACEHOLDER}" style="display:none;">
+                  <input class="world-maker-mode-password" type="password" id="worldPlugViewPasswordConfirm" autocomplete="new-password" placeholder="confirm${PASSWORD_MASK_PLACEHOLDER}" style="display:none;">
                 </div>
                 <div class="world-maker-mode-setting" id="worldPlugEditModeRow" data-private="false">
                   <label class="world-maker-inline-control world-maker-inline-control--font world-maker-inline-control--mode" for="worldPlugEditing">
@@ -612,7 +691,8 @@ function createWorldsDom(baseUrl) {
                       <div id="worldPlugEditingDropdown" class="world-maker-dropdown-list ui-dropdown-list" data-world-dropdown-list role="listbox"></div>
                     </div>
                   </label>
-                  <input class="world-maker-mode-password" type="password" id="worldPlugEditPassword" autocomplete="new-password" placeholder="password" style="display:none;">
+                  <input class="world-maker-mode-password" type="password" id="worldPlugEditPassword" autocomplete="new-password" placeholder="${PASSWORD_MASK_PLACEHOLDER}" style="display:none;">
+                  <input class="world-maker-mode-password" type="password" id="worldPlugEditPasswordConfirm" autocomplete="new-password" placeholder="confirm${PASSWORD_MASK_PLACEHOLDER}" style="display:none;">
                 </div>
               </div>
             </div>
@@ -626,7 +706,50 @@ function createWorldsDom(baseUrl) {
           <section class="world-maker-step" data-step-panel="code">
             <div class="world-maker-form-grid world-maker-form-grid--plug">
               <input class="world-maker-input" type="text" id="worldCodeName" maxlength="80" autocomplete="off" placeholder="world name">
-              <textarea class="world-maker-input world-maker-textarea" id="worldCodeDescription" rows="4" maxlength="500" placeholder="description"></textarea>
+              <div class="world-maker-inline-row world-maker-inline-row--font world-maker-field--wide">
+                <label class="world-maker-inline-control world-maker-inline-control--font" for="worldCodeFont">
+                  <div class="world-maker-dropdown ui-dropdown ui-dropdown--world" data-world-dropdown>
+                    <select id="worldCodeFont" class="world-maker-native-select" aria-label="world font">
+                      ${fontOptions}
+                    </select>
+                    <div class="world-maker-dropdown-display ui-dropdown-display" data-world-dropdown-display role="button" tabindex="0" aria-haspopup="listbox" aria-expanded="false" aria-controls="worldCodeFontDropdown">
+                      <span data-world-dropdown-text>font</span>
+                      <span class="world-maker-dropdown-chevron ui-dropdown-chevron" aria-hidden="true">v</span>
+                    </div>
+                    <div id="worldCodeFontDropdown" class="world-maker-dropdown-list ui-dropdown-list" data-world-dropdown-list role="listbox"></div>
+                  </div>
+                </label>
+              </div>
+              <div class="world-maker-inline-row world-maker-inline-row--colors world-maker-field--wide">
+                <label class="world-maker-inline-control world-maker-inline-control--color" for="worldCodeBackgroundColor">
+                  <input type="color" id="worldCodeBackgroundColor" value="#05070b" aria-label="loading screen background color">
+                  <span class="world-maker-color-label">loading screen background</span>
+                </label>
+                <label class="world-maker-inline-control world-maker-inline-control--color" for="worldCodeFontColor">
+                  <input type="color" id="worldCodeFontColor" value="#cfd8e3" aria-label="loading screen font color">
+                  <span class="world-maker-color-label">loading screen font color</span>
+                </label>
+              </div>
+              <div class="post-form-category-row">
+                <input type="hidden" id="worldCodeCategory" value="">
+                <div class="post-form-category-custom" id="worldCodeCategoryCustom">
+                  <div class="post-form-category-display" id="worldCodeCategoryDisplay" role="button" tabindex="0">
+                    <span id="worldCodeCategoryDisplayText" class="is-placeholder">select category</span>
+                    <span class="post-form-category-display-actions">
+                      <button type="button" class="post-form-category-inline-btn" id="worldCodeCategoryDropdownToggle" aria-label="open category dropdown">v</button>
+                      <button type="button" class="post-form-category-inline-btn" id="worldCodeCategoryEditorToggle" aria-label="open category editor">☰</button>
+                    </span>
+                  </div>
+                  <div class="post-form-category-dropdown" id="worldCodeCategoryDropdown"></div>
+                </div>
+              </div>
+              <div class="post-form-category-panel" id="worldCodeCategoryPanel" style="display:none;">
+                <div class="post-form-category-create-row">
+                  <input type="text" class="post-form-category-input" id="worldCodeCategoryInput" placeholder="new category" autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="off">
+                  <button type="button" class="post-form-category-create-btn" id="worldCodeCategoryCreateBtn">+</button>
+                </div>
+                <div class="post-form-category-list" id="worldCodeCategoryList"></div>
+              </div>
               <button type="button" class="world-maker-download world-maker-input-box" id="worldCodeDownload">download template zip</button>
               <label class="world-maker-field world-maker-field--upload world-maker-field--wide">
                 <label class="world-maker-upload world-maker-upload--compact world-maker-input-box">
@@ -638,6 +761,18 @@ function createWorldsDom(baseUrl) {
                 <label class="world-maker-upload world-maker-upload--compact world-maker-input-box">
                   <span id="worldCodeCssLabel">choose css</span>
                   <input type="file" id="worldCodeCss" accept=".css,text/css">
+                </label>
+              </label>
+              <label class="world-maker-field world-maker-field--upload world-maker-field--wide">
+                <label class="world-maker-upload world-maker-upload--compact world-maker-input-box">
+                  <span id="worldCodeAssetsLabel">choose ui assets</span>
+                  <input type="file" id="worldCodeAssets" accept="image/png,image/jpeg,.png,.jpg,.jpeg" multiple>
+                </label>
+              </label>
+              <label class="world-maker-field world-maker-field--upload world-maker-field--wide">
+                <label class="world-maker-upload world-maker-upload--compact world-maker-input-box">
+                  <span id="worldCodeCoverLabel">choose world card cover</span>
+                  <input type="file" id="worldCodeCover" accept="image/jpeg,image/png,image/gif,image/webp,image/heic,image/heif,.heic,.heif">
                 </label>
               </label>
               <div class="world-maker-mode-row world-maker-field--wide">
@@ -656,7 +791,8 @@ function createWorldsDom(baseUrl) {
                       <div id="worldCodeVisibilityDropdown" class="world-maker-dropdown-list ui-dropdown-list" data-world-dropdown-list role="listbox"></div>
                     </div>
                   </label>
-                  <input class="world-maker-mode-password" type="password" id="worldCodeViewPassword" autocomplete="new-password" placeholder="password" style="display:none;">
+                  <input class="world-maker-mode-password" type="password" id="worldCodeViewPassword" autocomplete="new-password" placeholder="${PASSWORD_MASK_PLACEHOLDER}" style="display:none;">
+                  <input class="world-maker-mode-password" type="password" id="worldCodeViewPasswordConfirm" autocomplete="new-password" placeholder="confirm${PASSWORD_MASK_PLACEHOLDER}" style="display:none;">
                 </div>
                 <div class="world-maker-mode-setting" id="worldCodeEditModeRow" data-private="false">
                   <label class="world-maker-inline-control world-maker-inline-control--font world-maker-inline-control--mode" for="worldCodeEditing">
@@ -673,7 +809,8 @@ function createWorldsDom(baseUrl) {
                       <div id="worldCodeEditingDropdown" class="world-maker-dropdown-list ui-dropdown-list" data-world-dropdown-list role="listbox"></div>
                     </div>
                   </label>
-                  <input class="world-maker-mode-password" type="password" id="worldCodeEditPassword" autocomplete="new-password" placeholder="password" style="display:none;">
+                  <input class="world-maker-mode-password" type="password" id="worldCodeEditPassword" autocomplete="new-password" placeholder="${PASSWORD_MASK_PLACEHOLDER}" style="display:none;">
+                  <input class="world-maker-mode-password" type="password" id="worldCodeEditPasswordConfirm" autocomplete="new-password" placeholder="confirm${PASSWORD_MASK_PLACEHOLDER}" style="display:none;">
                 </div>
               </div>
             </div>
@@ -687,26 +824,22 @@ function createWorldsDom(baseUrl) {
       </div>
     </div>
 
-    <div class="world-mode-chrome" id="worldModeChrome" style="display:none;">
+    <div class="world-mode-chrome" id="worldModeChrome" style="display:block;">
       <div class="world-mode-nav-bar" id="worldModeNavBar">
-        <nav class="world-mode-breadcrumbs" id="worldModeTabs" aria-label="world navigation"></nav>
-        <div class="world-mode-nav-actions" id="worldModeNavActions">
+        <nav class="world-mode-breadcrumbs" id="worldModeTabs" aria-label="world navigation"><span class="world-mode-breadcrumb world-mode-breadcrumb-current" aria-current="page">loading...</span></nav>
+        <div class="world-mode-nav-actions" id="worldModeNavActions" style="display:none;">
           <button type="button" class="world-mode-breadcrumb world-mode-edit-world" id="worldModeEditBtn" style="display:none;">edit world</button>
           <button type="button" class="world-mode-breadcrumb world-mode-logout" id="logoutBtn">log out</button>
         </div>
       </div>
       <div class="world-mode-myworlds-menu" id="worldModeMyWorldsMenu" style="display:none;"></div>
       <button type="button" class="world-mode-delete" id="worldModeDelete" style="display:none;">delete</button>
-      <div class="world-mode-pfp-wrap">
-        <img id="worldModePfp" class="world-mode-pfp" src="${baseUrl}images/pfps/default.png" alt="">
-      </div>
-      <iframe id="worldModeFrame" class="world-mode-frame" sandbox="allow-scripts allow-same-origin" referrerpolicy="no-referrer" style="display:none;"></iframe>
+      <iframe id="worldModeFrame" class="world-mode-frame" sandbox="allow-scripts allow-same-origin allow-forms" referrerpolicy="no-referrer" style="display:none;"></iframe>
     </div>
 
     <div class="world-loader-overlay" id="worldLoaderOverlay" data-mode="loading" style="display:none;">
       <div class="world-loader-backdrop" id="worldLoaderBackdrop"></div>
       <div class="world-loader-wash" id="worldLoaderWash"></div>
-      <img class="world-loader-pfp" id="worldLoaderPfp" src="" alt="" aria-hidden="true">
       <div class="world-loader-copy">
         <div class="world-loader-kicker" id="worldLoaderKicker">world</div>
         <h2 class="world-loader-title" id="worldLoaderTitle">untitled world</h2>
@@ -718,31 +851,29 @@ function createWorldsDom(baseUrl) {
           </div>
           <div class="world-loader-status-text" id="worldLoaderStatus">loading world...</div>
         </div>
+        <img class="world-loader-pfp" id="worldLoaderPfp" src="" alt="" aria-hidden="true">
       </div>
 
       <div class="world-password-panel" id="worldPasswordPanel">
-        <div class="world-password-kicker">password required</div>
-        <h2 class="world-password-title" id="worldPasswordTitle">unlock this world</h2>
-        <p class="world-password-copy" id="worldPasswordCopy">Enter the world password to continue.</p>
-        <label class="world-password-field">
-          <span>Password</span>
-          <input type="password" id="worldPasswordInput" autocomplete="current-password" spellcheck="false">
-        </label>
+        <input class="world-password-input" type="password" id="worldPasswordInput" autocomplete="current-password" spellcheck="false" placeholder="${PASSWORD_MASK_PLACEHOLDER}">
+        <input class="world-password-input" type="password" id="worldEditPasswordInput" autocomplete="current-password" spellcheck="false" placeholder="${PASSWORD_MASK_PLACEHOLDER}" style="display:none;">
         <div class="world-password-error" id="worldPasswordError" aria-live="polite"></div>
-        <div class="world-password-actions">
-          <button type="button" class="world-password-secondary" id="worldPasswordCancel">cancel</button>
-          <button type="button" class="world-password-primary" id="worldPasswordSubmit">unlock</button>
-        </div>
+        <button type="button" class="world-password-secondary" id="worldPasswordCancel" aria-label="cancel password prompt" style="display:none;">cancel</button>
+        <button type="button" class="world-password-primary" id="worldPasswordSubmit" aria-label="submit password" style="display:none;">unlock</button>
       </div>
     </div>
   `;
 
   document.body.appendChild(host);
+  document.getElementById('worldNavBootShell')?.remove();
   return {
     makerOverlay: host.querySelector('#worldMakerOverlay'),
     makerShell: host.querySelector('#worldMakerShell'),
     makerClose: host.querySelector('#worldMakerClose'),
     plugName: host.querySelector('#worldPlugName'),
+    plugFont: host.querySelector('#worldPlugFont'),
+    plugBackgroundColor: host.querySelector('#worldPlugBackgroundColor'),
+    plugFontColor: host.querySelector('#worldPlugFontColor'),
     plugDescription: host.querySelector('#worldPlugDescription'),    plugCategoryHidden: host.querySelector('#worldPlugCategory'),
     plugCategoryDisplay: host.querySelector('#worldPlugCategoryDisplay'),
     plugCategoryDisplayText: host.querySelector('#worldPlugCategoryDisplayText'),
@@ -763,21 +894,41 @@ function createWorldsDom(baseUrl) {
     plugViewModeRow: host.querySelector('#worldPlugViewModeRow'),
     plugEditModeRow: host.querySelector('#worldPlugEditModeRow'),
     plugViewPassword: host.querySelector('#worldPlugViewPassword'),
+    plugViewPasswordConfirm: host.querySelector('#worldPlugViewPasswordConfirm'),
     plugEditPassword: host.querySelector('#worldPlugEditPassword'),
+    plugEditPasswordConfirm: host.querySelector('#worldPlugEditPasswordConfirm'),
     plugBack: host.querySelector('#worldPlugBack'),
     plugPublish: host.querySelector('#worldPlugPublish'),
     codeHtml: host.querySelector('#worldCodeHtml'),
     codeCss: host.querySelector('#worldCodeCss'),
+    codeAssets: host.querySelector('#worldCodeAssets'),
+    codeCover: host.querySelector('#worldCodeCover'),
     codeHtmlLabel: host.querySelector('#worldCodeHtmlLabel'),
     codeCssLabel: host.querySelector('#worldCodeCssLabel'),
+    codeAssetsLabel: host.querySelector('#worldCodeAssetsLabel'),
+    codeCoverLabel: host.querySelector('#worldCodeCoverLabel'),
     codeName: host.querySelector('#worldCodeName'),
-    codeDescription: host.querySelector('#worldCodeDescription'),
+    codeFont: host.querySelector('#worldCodeFont'),
+    codeBackgroundColor: host.querySelector('#worldCodeBackgroundColor'),
+    codeFontColor: host.querySelector('#worldCodeFontColor'),
+    codeCategoryHidden: host.querySelector('#worldCodeCategory'),
+    codeCategoryDisplay: host.querySelector('#worldCodeCategoryDisplay'),
+    codeCategoryDisplayText: host.querySelector('#worldCodeCategoryDisplayText'),
+    codeCategoryDropdownToggle: host.querySelector('#worldCodeCategoryDropdownToggle'),
+    codeCategoryEditorToggle: host.querySelector('#worldCodeCategoryEditorToggle'),
+    codeCategoryDropdown: host.querySelector('#worldCodeCategoryDropdown'),
+    codeCategoryPanel: host.querySelector('#worldCodeCategoryPanel'),
+    codeCategoryInput: host.querySelector('#worldCodeCategoryInput'),
+    codeCategoryCreateBtn: host.querySelector('#worldCodeCategoryCreateBtn'),
+    codeCategoryList: host.querySelector('#worldCodeCategoryList'),
     codeVisibility: host.querySelector('#worldCodeVisibility'),
     codeEditing: host.querySelector('#worldCodeEditing'),
     codeViewModeRow: host.querySelector('#worldCodeViewModeRow'),
     codeEditModeRow: host.querySelector('#worldCodeEditModeRow'),
     codeViewPassword: host.querySelector('#worldCodeViewPassword'),
+    codeViewPasswordConfirm: host.querySelector('#worldCodeViewPasswordConfirm'),
     codeEditPassword: host.querySelector('#worldCodeEditPassword'),
+    codeEditPasswordConfirm: host.querySelector('#worldCodeEditPasswordConfirm'),
     codeBack: host.querySelector('#worldCodeBack'),
     codePublish: host.querySelector('#worldCodePublish'),
     codeDownload: host.querySelector('#worldCodeDownload'),
@@ -791,8 +942,6 @@ function createWorldsDom(baseUrl) {
     modeEditBtn: host.querySelector('#worldModeEditBtn'),
     logoutBtn: host.querySelector('#logoutBtn'),
     modeDelete: host.querySelector('#worldModeDelete'),
-    modePfpWrap: host.querySelector('.world-mode-pfp-wrap'),
-    modePfp: host.querySelector('#worldModePfp'),
     modeIdentityPanel: host.querySelector('.world-mode-identity-panel'),
     titleCard: host.querySelector('#worldModeTitleCard'),
     modeDescription: host.querySelector('#worldModeDescription'),
@@ -815,6 +964,7 @@ function createWorldsDom(baseUrl) {
     passwordTitle: host.querySelector('#worldPasswordTitle'),
     passwordCopy: host.querySelector('#worldPasswordCopy'),
     passwordInput: host.querySelector('#worldPasswordInput'),
+    editPasswordInput: host.querySelector('#worldEditPasswordInput'),
     passwordError: host.querySelector('#worldPasswordError'),
     passwordCancel: host.querySelector('#worldPasswordCancel'),
     passwordSubmit: host.querySelector('#worldPasswordSubmit'),
@@ -834,22 +984,190 @@ async function buildTemplateZip() {
   <link rel="stylesheet" href="./world.css">
 </head>
 <body>
-  <main class="world-root">
-    <section class="hero">
-      <p class="eyebrow">custom world</p>
-      <h1>hello world</h1>
-      <p>Edit this file and re-upload it with world.css. This page runs inside a sandboxed iframe.</p>
-    </section>
+  <main class="world-root" id="worldRoot">
+    <div class="world-toolbar">
+      <button type="button" id="newPostBtn">new post</button>
+      <button type="button" id="newWorldBtn">new world</button>
+      <button type="button" id="refreshBtn">refresh</button>
+    </div>
+    <section class="world-stage" id="worldStage" aria-live="polite"></section>
   </main>
+  <script>
+    (function () {
+      var requestId = 0;
+      var pending = new Map();
+
+      function request(method, params) {
+        requestId += 1;
+        var id = String(requestId);
+        window.parent.postMessage({
+          demo0WorldBridge: true,
+          type: 'request',
+          requestId: id,
+          method: method,
+          params: params || {}
+        }, '*');
+
+        return new Promise(function (resolve, reject) {
+          pending.set(id, { resolve: resolve, reject: reject });
+          window.setTimeout(function () {
+            if (!pending.has(id)) return;
+            pending.delete(id);
+            reject(new Error('WorldSDK request timed out: ' + method));
+          }, 15000);
+        });
+      }
+
+      window.addEventListener('message', function (event) {
+        var data = event.data || {};
+        if (data.demo0WorldBridge !== true) return;
+        if (data.type === 'ready') {
+          window.WorldSDK.context = data.payload || null;
+          window.dispatchEvent(new CustomEvent('worldsdkready', { detail: data.payload || null }));
+          return;
+        }
+        if (data.type !== 'response') return;
+        var waiter = pending.get(data.requestId);
+        if (!waiter) return;
+        pending.delete(data.requestId);
+        if (data.ok) waiter.resolve(data.payload);
+        else waiter.reject(new Error(data.error || 'WorldSDK request failed'));
+      });
+
+      window.WorldSDK = {
+        version: 1,
+        context: null,
+        request: request,
+        auth: {
+          currentUser: function () { return request('auth.currentUser'); }
+        },
+        contextApi: {
+          get: function () { return request('context.get'); }
+        },
+        posts: {
+          list: function (params) { return request('posts.list', params); },
+          create: function (params) { return request('posts.create', params); },
+          open: function (postId) { return request('posts.open', { postId: postId }); },
+          openCreateForm: function () { return request('posts.openCreateForm'); }
+        },
+        comments: {
+          list: function (postId) { return request('comments.list', { postId: postId }); },
+          create: function (postId, body) { return request('comments.create', { postId: postId, body: body }); }
+        },
+        worlds: {
+          list: function () { return request('worlds.list'); },
+          create: function (params) { return request('worlds.create', params); },
+          open: function (worldId) { return request('worlds.open', { worldId: worldId }); },
+          openMaker: function () { return request('worlds.openMaker'); }
+        },
+        categories: {
+          list: function () { return request('categories.list'); }
+        }
+      };
+    })();
+
+    var stage = document.getElementById('worldStage');
+    var refreshBtn = document.getElementById('refreshBtn');
+    var newPostBtn = document.getElementById('newPostBtn');
+    var newWorldBtn = document.getElementById('newWorldBtn');
+
+    function text(value) {
+      return String(value == null ? '' : value);
+    }
+
+    function setStatus(message) {
+      stage.innerHTML = '<div class="empty-state">' + text(message) + '</div>';
+    }
+
+    function renderPost(post, index) {
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'star-post';
+      button.style.left = ((Number(post.x) || (120 + index * 82)) % 900) + 'px';
+      button.style.top = ((Number(post.y) || (100 + index * 55)) % 520) + 'px';
+      button.innerHTML = '<span class="star-shape"></span><span class="star-title"></span>';
+      button.querySelector('.star-title').textContent = post.title || post.body || 'untitled post';
+      button.addEventListener('click', function () {
+        window.WorldSDK.posts.open(post.id).catch(function (error) { console.error(error); });
+      });
+      stage.appendChild(button);
+    }
+
+    function renderWorld(world, index) {
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'moon-world';
+      button.style.left = (80 + index * 130) + 'px';
+      button.style.top = (380 + (index % 2) * 72) + 'px';
+      button.textContent = world.name || 'untitled world';
+      button.addEventListener('click', function () {
+        window.WorldSDK.worlds.open(world.id).catch(function (error) { console.error(error); });
+      });
+      stage.appendChild(button);
+    }
+
+    async function render() {
+      setStatus('loading custom world...');
+      var context = await window.WorldSDK.contextApi.get();
+      var posts = await window.WorldSDK.posts.list({ limit: 100 });
+      var worlds = await window.WorldSDK.worlds.list();
+
+      stage.innerHTML = '';
+      if (!posts.length && !worlds.length) {
+        setStatus((context.world && context.world.name ? context.world.name : 'custom world') + ' is empty');
+        return;
+      }
+
+      posts.forEach(renderPost);
+      worlds.forEach(renderWorld);
+    }
+
+    refreshBtn.addEventListener('click', function () { render().catch(function (error) { setStatus(error.message); }); });
+    newPostBtn.addEventListener('click', async function () {
+      var title = window.prompt('post title', '');
+      if (title == null) return;
+      var body = window.prompt('post text', '');
+      if (body == null) return;
+      try {
+        await window.WorldSDK.posts.create({ title: title, body: body });
+        await render();
+      } catch (error) {
+        setStatus(error.message);
+      }
+    });
+    newWorldBtn.addEventListener('click', async function () {
+      var name = window.prompt('world name', '');
+      if (name == null) return;
+      var description = window.prompt('world description', '');
+      if (description == null) return;
+      try {
+        await window.WorldSDK.worlds.create({
+          type: 'plug',
+          name: name,
+          description: description,
+          visibility: 'public',
+          editing: 'public'
+        });
+        await render();
+      } catch (error) {
+        setStatus(error.message);
+      }
+    });
+    window.addEventListener('worldsdkready', function () { render().catch(function (error) { setStatus(error.message); }); });
+    window.setTimeout(function () {
+      if (!window.WorldSDK.context) render().catch(function (error) { setStatus(error.message); });
+    }, 500);
+  </script>
 </body>
 </html>
 `);
   zip.file('world.css', `:root {
   color-scheme: dark;
-  --bg-a: #10121a;
-  --bg-b: #1d3142;
+  --bg-a: #07080d;
+  --bg-b: #18231e;
   --fg: #eef2ff;
   --muted: rgba(238, 242, 255, 0.72);
+  --accent: #e8d774;
 }
 
 * {
@@ -859,49 +1177,117 @@ async function buildTemplateZip() {
 body {
   margin: 0;
   min-height: 100vh;
-  font-family: Georgia, serif;
+  font-family: Georgia, 'Times New Roman', serif;
   color: var(--fg);
-  background:
-    radial-gradient(circle at top, rgba(255,255,255,0.08), transparent 40%),
-    linear-gradient(135deg, var(--bg-a), var(--bg-b));
+  background: linear-gradient(135deg, var(--bg-a), var(--bg-b));
 }
 
 .world-root {
   min-height: 100vh;
-  display: grid;
-  place-items: center;
-  padding: 48px 24px;
+  position: relative;
+  overflow: hidden;
 }
 
-.hero {
-  width: min(720px, 100%);
+.world-toolbar {
+  position: fixed;
+  z-index: 10;
+  top: 18px;
+  left: 18px;
+  display: flex;
+  gap: 8px;
 }
 
-.eyebrow {
-  margin: 0 0 12px;
-  letter-spacing: 0.24em;
-  text-transform: uppercase;
+.world-toolbar button,
+.moon-world,
+.star-post {
+  border: 1px solid rgba(255,255,255,0.26);
+  color: var(--fg);
+  background: rgba(0,0,0,0.34);
+  cursor: pointer;
+}
+
+.world-toolbar button {
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+}
+
+.world-stage {
+  position: relative;
+  min-height: 100vh;
+}
+
+.empty-state {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
   color: var(--muted);
-  font-size: 0.72rem;
 }
 
-h1 {
-  margin: 0 0 16px;
-  font-size: clamp(2.5rem, 8vw, 5rem);
+.star-post {
+  position: absolute;
+  width: 132px;
+  min-height: 118px;
+  border: 0;
+  background: transparent;
 }
 
-p {
-  margin: 0;
-  max-width: 48ch;
-  line-height: 1.6;
+.star-shape {
+  display: block;
+  width: 78px;
+  height: 78px;
+  margin: 0 auto 8px;
+  background: var(--accent);
+  clip-path: polygon(50% 0%, 62% 35%, 98% 35%, 68% 56%, 79% 91%, 50% 70%, 21% 91%, 32% 56%, 2% 35%, 38% 35%);
+  filter: drop-shadow(0 0 16px rgba(232,215,116,0.44));
+}
+
+.star-title {
+  display: block;
+  width: 100%;
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.moon-world {
+  position: absolute;
+  min-width: 112px;
+  min-height: 52px;
+  padding: 10px 14px;
+  border-radius: 999px;
+  box-shadow: 0 0 20px rgba(255,255,255,0.16);
 }
 `);
   zip.file('README.txt', `World sandbox notes
 
-- Your custom world runs inside an iframe with sandbox="allow-scripts allow-same-origin".
-- It cannot access the main app UI or Supabase client from the parent page.
-- Keep asset references relative to this folder when possible.
-- The app will publish world.html and world.css into your world's storage folder.
+- Your custom world runs inside a sandboxed iframe.
+- You do not get direct access to the parent app DOM or raw Supabase client.
+- Use window.WorldSDK from world.html to ask the parent app for approved capabilities.
+- Custom-code worlds can upload a world card cover in the native maker; SDK-created code worlds can pass cover.
+- You can upload initial UI assets with the custom-code maker: up to 20 PNG files and 4 JPEG files.
+- PNG UI assets must be 2 MB or smaller each; JPEG UI assets must be 4 MB or smaller each; total UI assets must stay under 32 MB.
+- Reference uploaded UI assets from world.html/world.css with ./assets/filename.png or ./assets/filename.jpg.
+- Asset filenames are cleaned before upload, so simple lowercase names without spaces are safest.
+- Uploaded UI asset metadata is also written to ./assets/manifest.json.
+- Available SDK methods in v1:
+  - WorldSDK.contextApi.get()
+  - WorldSDK.auth.currentUser()
+  - WorldSDK.posts.list({ limit, category, userId })
+  - WorldSDK.posts.create({ title, body, category, url, x, y })
+  - WorldSDK.posts.open(postId)
+  - WorldSDK.posts.openCreateForm() for the native full file/upload form
+  - WorldSDK.comments.list(postId)
+  - WorldSDK.comments.create(postId, body)
+  - WorldSDK.worlds.list()
+  - WorldSDK.worlds.create({ type, name, description, category, visibility, editing, viewPassword, editPassword, html, css, assets, cover })
+  - WorldSDK.worlds.open(worldId)
+  - WorldSDK.worlds.openMaker() for the native full world maker
+  - WorldSDK.categories.list()
+- The parent app still enforces world scope, passwords, edit access, files, posts, comments, and nested worlds.
+- The app currently publishes world.html and world.css into your world's storage folder. Put JavaScript inline in world.html unless the uploader is expanded later.
 `);
 
   return zip.generateAsync({ type: 'blob' });
@@ -925,15 +1311,38 @@ export function initWorldsFeature(options) {
     onWorldDeleted,
     onEnterWorld,
     onExitWorld,
+    onBeforeShowLoader,
     onOpenProfile,
     onBeforeOpenMaker,
+    onCustomWorldGetContext,
+    onCustomWorldListPosts,
+    onCustomWorldCreatePost,
+    onCustomWorldOpenPost,
+    onCustomWorldOpenPostForm,
+    onCustomWorldListComments,
+    onCustomWorldCreateComment,
     isMusicPanelOpen,
     onCloseMusicPanel,
     onRequestCloseEditorMode
   } = options;
 
   const dom = createWorldsDom(baseUrl);
-  let keyBuffer = '';
+  [
+    dom.plugViewPassword,
+    dom.plugViewPasswordConfirm,
+    dom.plugEditPassword,
+    dom.plugEditPasswordConfirm,
+    dom.codeViewPassword,
+    dom.codeViewPasswordConfirm,
+    dom.codeEditPassword,
+    dom.codeEditPasswordConfirm,
+    dom.passwordInput,
+    dom.editPasswordInput
+  ].forEach((input) => {
+    if (!input) return;
+    input.placeholder = input.id?.endsWith('Confirm') ? `confirm${PASSWORD_MASK_PLACEHOLDER}` : PASSWORD_MASK_PLACEHOLDER;
+    attachFakePasswordInput(input);
+  });
   let publishInFlight = false;
   let activeWorld = null;
   let activeWorldCreator = null;
@@ -947,15 +1356,281 @@ export function initWorldsFeature(options) {
   let latestUpdateInfoRetryAt = 0;
   let loadWorldsInFlightPromise = null;
   let loadWorldsInFlightKey = '';
+  let customWorldFrameSrc = '';
+  let customWorldFrameLoadSeq = 0;
+  const customWorldFrameVersionById = new Map();
   let myWorldIds = [];
   let myWorldMap = new Map();
   let myWorldsHydrated = false;
   let makerSourceWorldId = '';
   const worldDropdownControllers = new Map();
   let makerBaselineState = null;
+  let customWorldEditRevealWorldId = '';
+  let worldNavLastRightClickAt = 0;
   let parentTabAction = async () => {
     await exitWorldMode();
   };
+
+  function safeBridgeUser(user = null) {
+    if (!user) return null;
+    return {
+      id: user.id || null,
+      username: user.username || user.email || '',
+      pfp: user.pfp || null,
+      pfp_url: user.pfp_url || null
+    };
+  }
+
+  function safeBridgeWorld(world = null) {
+    if (!world) return null;
+    return {
+      id: world.id || null,
+      user_id: world.user_id || null,
+      parent_world_id: world.parent_world_id || null,
+      name: world.name || '',
+      description: world.description || '',
+      category: world.category || null,
+      background_url: world.background_url || null,
+      cover_url: world.cover_url || null,
+      custom_code_url: world.custom_code_url || null,
+      font_family: world.font_family || null,
+      font_color: world.font_color || null,
+      ui_color: world.ui_color || null,
+      background_color: world.background_color || null,
+      is_public_view: world.is_public_view !== false,
+      is_public_edit: world.is_public_edit !== false,
+      x: Number.isFinite(Number(world.x)) ? Number(world.x) : null,
+      y: Number.isFinite(Number(world.y)) ? Number(world.y) : null
+    };
+  }
+
+  function safeBridgeCategory(record = null) {
+    if (!record) return null;
+    return {
+      id: record.id || null,
+      name: record.name || '',
+      world_id: record.world_id || null,
+      color: record.thread_color || record.color || record.line_color || record.network_color || null
+    };
+  }
+
+  function isActiveCustomWorldFrame(source = null) {
+    return Boolean(
+      activeWorld?.id
+      && canUseCustomWorldFrame(activeWorld)
+      && dom.modeFrame?.contentWindow
+      && source === dom.modeFrame.contentWindow
+    );
+  }
+
+  async function getCustomWorldBridgeContext() {
+    const customContext = typeof onCustomWorldGetContext === 'function'
+      ? await onCustomWorldGetContext({ world: activeWorld, creator: activeWorldCreator })
+      : null;
+
+    return {
+      version: 1,
+      world: safeBridgeWorld(activeWorld),
+      creator: safeBridgeUser(activeWorldCreator),
+      currentUser: safeBridgeUser(getCurrentUser?.()),
+      editMode: Boolean(getIsEditMode?.()),
+      categories: (getCategoryRecords?.() || getCategories?.() || []).map(safeBridgeCategory).filter(Boolean),
+      ...(customContext || {})
+    };
+  }
+
+  async function runCustomWorldBridgeMethod(method, params = {}) {
+    const normalizedMethod = String(method || '').trim();
+
+    if (!activeWorld?.id || !canUseCustomWorldFrame(activeWorld)) {
+      throw new Error('No active custom world.');
+    }
+
+    if (normalizedMethod === 'context.get') {
+      return getCustomWorldBridgeContext();
+    }
+
+    if (normalizedMethod === 'auth.currentUser') {
+      return safeBridgeUser(getCurrentUser?.());
+    }
+
+    if (normalizedMethod === 'categories.list') {
+      return (getCategoryRecords?.() || getCategories?.() || []).map(safeBridgeCategory).filter(Boolean);
+    }
+
+    if (normalizedMethod === 'posts.list') {
+      if (typeof onCustomWorldListPosts !== 'function') return [];
+      return onCustomWorldListPosts({ world: activeWorld, params });
+    }
+
+    if (normalizedMethod === 'posts.create') {
+      if (typeof onCustomWorldCreatePost !== 'function') return null;
+      return onCustomWorldCreatePost({ world: activeWorld, params });
+    }
+
+    if (normalizedMethod === 'posts.open') {
+      if (typeof onCustomWorldOpenPost !== 'function') return false;
+      return Boolean(await onCustomWorldOpenPost({ world: activeWorld, postId: params?.postId }));
+    }
+
+    if (normalizedMethod === 'posts.openCreateForm') {
+      if (typeof onCustomWorldOpenPostForm !== 'function') return false;
+      return Boolean(await onCustomWorldOpenPostForm({ world: activeWorld }));
+    }
+
+    if (normalizedMethod === 'comments.list') {
+      if (typeof onCustomWorldListComments !== 'function') return [];
+      return onCustomWorldListComments({ world: activeWorld, postId: params?.postId });
+    }
+
+    if (normalizedMethod === 'comments.create') {
+      if (typeof onCustomWorldCreateComment !== 'function') return null;
+      return onCustomWorldCreateComment({
+        world: activeWorld,
+        postId: params?.postId,
+        body: params?.body
+      });
+    }
+
+    if (normalizedMethod === 'worlds.list') {
+      const childWorlds = await loadWorlds({ parentWorldId: activeWorld.id });
+      return (childWorlds || []).map(safeBridgeWorld).filter(Boolean);
+    }
+
+    if (normalizedMethod === 'worlds.create') {
+      return createCustomWorldForBridge(params || {});
+    }
+
+    if (normalizedMethod === 'worlds.open') {
+      await openWorldById(params?.worldId);
+      return true;
+    }
+
+    if (normalizedMethod === 'worlds.openMaker') {
+      return Boolean(await openMaker());
+    }
+
+    throw new Error(`Unknown custom world method: ${normalizedMethod}`);
+  }
+
+  function postCustomWorldFrameMessage(message, origin = '*') {
+    if (!dom.modeFrame?.contentWindow || !activeWorld?.id || !canUseCustomWorldFrame(activeWorld)) return;
+    const targetOrigin = origin && origin !== 'null' ? origin : '*';
+    dom.modeFrame.contentWindow.postMessage({
+      demo0WorldBridge: true,
+      ...message
+    }, targetOrigin);
+  }
+
+  async function postCustomWorldBridgeReady() {
+    if (!dom.modeFrame?.contentWindow || !activeWorld?.id || !canUseCustomWorldFrame(activeWorld)) return;
+    try {
+      postCustomWorldFrameMessage({
+        type: 'ready',
+        payload: await getCustomWorldBridgeContext()
+      });
+    } catch (error) {
+      postCustomWorldFrameMessage({
+        type: 'error',
+        error: getErrorMessage(error)
+      });
+    }
+  }
+
+  async function handleCustomWorldBridgeMessage(event) {
+    const data = event?.data || null;
+    if (!data || data.demo0WorldBridge !== true || data.type !== 'request') return;
+    if (!isActiveCustomWorldFrame(event.source)) return;
+
+    const requestId = data.requestId || null;
+    try {
+      const result = await runCustomWorldBridgeMethod(data.method, data.params || {});
+      postCustomWorldFrameMessage({
+        type: 'response',
+        requestId,
+        ok: true,
+        payload: result
+      }, event.origin);
+    } catch (error) {
+      postCustomWorldFrameMessage({
+        type: 'response',
+        requestId,
+        ok: false,
+        error: getErrorMessage(error)
+      }, event.origin);
+    }
+  }
+
+  function readPasswordInput(input) {
+    return String(getFakePasswordValue(input) || '').trim();
+  }
+
+  function writePasswordInput(input, value = '') {
+    setFakePasswordValue(input, value);
+  }
+
+  function getMakerColorSource(isEdit = false) {
+    return isEdit ? (makerEditingWorld || {}) : (activeWorld || {});
+  }
+
+  function applyMakerStyleDefaults(prefix, source = {}) {
+    const fontSelect = prefix === 'code' ? dom.codeFont : dom.plugFont;
+    const bgInput = prefix === 'code' ? dom.codeBackgroundColor : dom.plugBackgroundColor;
+    const fontColorInput = prefix === 'code' ? dom.codeFontColor : dom.plugFontColor;
+
+    if (fontSelect) {
+      const nextFont = String(source.font_family || WORLD_FONTS[0]?.value || '').trim();
+      fontSelect.value = nextFont;
+      if (fontSelect.value !== nextFont && fontSelect.options.length) {
+        fontSelect.selectedIndex = 0;
+      }
+    }
+
+    if (bgInput) {
+      bgInput.value = normalizeColorInputValue(source.background_color || source.ui_color || '#05070b', '#05070b');
+    }
+
+    if (fontColorInput) {
+      fontColorInput.value = normalizeColorInputValue(source.font_color || source.ui_color || DEFAULT_UI_COLOR, DEFAULT_UI_COLOR);
+    }
+  }
+
+  function applyMakerOverlayTheme(source = null) {
+    if (!dom.makerOverlay) return;
+
+    const bg = normalizeColorInputValue(source?.background_color || source?.ui_color || '', '');
+    const fg = normalizeColorInputValue(source?.font_color || source?.ui_color || '', '');
+    const font = String(source?.font_family || '').trim();
+
+    if (bg) dom.makerOverlay.style.setProperty('--post-overlay-bg', bg);
+    else dom.makerOverlay.style.removeProperty('--post-overlay-bg');
+
+    if (fg) dom.makerOverlay.style.setProperty('--post-overlay-color', fg);
+    else dom.makerOverlay.style.removeProperty('--post-overlay-color');
+
+    if (font) dom.makerOverlay.style.setProperty('--world-maker-font-family', font);
+    else dom.makerOverlay.style.removeProperty('--world-maker-font-family');
+  }
+
+  function clearMakerOverlayTheme() {
+    if (!dom.makerOverlay) return;
+    dom.makerOverlay.style.removeProperty('--post-overlay-bg');
+    dom.makerOverlay.style.removeProperty('--post-overlay-color');
+    dom.makerOverlay.style.removeProperty('--world-maker-font-family');
+  }
+
+  function readMakerStyle(prefix) {
+    const fontSelect = prefix === 'code' ? dom.codeFont : dom.plugFont;
+    const bgInput = prefix === 'code' ? dom.codeBackgroundColor : dom.plugBackgroundColor;
+    const fontColorInput = prefix === 'code' ? dom.codeFontColor : dom.plugFontColor;
+    const fontColor = normalizeColorInputValue(fontColorInput?.value, DEFAULT_UI_COLOR);
+    return {
+      font_family: String(fontSelect?.value || WORLD_FONTS[0]?.value || '').trim() || null,
+      font_color: fontColor,
+      ui_color: fontColor,
+      background_color: normalizeColorInputValue(bgInput?.value, '#05070b')
+    };
+  }
 
   // ─── Plug Category Widget ─────────────────────────────────────────────────
   let plugCategorySelected = '';
@@ -1305,24 +1980,235 @@ export function initWorldsFeature(options) {
   }
   // ─── End Plug Category Widget ─────────────────────────────────────────────
 
+  // ─── Code World Category Widget ───────────────────────────────────────────
+  let codeCategorySelected = '';
+  let codeCategoryEditingName = null;
+
+  function setCodeCategory(val) {
+    codeCategorySelected = val || '';
+    if (dom.codeCategoryHidden) dom.codeCategoryHidden.value = codeCategorySelected;
+    if (dom.codeCategoryDisplayText) {
+      dom.codeCategoryDisplayText.textContent = codeCategorySelected || 'select category';
+      dom.codeCategoryDisplayText.classList.toggle('is-placeholder', !codeCategorySelected);
+    }
+  }
+
+  function openCodeCategoryDropdown() {
+    closeCodeCategoryPanel();
+    if (dom.codeCategoryDropdown) dom.codeCategoryDropdown.style.display = 'flex';
+    dom.codeCategoryDisplay?.classList.add('is-open');
+    dom.codeCategoryDropdownToggle?.classList.add('is-open');
+  }
+
+  function closeCodeCategoryDropdown() {
+    if (dom.codeCategoryDropdown) dom.codeCategoryDropdown.style.display = 'none';
+    dom.codeCategoryDisplay?.classList.remove('is-open');
+    dom.codeCategoryDropdownToggle?.classList.remove('is-open');
+  }
+
+  function openCodeCategoryPanel() {
+    codeCategoryEditingName = null;
+    closeCodeCategoryDropdown();
+    renderCodeCategoryEditor();
+    if (dom.codeCategoryPanel) {
+      dom.codeCategoryPanel.style.display = 'flex';
+      dom.codeCategoryPanel.classList.add('is-open');
+    }
+    dom.codeCategoryEditorToggle?.classList.add('is-open');
+  }
+
+  function closeCodeCategoryPanel() {
+    codeCategoryEditingName = null;
+    renderCodeCategoryEditor();
+    if (dom.codeCategoryPanel) {
+      dom.codeCategoryPanel.style.display = 'none';
+      dom.codeCategoryPanel.classList.remove('is-open');
+    }
+    dom.codeCategoryEditorToggle?.classList.remove('is-open');
+  }
+
+  function renderCodeCategoryDropdown() {
+    if (!dom.codeCategoryDropdown) return;
+    const categories = getCategories?.() || [];
+    dom.codeCategoryDropdown.innerHTML = '';
+    const noneItem = document.createElement('div');
+    noneItem.className = 'post-form-category-option';
+    noneItem.dataset.value = '';
+    noneItem.textContent = 'none';
+    noneItem.addEventListener('click', () => { setCodeCategory(''); closeCodeCategoryDropdown(); });
+    dom.codeCategoryDropdown.appendChild(noneItem);
+    categories.forEach((cat) => {
+      const item = document.createElement('div');
+      item.className = 'post-form-category-option';
+      item.dataset.value = cat.name;
+      item.textContent = cat.name;
+      item.addEventListener('click', () => { setCodeCategory(cat.name); closeCodeCategoryDropdown(); });
+      dom.codeCategoryDropdown.appendChild(item);
+    });
+  }
+
+  function renderCodeCategoryEditor() {
+    if (!dom.codeCategoryList) return;
+    const records = getCategoryRecords?.() || [];
+    const editable = records.filter((cat) => canEditCategory?.(cat) ?? true);
+    if (!editable.length) {
+      dom.codeCategoryList.innerHTML = '<div class="post-form-category-empty">no editable categories yet</div>';
+      return;
+    }
+    dom.codeCategoryList.innerHTML = editable.map((cat) => {
+      const name = String(cat.name || '');
+      const enc = encodeURIComponent(name);
+      const isEditing = codeCategoryEditingName === name;
+      if (isEditing) {
+        return `<div class="post-form-category-item" data-category-name="${enc}"><input type="text" class="post-form-category-edit-input" value="${escapeHtml(name)}" data-category-edit-input="${enc}"><div class="post-form-category-actions"><button type="button" class="post-form-category-action delete" data-action="delete" data-category-name="${enc}">x</button></div></div>`;
+      }
+      return `<div class="post-form-category-item" data-category-name="${enc}"><span class="post-form-category-name">${escapeHtml(name)}</span><div class="post-form-category-actions"><button type="button" class="post-form-category-action delete" data-action="delete" data-category-name="${enc}">x</button></div></div>`;
+    }).join('');
+    if (codeCategoryEditingName) {
+      const input = dom.codeCategoryList.querySelector('.post-form-category-edit-input');
+      input?.focus();
+      const pos = input?.value?.length || 0;
+      input?.setSelectionRange(pos, pos);
+    }
+  }
+
+  function wireCodeCategoryEvents() {
+    dom.codeCategoryDropdownToggle?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (dom.codeCategoryDropdown?.style.display === 'flex') closeCodeCategoryDropdown();
+      else openCodeCategoryDropdown();
+    });
+
+    dom.codeCategoryEditorToggle?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeCodeCategoryDropdown();
+      if (dom.codeCategoryPanel?.style.display === 'none' || dom.codeCategoryPanel?.style.display === '') {
+        openCodeCategoryPanel();
+        dom.codeCategoryInput?.focus();
+      } else {
+        closeCodeCategoryPanel();
+      }
+    });
+
+    dom.codeCategoryDisplay?.addEventListener('click', (e) => {
+      if (e.target.closest('.post-form-category-inline-btn')) return;
+      if (dom.codeCategoryDropdown?.style.display === 'flex') closeCodeCategoryDropdown();
+      else { closeCodeCategoryPanel(); openCodeCategoryDropdown(); }
+    });
+
+    dom.codeCategoryDisplay?.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      if (dom.codeCategoryDropdown?.style.display === 'flex') closeCodeCategoryDropdown();
+      else { closeCodeCategoryPanel(); openCodeCategoryDropdown(); }
+    });
+
+    dom.codeCategoryCreateBtn?.addEventListener('click', async () => {
+      const name = String(dom.codeCategoryInput?.value || '').trim();
+      if (!name) return;
+      const ok = await onAddCategory?.(name);
+      if (ok) {
+        dom.codeCategoryInput.value = '';
+        setCodeCategory(name);
+        renderPlugCategoryEditor();
+        renderPlugCategoryDropdown();
+        renderCodeCategoryEditor();
+        renderCodeCategoryDropdown();
+      }
+    });
+
+    dom.codeCategoryInput?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); dom.codeCategoryCreateBtn?.click(); }
+    });
+
+    dom.codeCategoryList?.addEventListener('click', async (e) => {
+      const btn = e.target.closest('[data-action]');
+      if (!btn) return;
+      const action = btn.dataset.action;
+      const name = decodeURIComponent(btn.dataset.categoryName || '');
+      if (action === 'delete') {
+        await onDeleteCategory?.(name);
+        if (codeCategorySelected === name) setCodeCategory('');
+        if (plugCategorySelected === name) setPlugCategory('');
+        renderPlugCategoryEditor();
+        renderPlugCategoryDropdown();
+        renderCodeCategoryEditor();
+        renderCodeCategoryDropdown();
+      }
+    });
+
+    dom.codeCategoryList?.addEventListener('dblclick', (e) => {
+      const nameEl = e.target.closest('.post-form-category-name');
+      if (!nameEl) return;
+      const item = nameEl.closest('.post-form-category-item');
+      const name = decodeURIComponent(item?.dataset.categoryName || '');
+      if (!name) return;
+      const records = getCategoryRecords?.() || [];
+      const rec = records.find((record) => String(record?.name || '') === name) || null;
+      if (!(canEditCategory?.(rec) ?? false)) return;
+      codeCategoryEditingName = name;
+      renderCodeCategoryEditor();
+    });
+
+    dom.codeCategoryList?.addEventListener('keydown', async (e) => {
+      const input = e.target.closest('.post-form-category-edit-input');
+      if (!input) return;
+      const oldName = decodeURIComponent(input.dataset.categoryEditInput || '');
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        await onRenameCategory?.(oldName, input.value || '');
+        codeCategoryEditingName = null;
+        renderPlugCategoryEditor();
+        renderPlugCategoryDropdown();
+        renderCodeCategoryEditor();
+        renderCodeCategoryDropdown();
+        if (codeCategorySelected === oldName) setCodeCategory(input.value || '');
+        if (plugCategorySelected === oldName) setPlugCategory(input.value || '');
+      }
+      if (e.key === 'Escape') {
+        codeCategoryEditingName = null;
+        renderCodeCategoryEditor();
+      }
+    });
+
+    document.addEventListener('click', (e) => {
+      if (!dom.codeCategoryDropdown) return;
+      if (!e.target.closest('#worldCodeCategoryCustom')) {
+        closeCodeCategoryDropdown();
+      }
+    });
+  }
+  // ─── End Code World Category Widget ───────────────────────────────────────
+
   function captureMakerState() {
     return {
       plugName: String(dom.plugName?.value || '').trim(),
-
+      plugFont: String(dom.plugFont?.value || ''),
+      plugBackgroundColor: String(dom.plugBackgroundColor?.value || ''),
+      plugFontColor: String(dom.plugFontColor?.value || ''),
       plugVisibility: String(dom.plugVisibility?.value || ''),
       plugEditing: String(dom.plugEditing?.value || ''),
-      plugViewPassword: String(dom.plugViewPassword?.value || ''),
-      plugEditPassword: String(dom.plugEditPassword?.value || ''),
+      plugViewPassword: readPasswordInput(dom.plugViewPassword),
+      plugViewPasswordConfirm: readPasswordInput(dom.plugViewPasswordConfirm),
+      plugEditPassword: readPasswordInput(dom.plugEditPassword),
+      plugEditPasswordConfirm: readPasswordInput(dom.plugEditPasswordConfirm),
       plugCoverSelected: Boolean(dom.plugCover?.files?.length),
       plugBackgroundSelected: Boolean(dom.plugBackground?.files?.length),
       codeName: String(dom.codeName?.value || '').trim(),
-      codeDescription: String(dom.codeDescription?.value || '').trim(),
+      codeCategory: String(dom.codeCategoryHidden?.value || '').trim(),
+      codeFont: String(dom.codeFont?.value || ''),
+      codeBackgroundColor: String(dom.codeBackgroundColor?.value || ''),
+      codeFontColor: String(dom.codeFontColor?.value || ''),
       codeVisibility: String(dom.codeVisibility?.value || ''),
       codeEditing: String(dom.codeEditing?.value || ''),
-      codeViewPassword: String(dom.codeViewPassword?.value || ''),
-      codeEditPassword: String(dom.codeEditPassword?.value || ''),
+      codeViewPassword: readPasswordInput(dom.codeViewPassword),
+      codeViewPasswordConfirm: readPasswordInput(dom.codeViewPasswordConfirm),
+      codeEditPassword: readPasswordInput(dom.codeEditPassword),
+      codeEditPasswordConfirm: readPasswordInput(dom.codeEditPasswordConfirm),
       codeHtmlSelected: Boolean(dom.codeHtml?.files?.length),
-      codeCssSelected: Boolean(dom.codeCss?.files?.length)
+      codeCssSelected: Boolean(dom.codeCss?.files?.length),
+      codeAssetsSelected: Boolean(dom.codeAssets?.files?.length),
+      codeCoverSelected: Boolean(dom.codeCover?.files?.length)
     };
   }
 
@@ -1775,15 +2661,11 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
             await renderMainNavigationChrome();
             return;
           }
-          if (isMakerOpen()) {
-            closeMaker();
-            return;
-          }
-          showTransitionLoader({
+          const loaderShown = await showTransitionLoader({
             mode: 'loading',
             kicker: 'main',
             title: MAIN_WORLD_LABEL,
-            meta: 'monkey space',
+            meta: MAIN_WORLD_USERNAME,
             description: 'Loading the main canvas and bringing everything back into view.',
             status: 'loading main...',
             backgroundUrl: getDefaultBackgroundUrl(baseUrl),
@@ -1791,6 +2673,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
             showCover: false,
             progress: 8
           });
+          if (!loaderShown) return;
           await exitWorldMode();
           return;
         }
@@ -1897,7 +2780,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         label: stackWorld?.name || DEFAULT_WORLD_TITLE,
         navTarget: 'crumb',
         worldId: String(stackWorld?.id || ''),
-        fontFamily: String(stackWorld?.font_family || '').trim(),
+        fontFamily: '',
         current: index === worldNavStack.length - 1
       }))
     ];
@@ -1928,7 +2811,206 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
   function canUseCustomWorldFrame(world) {
     const customUrl = String(world?.custom_code_url || '').trim();
     if (!customUrl) return false;
-    return /\/storage\/v1\/object\/public\/worlds\//i.test(customUrl);
+
+    try {
+      const parsed = new URL(customUrl, window.location.href);
+      const path = decodeURIComponent(parsed.pathname || '').replace(/\\/g, '/');
+      const isWorldHtml = /(?:^|\/)world\.html$/i.test(path);
+      const isNativeStorageUrl = path.includes('/storage/v1/object/public/worlds/');
+      const isApiStorageUrl = path.includes('/api/storage/public/worlds/');
+      return isWorldHtml && (isNativeStorageUrl || isApiStorageUrl);
+    } catch {
+      return false;
+    }
+  }
+
+  function getCustomWorldFrameSrc(world) {
+    const customUrl = String(world?.custom_code_url || '').trim();
+    if (!customUrl) return '';
+
+    try {
+      const parsed = new URL(customUrl, window.location.href);
+      const worldId = String(world?.id || '').trim();
+      if (worldId && !customWorldFrameVersionById.has(worldId)) {
+        customWorldFrameVersionById.set(worldId, String(Date.now()));
+      }
+      const version = String(
+        (worldId && customWorldFrameVersionById.get(worldId))
+        || world?.updated_at
+        || world?.created_at
+        || world?.id
+        || ''
+      ).trim();
+      if (version) parsed.searchParams.set('v', version);
+      return parsed.href;
+    } catch {
+      return customUrl;
+    }
+  }
+
+  function getCustomWorldCssUrl(customCodeUrl = '') {
+    const rawUrl = String(customCodeUrl || '').trim();
+    if (!rawUrl) return '';
+
+    try {
+      const parsed = new URL(rawUrl, window.location.href);
+      parsed.pathname = parsed.pathname.replace(/(?:^|\/)world\.html$/i, (match) => match.replace(/world\.html$/i, 'world.css'));
+      parsed.search = '';
+      parsed.hash = '';
+      return parsed.href;
+    } catch {
+      return rawUrl.replace(/world\.html(?:[?#].*)?$/i, 'world.css');
+    }
+  }
+
+  function getCustomWorldBaseHref(customCodeUrl = '') {
+    const rawUrl = String(customCodeUrl || '').trim();
+    if (!rawUrl) return '';
+
+    try {
+      const parsed = new URL(rawUrl, window.location.href);
+      parsed.pathname = parsed.pathname.replace(/(?:^|\/)world\.html$/i, '');
+      if (!parsed.pathname.endsWith('/')) parsed.pathname += '/';
+      parsed.search = '';
+      parsed.hash = '';
+      return parsed.href;
+    } catch {
+      return rawUrl.replace(/world\.html(?:[?#].*)?$/i, '');
+    }
+  }
+
+  async function fetchCustomWorldText(url = '') {
+    const rawUrl = String(url || '').trim();
+    if (!rawUrl) return '';
+
+    const parsed = new URL(rawUrl, window.location.href);
+    parsed.searchParams.set('t', String(Date.now()));
+    const response = await fetch(parsed.href, { cache: 'no-store' });
+    if (!response.ok) {
+      throw new Error(`Could not load existing custom world file (${response.status}).`);
+    }
+    return response.text();
+  }
+
+  function stripCustomWorldCssLinks(html = '') {
+    return String(html || '').replace(
+      /<link\b(?=[^>]*\brel=["']?stylesheet["']?)(?=[^>]*\bhref=["'][^"']*(?:^|\/)world\.css(?:[?#][^"']*)?["'])[^>]*>/gi,
+      ''
+    );
+  }
+
+  function injectCustomWorldBaseHref(html = '', baseHref = '') {
+    const href = String(baseHref || '').trim();
+    if (!href || /<base\b/i.test(html)) return html;
+
+    const baseTag = `<base href="${escapeHtml(href)}">`;
+    return /<head\b[^>]*>/i.test(html)
+      ? html.replace(/<head\b[^>]*>/i, (match) => `${match}\n${baseTag}`)
+      : `${baseTag}\n${html}`;
+  }
+
+  function buildCustomWorldHtmlText(html = '', css = '', options = {}) {
+    const cleanedHtml = stripCustomWorldCssLinks(html || '<!doctype html><html><head></head><body></body></html>')
+      .replace(/<!-- demo0-inline-world-css:start -->[\s\S]*?<!-- demo0-inline-world-css:end -->/gi, '');
+    const cleanedCss = String(css || '').replace(/<\/style/gi, '<\\/style');
+    const styleBlock = `<!-- demo0-inline-world-css:start -->\n<style data-demo0-world-css>\n${cleanedCss}\n</style>\n<!-- demo0-inline-world-css:end -->`;
+    const htmlWithBase = injectCustomWorldBaseHref(cleanedHtml, options.baseHref || '');
+
+    return /<\/head\s*>/i.test(htmlWithBase)
+      ? htmlWithBase.replace(/<\/head\s*>/i, `${styleBlock}\n</head>`)
+      : `${styleBlock}\n${htmlWithBase}`;
+  }
+
+  function buildCustomWorldHtmlFile(html = '', css = '') {
+    const outputHtml = buildCustomWorldHtmlText(html, css);
+    return new File([outputHtml], 'world.html', { type: 'text/html' });
+  }
+
+  function getCustomWorldAssetReferences(text = '') {
+    const references = new Set();
+    const source = String(text || '');
+    const assetPattern = /(?:src|href)=["']\.\/assets\/([^"'#?]+)|url\(\s*["']?\.\/assets\/([^"')?#]+)["']?\s*\)/gi;
+    let match = assetPattern.exec(source);
+    while (match) {
+      const fileName = normalizeStorageName(match[1] || match[2] || '');
+      if (fileName && fileName !== 'asset') references.add(fileName.toLowerCase());
+      match = assetPattern.exec(source);
+    }
+    return references;
+  }
+
+  function validateCustomWorldAssetReferences(html = '', css = '', files = [], options = {}) {
+    const references = new Set([
+      ...getCustomWorldAssetReferences(html),
+      ...getCustomWorldAssetReferences(css)
+    ]);
+    if (!references.size) return;
+
+    const uploadedNames = new Set(
+      Array.from(files || [])
+        .map((file) => getWorldUiAssetStorageName(file).toLowerCase())
+        .filter(Boolean)
+    );
+
+    const missing = Array.from(references).filter((name) => !uploadedNames.has(name));
+    if (missing.length > 0 && options.requireAll) {
+      throw new Error(`Your code references missing UI assets: ${missing.join(', ')}. Choose those files in the UI assets picker too.`);
+    }
+  }
+
+  function hideCustomWorldFrame() {
+    customWorldFrameSrc = '';
+    customWorldFrameLoadSeq += 1;
+    dom.modeFrame.style.display = 'none';
+    dom.modeFrame.style.visibility = '';
+    dom.modeFrame.removeAttribute('data-loading');
+    dom.modeFrame.removeAttribute('srcdoc');
+    dom.modeFrame.src = 'about:blank';
+  }
+
+  async function loadCustomWorldFrameDocument(world, nextSrc, loadSeq) {
+    try {
+      const htmlText = await fetchCustomWorldText(nextSrc);
+      let cssText = '';
+      try {
+        cssText = await fetchCustomWorldText(getCustomWorldCssUrl(nextSrc));
+      } catch {
+        cssText = '';
+      }
+
+      if (loadSeq !== customWorldFrameLoadSeq || customWorldFrameSrc !== nextSrc) return;
+
+      dom.modeFrame.removeAttribute('src');
+      dom.modeFrame.srcdoc = buildCustomWorldHtmlText(htmlText, cssText, {
+        baseHref: getCustomWorldBaseHref(nextSrc)
+      });
+    } catch (error) {
+      console.warn('Custom world inline load failed, falling back to storage URL:', error?.message || error);
+      if (loadSeq !== customWorldFrameLoadSeq || customWorldFrameSrc !== nextSrc) return;
+      dom.modeFrame.removeAttribute('srcdoc');
+      dom.modeFrame.src = nextSrc;
+    }
+  }
+
+  function showCustomWorldFrame(world) {
+    const nextSrc = getCustomWorldFrameSrc(world);
+    if (!nextSrc) {
+      hideCustomWorldFrame();
+      return;
+    }
+
+    dom.modeFrame.style.display = 'block';
+    if (customWorldFrameSrc !== nextSrc) {
+      customWorldFrameSrc = nextSrc;
+      customWorldFrameLoadSeq += 1;
+      dom.modeFrame.dataset.loading = 'true';
+      dom.modeFrame.style.visibility = 'hidden';
+      dom.modeFrame.removeAttribute('srcdoc');
+      dom.modeFrame.src = 'about:blank';
+      void loadCustomWorldFrameDocument(world, nextSrc, customWorldFrameLoadSeq);
+    } else if (dom.modeFrame.dataset.loading !== 'true') {
+      dom.modeFrame.style.visibility = '';
+    }
   }
 
   function fillCategorySelect(selectEl) {
@@ -1942,6 +3024,8 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
   function syncCategories() {
     renderPlugCategoryDropdown();
     renderPlugCategoryEditor();
+    renderCodeCategoryDropdown();
+    renderCodeCategoryEditor();
   }
 
   function syncPlugAccessPasswordVisibility() {
@@ -1953,12 +3037,22 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
 
     if (dom.plugViewPassword) {
       dom.plugViewPassword.style.display = viewIsPrivate ? 'block' : 'none';
-      if (!viewIsPrivate) dom.plugViewPassword.value = '';
+      if (!viewIsPrivate) writePasswordInput(dom.plugViewPassword, '');
+    }
+
+    if (dom.plugViewPasswordConfirm) {
+      dom.plugViewPasswordConfirm.style.display = viewIsPrivate ? 'block' : 'none';
+      if (!viewIsPrivate) writePasswordInput(dom.plugViewPasswordConfirm, '');
     }
 
     if (dom.plugEditPassword) {
       dom.plugEditPassword.style.display = editIsPrivate ? 'block' : 'none';
-      if (!editIsPrivate) dom.plugEditPassword.value = '';
+      if (!editIsPrivate) writePasswordInput(dom.plugEditPassword, '');
+    }
+
+    if (dom.plugEditPasswordConfirm) {
+      dom.plugEditPasswordConfirm.style.display = editIsPrivate ? 'block' : 'none';
+      if (!editIsPrivate) writePasswordInput(dom.plugEditPasswordConfirm, '');
     }
   }
 
@@ -1971,69 +3065,116 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
 
     if (dom.codeViewPassword) {
       dom.codeViewPassword.style.display = viewIsPrivate ? 'block' : 'none';
-      if (!viewIsPrivate) dom.codeViewPassword.value = '';
+      if (!viewIsPrivate) writePasswordInput(dom.codeViewPassword, '');
+    }
+
+    if (dom.codeViewPasswordConfirm) {
+      dom.codeViewPasswordConfirm.style.display = viewIsPrivate ? 'block' : 'none';
+      if (!viewIsPrivate) writePasswordInput(dom.codeViewPasswordConfirm, '');
     }
 
     if (dom.codeEditPassword) {
       dom.codeEditPassword.style.display = editIsPrivate ? 'block' : 'none';
-      if (!editIsPrivate) dom.codeEditPassword.value = '';
+      if (!editIsPrivate) writePasswordInput(dom.codeEditPassword, '');
     }
+
+    if (dom.codeEditPasswordConfirm) {
+      dom.codeEditPasswordConfirm.style.display = editIsPrivate ? 'block' : 'none';
+      if (!editIsPrivate) writePasswordInput(dom.codeEditPasswordConfirm, '');
+    }
+  }
+
+  function validatePasswordConfirmation(password, confirmation, label) {
+    if (!password && !confirmation) return true;
+    if (!password || !confirmation) {
+      alert(`Confirm the ${label} password.`);
+      return false;
+    }
+    if (password !== confirmation) {
+      alert(`${label} passwords do not match.`);
+      return false;
+    }
+    return true;
   }
 
   function resolvePlugWorldPassword() {
     const viewIsPrivate = dom.plugVisibility?.value === 'false';
     const editIsPrivate = dom.plugEditing?.value === 'false';
+    const isEdit = makerMode === 'edit' && Boolean(makerEditingWorld?.id);
 
     if (!viewIsPrivate && !editIsPrivate) {
-      return '';
+      return { viewPassword: '', editPassword: '', viewIsPublic: true, editIsPublic: true };
     }
 
-    const viewPassword = String(dom.plugViewPassword?.value || '').trim();
-    const editPassword = String(dom.plugEditPassword?.value || '').trim();
+    const viewPassword = readPasswordInput(dom.plugViewPassword);
+    const editPassword = readPasswordInput(dom.plugEditPassword);
+    const viewPasswordConfirm = readPasswordInput(dom.plugViewPasswordConfirm);
+    const editPasswordConfirm = readPasswordInput(dom.plugEditPasswordConfirm);
+
+    if (viewIsPrivate && !validatePasswordConfirmation(viewPassword, viewPasswordConfirm, 'view')) return null;
+    if (editIsPrivate && !validatePasswordConfirmation(editPassword, editPasswordConfirm, 'edit')) return null;
 
     const requiredPasswords = [];
     if (viewIsPrivate) requiredPasswords.push(viewPassword);
     if (editIsPrivate) requiredPasswords.push(editPassword);
 
-    if (requiredPasswords.some((value) => !value)) {
+    if (!isEdit && requiredPasswords.some((value) => !value)) {
       alert('Enter a password for private mode.');
       return null;
     }
 
-    if (viewIsPrivate && editIsPrivate && viewPassword !== editPassword) {
-      alert('View and edit passwords must match.');
-      return null;
+    if (isEdit) {
+      if (viewIsPrivate && !viewPassword && !hasWorldPassword(makerEditingWorld, 'view')) {
+        alert('Enter a viewing password for private view mode.');
+        return null;
+      }
+      if (editIsPrivate && !editPassword && !hasWorldPassword(makerEditingWorld, 'edit')) {
+        alert('Enter an editing password for private edit mode.');
+        return null;
+      }
     }
 
-    return viewPassword || editPassword;
+    return { viewPassword, editPassword, viewIsPublic: !viewIsPrivate, editIsPublic: !editIsPrivate };
   }
 
   function resolveCodeWorldPassword() {
     const viewIsPrivate = dom.codeVisibility?.value === 'false';
     const editIsPrivate = dom.codeEditing?.value === 'false';
+    const isEdit = makerMode === 'edit' && Boolean(makerEditingWorld?.id);
 
     if (!viewIsPrivate && !editIsPrivate) {
-      return '';
+      return { viewPassword: '', editPassword: '', viewIsPublic: true, editIsPublic: true };
     }
 
-    const viewPassword = String(dom.codeViewPassword?.value || '').trim();
-    const editPassword = String(dom.codeEditPassword?.value || '').trim();
+    const viewPassword = readPasswordInput(dom.codeViewPassword);
+    const editPassword = readPasswordInput(dom.codeEditPassword);
+    const viewPasswordConfirm = readPasswordInput(dom.codeViewPasswordConfirm);
+    const editPasswordConfirm = readPasswordInput(dom.codeEditPasswordConfirm);
+
+    if (viewIsPrivate && !validatePasswordConfirmation(viewPassword, viewPasswordConfirm, 'view')) return null;
+    if (editIsPrivate && !validatePasswordConfirmation(editPassword, editPasswordConfirm, 'edit')) return null;
 
     const requiredPasswords = [];
     if (viewIsPrivate) requiredPasswords.push(viewPassword);
     if (editIsPrivate) requiredPasswords.push(editPassword);
 
-    if (requiredPasswords.some((value) => !value)) {
+    if (!isEdit && requiredPasswords.some((value) => !value)) {
       alert('Enter a password for private mode.');
       return null;
     }
 
-    if (viewIsPrivate && editIsPrivate && viewPassword !== editPassword) {
-      alert('View and edit passwords must match.');
-      return null;
+    if (isEdit) {
+      if (viewIsPrivate && !viewPassword && !hasWorldPassword(makerEditingWorld, 'view')) {
+        alert('Enter a viewing password for private view mode.');
+        return null;
+      }
+      if (editIsPrivate && !editPassword && !hasWorldPassword(makerEditingWorld, 'edit')) {
+        alert('Enter an editing password for private edit mode.');
+        return null;
+      }
     }
 
-    return viewPassword || editPassword;
+    return { viewPassword, editPassword, viewIsPublic: !viewIsPrivate, editIsPublic: !editIsPrivate };
   }
 
   function showStep(step) {
@@ -2051,6 +3192,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     makerEditingWorld = null;
     makerEditingType = 'plug';
     dom.plugName.value = '';
+    applyMakerStyleDefaults('plug', getMakerColorSource(false));
 
     dom.plugCover.value = '';
     dom.plugCoverLabel.textContent = 'use world background as cover';
@@ -2058,24 +3200,35 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     dom.plugBackgroundLabel.textContent = 'use site background';
     dom.plugVisibility.value = 'true';
     dom.plugEditing.value = 'true';
-    if (dom.plugViewPassword) dom.plugViewPassword.value = '';
-    if (dom.plugEditPassword) dom.plugEditPassword.value = '';
+    writePasswordInput(dom.plugViewPassword, '');
+    writePasswordInput(dom.plugViewPasswordConfirm, '');
+    writePasswordInput(dom.plugEditPassword, '');
+    writePasswordInput(dom.plugEditPasswordConfirm, '');
     dom.codeHtml.value = '';
     dom.codeCss.value = '';
+    dom.codeAssets.value = '';
+    dom.codeCover.value = '';
     dom.codeHtmlLabel.textContent = 'choose html';
     dom.codeCssLabel.textContent = 'choose css';
+    dom.codeAssetsLabel.textContent = 'choose ui assets';
+    dom.codeCoverLabel.textContent = 'choose world card cover';
     dom.codeName.value = '';
-    dom.codeDescription.value = '';
+    applyMakerStyleDefaults('code', getMakerColorSource(false));
     dom.codeVisibility.value = 'true';
     dom.codeEditing.value = 'true';
-    if (dom.codeViewPassword) dom.codeViewPassword.value = '';
-    if (dom.codeEditPassword) dom.codeEditPassword.value = '';
+    writePasswordInput(dom.codeViewPassword, '');
+    writePasswordInput(dom.codeViewPasswordConfirm, '');
+    writePasswordInput(dom.codeEditPassword, '');
+    writePasswordInput(dom.codeEditPasswordConfirm, '');
     dom.plugPublish.textContent = 'submit';
     dom.codePublish.textContent = 'submit';
     dom.makerDeleteButtons.forEach((button) => { button.style.display = 'none'; });
     setPlugCategory('');
     closePlugCategoryDropdown();
     closePlugCategoryPanel();
+    setCodeCategory('');
+    closeCodeCategoryDropdown();
+    closeCodeCategoryPanel();
     syncCategories();
     syncWorldDropdowns();
     syncPlugAccessPasswordVisibility();
@@ -2085,6 +3238,8 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
   }
 
   async function openMaker() {
+    if (!(await canCreateWorldInActiveContext())) return false;
+
     if (typeof onBeforeOpenMaker === 'function') {
       const canOpen = await onBeforeOpenMaker({ source: 'world-maker-open' });
       if (!canOpen) return false;
@@ -2094,15 +3249,102 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     makerEditingWorld = null;
     makerEditingType = 'plug';
     syncCategories();
-    fillFontSelect();
     makerSourceWorldId = String(activeWorld?.id || '').trim();
+    applyMakerOverlayTheme(getMakerColorSource(false));
     dom.makerOverlay.style.display = 'flex';
+    document.body.classList.add('world-maker-open');
     dom.plugPublish.textContent = 'submit';
     dom.codePublish.textContent = 'submit';
     syncWorldDropdowns();
     showStep('mode');
     makerBaselineState = captureMakerState();
     return true;
+  }
+
+  async function canCreateWorldInActiveContext() {
+    if (!activeWorld?.id) return true;
+
+    return ensureWorldEditAccess(activeWorld, {
+      promptPassword: null,
+      deniedMessage: 'You need edit access to create a world here.'
+    });
+  }
+
+  async function ensureWorldEditAccess(world, options = {}) {
+    if (!world?.id) return true;
+
+    const {
+      promptPassword = null,
+      deniedMessage = 'You need edit access here.'
+    } = options;
+
+    const currentUserId = String(getCurrentUser?.()?.id || '').trim();
+    const ownerId = String(world.user_id || '').trim();
+    if (currentUserId && ownerId && currentUserId === ownerId) return true;
+    if (world.is_public_edit !== false) return true;
+
+    const editPasswordUpdatedAt = getWorldPasswordUpdatedAt(world, 'edit');
+    if (!hasWorldPassword(world, 'edit')) {
+      alert(deniedMessage);
+      return false;
+    }
+
+    if (currentUserId && await verifyWorldAccess(world.id, currentUserId, 'edit', editPasswordUpdatedAt)) return true;
+    if (!currentUserId && hasGuestWorldAccess(world.id, 'edit', editPasswordUpdatedAt)) return true;
+
+    let nextMessage = '';
+    while (true) {
+      const password = typeof promptPassword === 'function'
+        ? await promptPassword({ world, message: nextMessage })
+        : await showPasswordPrompt(world, activeWorldCreator, {
+            message: nextMessage,
+            submitLabel: 'unlock',
+            cancelLabel: 'cancel'
+          });
+
+      if (!password) return false;
+
+      try {
+        const unlocked = currentUserId
+          ? await unlockWorldAccess(world.id, password, 'edit')
+          : await verifyWorldPassword(world.id, password, 'edit');
+
+        if (unlocked) {
+          if (!currentUserId) {
+            rememberGuestWorldAccess(world.id, 'edit', editPasswordUpdatedAt, true);
+          }
+          return true;
+        }
+
+        nextMessage = 'Incorrect password.';
+      } catch (error) {
+        console.error('Failed to verify world edit password:', error);
+        nextMessage = error?.message || 'Could not verify password.';
+      }
+    }
+  }
+
+  async function requireWorldOwnerPasswordForEdit(world, creator = null) {
+    if (!world?.id || !hasAnyWorldPassword(world)) return true;
+
+    const mode = hasWorldPassword(world, 'edit') ? 'edit' : 'view';
+    let nextMessage = '';
+    while (true) {
+      const password = await showPasswordPrompt(world, creator || activeWorldCreator, {
+        message: nextMessage,
+        submitLabel: 'unlock',
+        cancelLabel: 'cancel'
+      });
+      if (!password) return false;
+
+      try {
+        if (await verifyWorldPassword(world.id, password, mode)) return true;
+        nextMessage = 'Incorrect password.';
+      } catch (error) {
+        console.error('Failed to verify owner world password:', error);
+        nextMessage = error?.message || 'Could not verify password.';
+      }
+    }
   }
 
   async function openMakerForEdit(world) {
@@ -2113,6 +3355,8 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       if (!canOpen) return false;
     }
 
+    if (!(await requireWorldOwnerPasswordForEdit(world))) return false;
+
     makerMode = 'edit';
     makerEditingWorld = world;
     makerEditingType = canUseCustomWorldFrame(world) ? 'code' : 'plug';
@@ -2120,6 +3364,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     syncCategories();
 
     dom.plugName.value = world.name || '';
+    applyMakerStyleDefaults('plug', world);
     setPlugCategory(world.category || '');
 
     dom.plugCover.value = '';
@@ -2130,19 +3375,30 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     dom.plugBackgroundLabel.textContent = world.background_url ? 'keep current background (choose file to replace)' : 'use site background';
     dom.plugVisibility.value = world.is_public_view === false ? 'false' : 'true';
     dom.plugEditing.value = world.is_public_edit === false ? 'false' : 'true';
-    if (dom.plugViewPassword) dom.plugViewPassword.value = '';
-    if (dom.plugEditPassword) dom.plugEditPassword.value = '';
+    writePasswordInput(dom.plugViewPassword, '');
+    writePasswordInput(dom.plugViewPasswordConfirm, '');
+    writePasswordInput(dom.plugEditPassword, '');
+    writePasswordInput(dom.plugEditPasswordConfirm, '');
 
     dom.codeName.value = world.name || '';
-    dom.codeDescription.value = world.description || '';
+    setCodeCategory(world.category || '');
+    applyMakerStyleDefaults('code', world);
     dom.codeVisibility.value = world.is_public_view === false ? 'false' : 'true';
     dom.codeEditing.value = world.is_public_edit === false ? 'false' : 'true';
-    if (dom.codeViewPassword) dom.codeViewPassword.value = '';
-    if (dom.codeEditPassword) dom.codeEditPassword.value = '';
+    writePasswordInput(dom.codeViewPassword, '');
+    writePasswordInput(dom.codeViewPasswordConfirm, '');
+    writePasswordInput(dom.codeEditPassword, '');
+    writePasswordInput(dom.codeEditPasswordConfirm, '');
     dom.codeHtml.value = '';
     dom.codeCss.value = '';
+    dom.codeAssets.value = '';
+    dom.codeCover.value = '';
     dom.codeHtmlLabel.textContent = 'keep current html (choose file to replace)';
     dom.codeCssLabel.textContent = 'keep current css (choose file to replace)';
+    dom.codeAssetsLabel.textContent = 'keep current ui assets (choose files to add/replace)';
+    dom.codeCoverLabel.textContent = world.cover_url
+      ? 'keep current world card cover (choose file to replace)'
+      : 'choose world card cover';
 
     dom.plugPublish.textContent = 'submit';
     dom.codePublish.textContent = 'submit';
@@ -2152,7 +3408,9 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     syncCodeAccessPasswordVisibility();
 
     makerSourceWorldId = String(activeWorld?.id || '').trim();
+    applyMakerOverlayTheme(world);
     dom.makerOverlay.style.display = 'flex';
+    document.body.classList.add('world-maker-open');
     showStep(makerEditingType);
     makerBaselineState = captureMakerState();
     return true;
@@ -2161,8 +3419,10 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
   function closeMaker() {
     const wasOpen = isMakerOpen();
     dom.makerOverlay.style.display = 'none';
+    document.body.classList.remove('world-maker-open');
     makerSourceWorldId = '';
     makerBaselineState = null;
+    clearMakerOverlayTheme();
     resetMaker();
     if (wasOpen) {
       void syncNavigationChrome();
@@ -2174,11 +3434,10 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
   }
 
   function isInWorldMode() {
-    return dom.modeChrome.style.display === 'block';
+    return Boolean(activeWorld?.id);
   }
 
   function renderWorldModeChrome(world, creator) {
-    const creatorPfp = getPfpSrc(creator, baseUrl);
     const inEditMode = Boolean(getIsEditMode?.());
     const currentUserId = String(getCurrentUser?.()?.id || '').trim();
     const canEditWorld = Boolean(currentUserId) && currentUserId === String(world?.user_id || '').trim();
@@ -2188,20 +3447,20 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       dom.titleCard.textContent = world.name || DEFAULT_WORLD_TITLE;
       dom.titleCard.style.display = '';
     }
-    dom.modePfp.src = creatorPfp;
-    dom.modePfp.onclick = creator?.id ? () => onOpenProfile?.(creator.id) : null;
-    dom.modePfp.style.cursor = creator?.id ? 'pointer' : '';
-    if (dom.modePfpWrap) dom.modePfpWrap.style.display = '';
     if (dom.modeNavBar) dom.modeNavBar.style.display = 'flex';
     const showLogout = inEditMode;
-    const showEditWorld = inEditMode && canEditWorld;
+    const showCustomEditWorld = useCustomFrame && customWorldEditRevealWorldId === String(world?.id || '').trim();
+    const showEditWorld = canEditWorld && (inEditMode || showCustomEditWorld);
     if (dom.modeNavActions) dom.modeNavActions.style.display = (showLogout || showEditWorld) ? 'inline-flex' : 'none';
     dom.modeTabs.style.display = 'inline-flex';
     if (dom.logoutBtn) dom.logoutBtn.style.display = showLogout ? 'inline-flex' : 'none';
     if (dom.modeEditBtn) dom.modeEditBtn.style.display = showEditWorld ? 'inline-flex' : 'none';
     dom.modeDelete.style.display = 'none';
-    dom.modeFrame.style.display = useCustomFrame ? 'block' : 'none';
-    dom.modeFrame.src = useCustomFrame ? world.custom_code_url : 'about:blank';
+    if (useCustomFrame) {
+      showCustomWorldFrame(world);
+    } else {
+      hideCustomWorldFrame();
+    }
   }
 
   async function renderMainNavigationChrome() {
@@ -2217,14 +3476,12 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     if (dom.modeEditBtn) dom.modeEditBtn.style.display = 'none';
     dom.modeTabs.style.display = 'inline-flex';
     dom.modeDelete.style.display = 'none';
-    dom.modeFrame.style.display = 'none';
-    dom.modeFrame.src = 'about:blank';
+    hideCustomWorldFrame();
     if (dom.modeMyWorldsMenu) dom.modeMyWorldsMenu.style.display = 'none';
 
     if (dom.titleCard) dom.titleCard.style.display = 'none';
-    if (dom.modePfpWrap) dom.modePfpWrap.style.display = 'none';
 
-    const makerEntries = [
+    const breadcrumbEntries = [
       {
         label: MAIN_WORLD_LABEL,
         navTarget: 'root',
@@ -2233,8 +3490,13 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       },
     ];
 
+    const makerEntries = getMakerBreadcrumbEntries();
+    if (breadcrumbEntries.length > 0) {
+      breadcrumbEntries[breadcrumbEntries.length - 1].current = makerEntries.length === 0 && !inEditMode;
+    }
+
     if (inEditMode) {
-      makerEntries.push({
+      breadcrumbEntries.push({
         label: 'editor',
         navTarget: 'static',
         worldId: '',
@@ -2242,7 +3504,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       });
     }
 
-    renderBreadcrumbBar(makerEntries);
+    renderBreadcrumbBar([...breadcrumbEntries, ...makerEntries]);
     parentTabAction = async () => {};
   }
 
@@ -2262,8 +3524,29 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     dom.modeTabs.innerHTML = '';
   }
 
+  function renderLoadingNavigationChrome(label = 'loading...') {
+    if (dom.modeChrome) dom.modeChrome.style.display = 'block';
+    if (dom.modeNavBar) dom.modeNavBar.style.display = 'flex';
+    if (dom.modeTabs) {
+      dom.modeTabs.style.display = 'inline-flex';
+      if (!dom.modeTabs.children.length) {
+        const current = document.createElement('span');
+        current.className = 'world-mode-breadcrumb world-mode-breadcrumb-current';
+        current.setAttribute('aria-current', 'page');
+        current.textContent = label;
+        dom.modeTabs.appendChild(current);
+      }
+    }
+    if (dom.modeNavActions) dom.modeNavActions.style.display = 'none';
+    if (dom.logoutBtn) dom.logoutBtn.style.display = 'none';
+    if (dom.modeEditBtn) dom.modeEditBtn.style.display = 'none';
+  }
+
   function setWorldLoaderVisible(visible) {
     if (!dom.loaderOverlay) return;
+    if (visible) {
+      renderLoadingNavigationChrome();
+    }
     dom.loaderOverlay.style.display = visible ? 'block' : 'none';
     dom.loaderOverlay.setAttribute('aria-hidden', visible ? 'false' : 'true');
     document.body.classList.toggle('world-loader-active', !!visible);
@@ -2271,9 +3554,31 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     if (!visible) {
       dom.loaderOverlay.dataset.mode = 'loading';
       if (dom.loaderOverlay) dom.loaderOverlay.style.setProperty('--world-loader-progress', '0%');
-      if (dom.passwordInput) dom.passwordInput.value = '';
+      writePasswordInput(dom.passwordInput, '');
+      writePasswordInput(dom.editPasswordInput, '');
       if (dom.passwordError) dom.passwordError.textContent = '';
+      void syncNavigationChrome();
     }
+  }
+
+  async function prepareWorldLoaderSurface() {
+    const confirmTitle = 'are you sure you meant to exit?';
+    const confirmMessage = 'You have unsaved changes. Closing now will lose them.';
+
+    if (isMakerOpen()) {
+      const closed = await maybeCloseMaker({
+        title: confirmTitle,
+        message: confirmMessage
+      });
+      if (!closed) return false;
+    }
+
+    if (typeof onBeforeShowLoader === 'function') {
+      const canShow = await onBeforeShowLoader();
+      if (canShow === false) return false;
+    }
+
+    return true;
   }
 
   function setWorldLoaderProgress(progress = 0) {
@@ -2294,19 +3599,32 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     } = options;
 
     const nextTitle = title ?? world?.name ?? DEFAULT_WORLD_TITLE;
-    const nextMeta = meta ?? '';
+    const nextMeta = meta ?? (_creator?.username || (nextTitle === MAIN_WORLD_LABEL ? MAIN_WORLD_USERNAME : ''));
     const nextDescription = description ?? '';
     if (dom.loaderOverlay) dom.loaderOverlay.dataset.mode = mode;
     if (dom.loaderOverlay) {
       dom.loaderOverlay.style.removeProperty('--world-loader-font-family');
       dom.loaderOverlay.style.removeProperty('--world-loader-font-color');
       dom.loaderOverlay.style.removeProperty('--world-loader-ui-color');
+      dom.loaderOverlay.style.removeProperty('--world-loader-bg-color');
       delete dom.loaderOverlay.dataset.loaderTintKey;
+      if (world?.id) {
+        const bgColor = String(world.background_color || world.ui_color || world.font_color || '').trim();
+        const fontColor = String(world.font_color || world.ui_color || '').trim();
+        const uiColor = String(world.ui_color || fontColor || '').trim();
+        const fontFamily = String(world.font_family || '').trim();
+        if (bgColor) dom.loaderOverlay.style.setProperty('--world-loader-bg-color', bgColor);
+        if (fontColor) dom.loaderOverlay.style.setProperty('--world-loader-font-color', fontColor);
+        if (uiColor) dom.loaderOverlay.style.setProperty('--world-loader-ui-color', uiColor);
+        if (fontFamily) dom.loaderOverlay.style.setProperty('--world-loader-font-family', fontFamily);
+      }
     }
     if (dom.loaderKicker) dom.loaderKicker.textContent = kicker;
     const pfpSrc = getPfpSrc(_creator, baseUrl);
     if (dom.loaderPfp) {
-      dom.loaderPfp.src = pfpSrc;
+      const isDefaultPfp = isDefaultPfpSrc(pfpSrc);
+      dom.loaderPfp.dataset.defaultAvatar = isDefaultPfp ? '1' : '0';
+      dom.loaderPfp.src = isDefaultPfp ? TRANSPARENT_AVATAR_URL : pfpSrc;
       dom.loaderPfp.style.display = pfpSrc ? '' : 'none';
     }
     if (dom.loaderTitle) dom.loaderTitle.textContent = nextTitle;
@@ -2332,37 +3650,42 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     }
   }
 
-  function setPasswordPromptVisible(visible) {
+  async function setPasswordPromptVisible(visible) {
     if (!dom.loaderOverlay) return;
     if (visible) {
+      const canShow = await prepareWorldLoaderSurface();
+      if (!canShow) return false;
       if (!dom.loaderOverlay.dataset.mode || dom.loaderOverlay.dataset.mode === 'loading') {
         dom.loaderOverlay.dataset.mode = 'password';
       }
       setWorldLoaderVisible(true);
-      return;
+      return true;
     }
 
     setWorldLoaderVisible(false);
+    return true;
   }
 
-  function showTransitionLoader(options = {}) {
+  async function showTransitionLoader(options = {}) {
+    const canShow = await prepareWorldLoaderSurface();
+    if (!canShow) return false;
     populateWorldLoader(null, null, options);
     setWorldLoaderVisible(true);
+    return true;
   }
 
   function hideTransitionLoader() {
     setWorldLoaderVisible(false);
   }
 
-  function showPasswordPrompt(world, creator = null, options = {}) {
+  async function showPasswordPrompt(world, creator = null, options = {}) {
     const {
       message = '',
-      title = `unlock ${world?.name || DEFAULT_WORLD_TITLE}`,
-      copy = 'Enter the viewing password for this world.',
       submitLabel = 'unlock',
       cancelLabel = 'cancel',
       allowEmpty = false,
-      emptyError = 'Enter a password.'
+      emptyError = 'Enter a password.',
+      includeEdit = false
     } = options;
 
     return new Promise((resolve) => {
@@ -2370,7 +3693,8 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         resolve,
         worldId: world?.id || null,
         allowEmpty: Boolean(allowEmpty),
-        emptyError: String(emptyError || 'Enter a password.')
+        emptyError: String(emptyError || 'Enter a password.'),
+        includeEdit: Boolean(includeEdit)
       };
       populateWorldLoader(world, creator, {
         mode: 'password',
@@ -2378,18 +3702,20 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         status: 'waiting for password...',
         progress: 0
       });
-      if (dom.passwordTitle) {
-        dom.passwordTitle.textContent = title;
-      }
-      if (dom.passwordCopy) {
-        dom.passwordCopy.textContent = copy;
-      }
+      writePasswordInput(dom.passwordInput, '');
+      writePasswordInput(dom.editPasswordInput, '');
+      if (dom.editPasswordInput) dom.editPasswordInput.style.display = includeEdit ? 'block' : 'none';
       if (dom.passwordSubmit) dom.passwordSubmit.textContent = submitLabel;
       if (dom.passwordCancel) dom.passwordCancel.textContent = cancelLabel;
       if (dom.passwordError) dom.passwordError.textContent = message || '';
-      setPasswordPromptVisible(true);
-      dom.passwordInput?.focus();
-      dom.passwordInput?.select();
+      void setPasswordPromptVisible(true).then((visible) => {
+        if (!visible) {
+          closePasswordPrompt(null);
+          return;
+        }
+        dom.passwordInput?.focus();
+        dom.passwordInput?.select();
+      });
     });
   }
 
@@ -2400,12 +3726,14 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     state?.resolve?.(result);
   }
 
-  async function verifyWorldAccess(worldId, userId) {
+  async function verifyWorldAccess(worldId, userId, mode = 'view', passwordUpdatedAt = '') {
     if (!worldId || !userId) return false;
+    const normalizedMode = normalizeWorldPasswordMode(mode);
+    const unlockColumn = normalizedMode === 'edit' ? 'edit_unlocked_at' : 'view_unlocked_at';
 
     const { data, error } = await supabase
       .from('world_access')
-      .select('id')
+      .select(`id, unlocked_at, ${unlockColumn}`)
       .eq('world_id', worldId)
       .eq('user_id', userId)
       .maybeSingle();
@@ -2415,23 +3743,29 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       return false;
     }
 
-    return Boolean(data?.id);
+    if (!data?.id) return false;
+    const unlockedAt = String(data?.[unlockColumn] || data?.unlocked_at || '').trim();
+    if (!passwordUpdatedAt) return Boolean(unlockedAt);
+    if (!unlockedAt) return false;
+    return new Date(unlockedAt).getTime() >= new Date(passwordUpdatedAt).getTime();
   }
 
-  async function unlockWorldAccess(worldId, password) {
+  async function unlockWorldAccess(worldId, password, mode = 'view') {
     const { data, error } = await supabase.rpc('grant_world_access', {
       p_world_id: worldId,
-      p_password: password
+      p_password: password,
+      p_mode: normalizeWorldPasswordMode(mode)
     });
 
     if (error) throw error;
     return Boolean(data);
   }
 
-  async function verifyWorldPassword(worldId, password) {
+  async function verifyWorldPassword(worldId, password, mode = 'view') {
     const { data, error } = await supabase.rpc('verify_world_password', {
       p_world_id: worldId,
-      p_password: password
+      p_password: password,
+      p_mode: normalizeWorldPasswordMode(mode)
     });
 
     if (error) throw error;
@@ -2479,7 +3813,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
 
     const loaderWorld = options?.world || getKnownWorldById(targetWorldId);
     if (loaderWorld) {
-      showTransitionLoader({
+      const loaderShown = await showTransitionLoader({
         mode: 'loading',
         kicker: 'world',
         title: loaderWorld.name || DEFAULT_WORLD_TITLE,
@@ -2490,6 +3824,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         status: 'loading world...',
         progress: 8
       });
+      if (!loaderShown) return;
     }
 
     const nextWorld = await loadWorldById(targetWorldId);
@@ -2506,19 +3841,14 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
   }
 
   function clearWorldModeChrome() {
-    dom.modeChrome.style.display = 'none';
+    dom.modeChrome.style.display = 'block';
     dom.modeChrome.style.removeProperty('--world-mode-font-family');
     dom.modeChrome.style.removeProperty('--world-mode-font-color');
     clearWorldTabs();
-    if (dom.modeNavBar) dom.modeNavBar.style.display = '';
-    if (dom.modeNavActions) dom.modeNavActions.style.display = '';
-    if (dom.logoutBtn) dom.logoutBtn.style.display = '';
-    dom.modeTabs.style.display = '';
+    renderLoadingNavigationChrome();
     dom.modeDelete.style.display = 'none';
-    dom.modeFrame.style.display = 'none';
-    dom.modeFrame.src = 'about:blank';
+    hideCustomWorldFrame();
     if (dom.titleCard) dom.titleCard.style.display = 'none';
-    if (dom.modePfpWrap) dom.modePfpWrap.style.display = '';
     if (dom.modeMyWorldsMenu) dom.modeMyWorldsMenu.style.display = 'none';
   }
 
@@ -2580,6 +3910,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
   }
 
   async function ensureLatestUpdateInfo(force = false) {
+    if (!force && localStorage.getItem(OPTIONAL_UPDATES_DISABLED_STORAGE_KEY) === '1') return null;
     if (latestUpdateInfo && !force) return latestUpdateInfo;
     if (!force && latestUpdateInfoPromise) return latestUpdateInfoPromise;
     if (!force && Date.now() < latestUpdateInfoRetryAt) return latestUpdateInfo;
@@ -2593,8 +3924,14 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         .maybeSingle();
 
       if (error) {
-        console.warn('Failed to load update metadata:', error);
-        latestUpdateInfoRetryAt = Date.now() + 10000;
+        const message = String(error?.message || error || '').toLowerCase();
+        const missingTable = message.includes('unknown table') || message.includes('does not exist');
+        if (!missingTable) {
+          console.warn('Failed to load update metadata:', error);
+        } else {
+          localStorage.setItem(OPTIONAL_UPDATES_DISABLED_STORAGE_KEY, '1');
+        }
+        latestUpdateInfoRetryAt = missingTable ? Number.POSITIVE_INFINITY : Date.now() + 10000;
         latestUpdateInfo = null;
         return null;
       }
@@ -2647,7 +3984,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
   }
 
   async function resolveWorldCreator(world, preferredUser = null) {
-    if (preferredUser?.id) return preferredUser;
+    if (preferredUser?.id && String(preferredUser.username || '').trim()) return preferredUser;
 
     const { data, error } = await supabase
       .from('users')
@@ -2679,6 +4016,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       status: 'loading world...',
       progress: 24
     });
+    if (!(await prepareWorldLoaderSurface())) return;
     setWorldLoaderVisible(true);
 
     const currentUserId = getCurrentUser?.()?.id || null;
@@ -2691,29 +4029,41 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         progress: 28
       });
 
-      if (world.is_public_view === false && currentUserId !== world.user_id) {
+      const isOwner = currentUserId && String(currentUserId) === String(world.user_id || '');
+      const needsViewPassword = hasWorldPassword(world, 'view') && !isOwner;
+      const needsEditPassword = hasWorldPassword(world, 'edit') && world.is_public_edit === false && !isOwner;
+      const viewPasswordUpdatedAt = getWorldPasswordUpdatedAt(world, 'view');
+      const editPasswordUpdatedAt = getWorldPasswordUpdatedAt(world, 'edit');
+
+      if (world.is_public_view === false && !needsViewPassword && !isOwner) {
         alert('This world is private.');
         return;
       }
 
-      if (world.password_hash && currentUserId && currentUserId !== world.user_id) {
-        const hasAccess = await verifyWorldAccess(world.id, currentUserId);
+      if (needsViewPassword && currentUserId) {
+        const hasAccess = await verifyWorldAccess(world.id, currentUserId, 'view', viewPasswordUpdatedAt);
         if (!hasAccess) {
           let nextMessage = '';
 
           while (true) {
             const password = await showPasswordPrompt(world, resolvedCreator, {
               message: nextMessage,
-              title: `view ${world?.name || DEFAULT_WORLD_TITLE}`,
-              copy: 'Enter the viewing password for this world.',
               submitLabel: 'unlock',
-              cancelLabel: 'cancel'
+              cancelLabel: 'cancel',
+              includeEdit: needsEditPassword
             });
             if (!password) return;
+            const viewPassword = typeof password === 'object' ? password.viewPassword : password;
+            const editPassword = typeof password === 'object' ? password.editPassword : '';
 
             try {
-              const unlocked = await unlockWorldAccess(world.id, password);
-              if (unlocked) break;
+              const unlocked = await unlockWorldAccess(world.id, viewPassword, 'view');
+              if (unlocked) {
+                if (editPassword) {
+                  await unlockWorldAccess(world.id, editPassword, 'edit').catch(() => false);
+                }
+                break;
+              }
               nextMessage = 'Incorrect password.';
             } catch (error) {
               console.error('Failed to unlock world:', error);
@@ -2723,25 +4073,29 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         }
       }
 
-      if (world.password_hash && !currentUserId) {
-        const hasGuestAccess = hasGuestWorldAccess(world.id);
+      if (needsViewPassword && !currentUserId) {
+        const hasGuestAccess = hasGuestWorldAccess(world.id, 'view', viewPasswordUpdatedAt);
         if (!hasGuestAccess) {
           let nextMessage = '';
 
           while (true) {
             const password = await showPasswordPrompt(world, resolvedCreator, {
               message: nextMessage,
-              title: `view ${world?.name || DEFAULT_WORLD_TITLE}`,
-              copy: 'Enter the viewing password for this world.',
               submitLabel: 'unlock',
-              cancelLabel: 'cancel'
+              cancelLabel: 'cancel',
+              includeEdit: needsEditPassword
             });
             if (!password) return;
+            const viewPassword = typeof password === 'object' ? password.viewPassword : password;
+            const editPassword = typeof password === 'object' ? password.editPassword : '';
 
             try {
-              const unlocked = await verifyWorldPassword(world.id, password);
+              const unlocked = await verifyWorldPassword(world.id, viewPassword, 'view');
               if (unlocked) {
-                rememberGuestWorldAccess(world.id, true);
+                rememberGuestWorldAccess(world.id, 'view', viewPasswordUpdatedAt, true);
+                if (editPassword && await verifyWorldPassword(world.id, editPassword, 'edit').catch(() => false)) {
+                  rememberGuestWorldAccess(world.id, 'edit', editPasswordUpdatedAt, true);
+                }
                 break;
               }
               nextMessage = 'Incorrect password.';
@@ -2753,44 +4107,10 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         }
       }
 
-      if (world.password_hash && world.is_public_edit === false && currentUserId !== world.user_id) {
-        let editMessage = '';
-        while (true) {
-          const editPassword = await showPasswordPrompt(world, resolvedCreator, {
-            message: editMessage,
-            title: 'editor password (optional)',
-            copy: 'Enter the editor password to unlock edit access, or skip to continue viewing.',
-            submitLabel: 'unlock edit',
-            cancelLabel: 'skip',
-            allowEmpty: true
-          });
-
-          if (editPassword === null || editPassword === '') {
-            break;
-          }
-
-          try {
-            const unlocked = currentUserId
-              ? await unlockWorldAccess(world.id, editPassword)
-              : await verifyWorldPassword(world.id, editPassword);
-
-            if (unlocked) {
-              if (!currentUserId) {
-                rememberGuestWorldAccess(world.id, true);
-              }
-              break;
-            }
-
-            editMessage = 'Incorrect editor password. You can try again or skip.';
-          } catch (error) {
-            console.error('Failed to verify editor password:', error);
-            editMessage = (error?.message || 'Could not verify editor password.') + ' You can try again or skip.';
-          }
-        }
-      }
-
       activeWorld = world;
       activeWorldCreator = resolvedCreator;
+      customWorldEditRevealWorldId = '';
+      worldNavLastRightClickAt = 0;
       updateWorldNavStack(world);
       renderWorldModeChrome(world, activeWorldCreator);
       dom.modeChrome.style.display = 'block';
@@ -2820,19 +4140,23 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
   }
 
   async function exitWorldMode() {
+    if (!(await prepareWorldLoaderSurface())) return false;
+
     activeWorld = null;
     activeWorldCreator = null;
+    customWorldEditRevealWorldId = '';
+    worldNavLastRightClickAt = 0;
     worldNavStack = [];
     clearWorldUrl();
     parentTabAction = async () => {
       await exitWorldMode();
     };
     await renderMainNavigationChrome();
-    showTransitionLoader({
+    const loaderShown = await showTransitionLoader({
       mode: 'loading',
       kicker: 'main',
       title: '4thworld',
-      meta: '',
+      meta: MAIN_WORLD_USERNAME,
       description: '',
       status: 'loading main...',
       backgroundUrl: getDefaultBackgroundUrl(baseUrl),
@@ -2840,14 +4164,29 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       showCover: false,
       progress: 0
     });
+    if (!loaderShown) return;
     await onExitWorld?.();
     await renderMainNavigationChrome();
+    return true;
   }
 
   async function cleanupWorldAssets(worldId) {
-    const { data, error } = await supabase.storage.from(WORLD_BUCKET).list(worldId);
-    if (error) throw error;
-    const paths = (data || []).map((entry) => `${worldId}/${entry.name}`);
+    const [rootResult, assetsResult] = await Promise.all([
+      supabase.storage.from(WORLD_BUCKET).list(worldId),
+      supabase.storage.from(WORLD_BUCKET).list(`${worldId}/assets`)
+    ]);
+
+    if (rootResult.error) throw rootResult.error;
+    if (assetsResult.error) throw assetsResult.error;
+
+    const paths = [
+      ...(rootResult.data || [])
+        .filter((entry) => entry?.name && entry.name !== 'assets')
+        .map((entry) => `${worldId}/${entry.name}`),
+      ...(assetsResult.data || [])
+        .filter((entry) => entry?.name)
+        .map((entry) => `${worldId}/assets/${entry.name}`)
+    ];
     if (paths.length === 0) return;
     const { error: removeError } = await supabase.storage.from(WORLD_BUCKET).remove(paths);
     if (removeError) throw removeError;
@@ -3000,6 +4339,102 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     return data.publicUrl;
   }
 
+  function getWorldUiAssetKind(file) {
+    const type = String(file?.type || '').toLowerCase();
+    const ext = getFileExtension(file?.name || '');
+    if (type === 'image/png' || ext === 'png') return 'png';
+    if (type === 'image/jpeg' || ext === 'jpg' || ext === 'jpeg') return 'jpeg';
+    return '';
+  }
+
+  function getWorldUiAssetStorageName(file) {
+    const rawName = normalizeStorageName(file?.name || 'asset');
+    return rawName || 'asset';
+  }
+
+  function validateWorldUiAssetFiles(files = []) {
+    const assetFiles = Array.from(files || []).filter(Boolean);
+    let pngCount = 0;
+    let jpegCount = 0;
+    let totalBytes = 0;
+    const storageNames = new Set();
+
+    for (const file of assetFiles) {
+      const kind = getWorldUiAssetKind(file);
+      if (!kind) {
+        throw new Error('UI assets must be PNG or JPEG files.');
+      }
+
+      const size = Number(file.size || 0);
+      totalBytes += size;
+
+      if (kind === 'png') {
+        pngCount += 1;
+        if (size > WORLD_UI_ASSET_MAX_PNG_BYTES) {
+          throw new Error(`"${file.name}" is too large. PNG UI assets must be 2 MB or smaller.`);
+        }
+      }
+
+      if (kind === 'jpeg') {
+        jpegCount += 1;
+        if (size > WORLD_UI_ASSET_MAX_JPEG_BYTES) {
+          throw new Error(`"${file.name}" is too large. JPEG UI assets must be 4 MB or smaller.`);
+        }
+      }
+
+      const storageName = getWorldUiAssetStorageName(file);
+      if (!storageName || storageName === 'asset') {
+        throw new Error('UI asset filenames must contain letters or numbers.');
+      }
+
+      if (storageNames.has(storageName.toLowerCase())) {
+        throw new Error(`Duplicate UI asset filename after cleanup: ${storageName}`);
+      }
+      storageNames.add(storageName.toLowerCase());
+    }
+
+    if (pngCount > WORLD_UI_ASSET_MAX_PNGS) {
+      throw new Error(`Choose ${WORLD_UI_ASSET_MAX_PNGS} PNG UI assets or fewer.`);
+    }
+
+    if (jpegCount > WORLD_UI_ASSET_MAX_JPEGS) {
+      throw new Error(`Choose ${WORLD_UI_ASSET_MAX_JPEGS} JPEG UI assets or fewer.`);
+    }
+
+    if (totalBytes > WORLD_UI_ASSET_MAX_TOTAL_BYTES) {
+      throw new Error('UI assets are too large together. Keep the total at 32 MB or less.');
+    }
+
+    return assetFiles;
+  }
+
+  async function uploadWorldUiAssets(worldId, files = []) {
+    const assetFiles = validateWorldUiAssetFiles(files);
+    const uploaded = [];
+
+    for (const file of assetFiles) {
+      const storageName = getWorldUiAssetStorageName(file);
+      const url = await uploadWorldFile(worldId, `assets/${storageName}`, file);
+      uploaded.push({
+        name: storageName,
+        originalName: file.name || storageName,
+        url,
+        path: `./assets/${storageName}`,
+        type: getWorldUiAssetKind(file),
+        size: Number(file.size || 0)
+      });
+    }
+
+    if (uploaded.length > 0) {
+      const manifestFile = new File([
+        JSON.stringify({ assets: uploaded }, null, 2)
+      ], 'manifest.json', { type: 'application/json' });
+      await uploadWorldFile(worldId, 'assets/manifest.json', manifestFile);
+    }
+
+    return uploaded;
+  }
+
   async function updateWorldCoverAsset(worldId, userId, coverUrl) {
     const payloadCandidates = [
       { cover_url: coverUrl },
@@ -3045,14 +4480,27 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     throw lastError || new Error('Failed to save world cover.');
   }
 
-  async function setWorldPassword(worldId, plainPassword) {
-    const trimmed = String(plainPassword || '').trim();
-    if (!trimmed) return;
+  async function setWorldPassword(worldId, passwordOptions = {}) {
+    const viewPassword = String(passwordOptions?.viewPassword || '').trim();
+    const editPassword = String(passwordOptions?.editPassword || '').trim();
+    const viewIsPublic = Boolean(passwordOptions?.viewIsPublic);
+    const editIsPublic = Boolean(passwordOptions?.editIsPublic);
 
     const payloadCandidates = [
-      { p_world_id: worldId, p_password: trimmed },
-      { p_password: trimmed, p_world_id: worldId },
-      { world_id: worldId, password: trimmed }
+      {
+        p_world_id: worldId,
+        p_view_password: viewPassword,
+        p_edit_password: editPassword,
+        p_view_public: viewIsPublic,
+        p_edit_public: editIsPublic
+      },
+      {
+        world_id: worldId,
+        view_password: viewPassword,
+        edit_password: editPassword,
+        view_public: viewIsPublic,
+        edit_public: editIsPublic
+      }
     ];
 
     let lastError = null;
@@ -3075,6 +4523,131 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     }
 
     throw lastError || new Error('Failed to update world password.');
+  }
+
+  function readBridgeBoolean(value, fallback = true) {
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      if (normalized === 'true' || normalized === 'public' || normalized === '1') return true;
+      if (normalized === 'false' || normalized === 'private' || normalized === '0') return false;
+    }
+    return fallback;
+  }
+
+  async function createCustomWorldForBridge(params = {}) {
+    if (!activeWorld?.id || !canUseCustomWorldFrame(activeWorld)) {
+      throw new Error('No active custom world.');
+    }
+
+    const canCreate = await canCreateWorldInActiveContext();
+    if (!canCreate) return null;
+
+    const currentUser = getCurrentUser?.();
+    if (!currentUser?.id) throw new Error('You must be signed in to create a world.');
+
+    const name = String(params?.name || '').trim().slice(0, 80);
+    if (!name) throw new Error('World name is required.');
+
+    const description = String(params?.description || '').trim().slice(0, 500);
+    const html = String(params?.html || '').trim();
+    const css = String(params?.css || '').trim();
+    const type = String(params?.type || (html ? 'code' : 'plug')).trim().toLowerCase();
+    const isCodeWorld = type === 'code' || Boolean(html);
+
+    if (isCodeWorld && !html) {
+      throw new Error('Custom code worlds need an html string.');
+    }
+
+    const visibility = params?.visibility ?? params?.is_public_view;
+    const editing = params?.editing ?? params?.is_public_edit;
+    const viewIsPublic = readBridgeBoolean(visibility, true);
+    const editIsPublic = readBridgeBoolean(editing, true);
+    const viewPassword = String(params?.viewPassword || params?.view_password || '').trim();
+    const editPassword = String(params?.editPassword || params?.edit_password || '').trim();
+
+    if (!viewIsPublic && !viewPassword) throw new Error('Private view mode needs a password.');
+    if (!editIsPublic && !editPassword) throw new Error('Private edit mode needs a password.');
+
+    const fallbackStyle = getMakerColorSource(false);
+    const fontFamily = String(params?.font_family || fallbackStyle.font_family || WORLD_FONTS[0]?.value || '').trim() || null;
+    const fontColor = normalizeColorInputValue(params?.font_color || params?.ui_color || fallbackStyle.font_color, DEFAULT_UI_COLOR);
+    const backgroundColor = normalizeColorInputValue(params?.background_color || fallbackStyle.background_color || fallbackStyle.ui_color, '#05070b');
+    const category = String(params?.category || '').trim() || null;
+
+    const { data: inserted, error: insertError } = await supabase
+      .from('worlds')
+      .insert([{
+        name,
+        description: description || '',
+        category,
+        font_family: fontFamily,
+        font_color: fontColor,
+        ui_color: fontColor,
+        background_color: backgroundColor,
+        is_public_view: viewIsPublic,
+        is_public_edit: editIsPublic,
+        update_mode: 'auto',
+        user_id: currentUser.id,
+        parent_world_id: activeWorld.id,
+        background_url: null,
+        custom_code_url: null
+      }])
+      .select('*')
+      .single();
+
+    if (insertError) throw insertError;
+    let nextWorld = inserted;
+
+    if (isCodeWorld) {
+      const htmlFile = buildCustomWorldHtmlFile(html, css || '');
+      const cssFile = new File([css || ''], 'world.css', { type: 'text/css' });
+      const customCodeUrl = await uploadWorldFile(nextWorld.id, 'world.html', htmlFile);
+      await uploadWorldFile(nextWorld.id, 'world.css', cssFile);
+
+      const assetFiles = validateWorldUiAssetFiles(params?.assets || []);
+      if (assetFiles.length > 0) {
+        await uploadWorldUiAssets(nextWorld.id, assetFiles);
+      }
+
+      if (params?.cover) {
+        const coverFile = params.cover;
+        const optimizedCoverFile = await optimizeWorldCoverImage(coverFile);
+        const coverUrl = await uploadWorldFile(
+          nextWorld.id,
+          `cover-${Date.now()}-${normalizeStorageName(optimizedCoverFile?.name || coverFile.name || 'world-cover')}`,
+          optimizedCoverFile || coverFile
+        );
+
+        nextWorld = await updateWorldCoverAsset(nextWorld.id, currentUser.id, coverUrl);
+      }
+
+      const { data: updatedCode, error: updateCodeError } = await supabase
+        .from('worlds')
+        .update({ custom_code_url: customCodeUrl })
+        .eq('id', nextWorld.id)
+        .select('*')
+        .single();
+
+      if (updateCodeError) throw updateCodeError;
+      nextWorld = updatedCode;
+    }
+
+    if (!viewIsPublic || !editIsPublic) {
+      await setWorldPassword(nextWorld.id, {
+        viewPassword,
+        editPassword,
+        viewIsPublic,
+        editIsPublic
+      });
+      nextWorld = await loadWorldById(nextWorld.id) || nextWorld;
+    }
+
+    await onWorldCreated?.(nextWorld, {
+      startPlacement: false
+    });
+
+    return safeBridgeWorld(nextWorld);
   }
 
   async function publishPlugWorld() {
@@ -3100,12 +4673,11 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     dom.plugPublish.textContent = isEdit ? 'updating...' : 'publishing...';
 
     try {
+      const styleDraft = readMakerStyle('plug');
       const draft = {
         name,
         category: String(dom.plugCategoryHidden?.value || '').trim() || null,
-        font_family: null,
-        font_color: null,
-        ui_color: null,
+        ...styleDraft,
         is_public_view: dom.plugVisibility.value !== 'false',
         is_public_edit: dom.plugEditing.value !== 'false',
         update_mode: 'auto'
@@ -3172,8 +4744,9 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         nextWorld = await updateWorldCoverAsset(nextWorld.id, currentUser.id, coverUrl);
       }
 
-      if (resolvedPassword?.trim()) {
+      if (resolvedPassword) {
         await setWorldPassword(nextWorld.id, resolvedPassword);
+        nextWorld = await loadWorldById(nextWorld.id) || nextWorld;
       }
 
       if (activeWorld?.id === nextWorld.id) {
@@ -3197,9 +4770,9 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     if (publishInFlight) return;
 
     const name = dom.codeName.value.trim();
-    const description = dom.codeDescription.value.trim();
     const htmlFile = dom.codeHtml.files?.[0] || null;
     const cssFile = dom.codeCss.files?.[0] || null;
+    const coverFile = dom.codeCover.files?.[0] || null;
     const isEdit = makerMode === 'edit' && Boolean(makerEditingWorld?.id);
     const editingWorldId = makerEditingWorld?.id || null;
     const resolvedPassword = resolveCodeWorldPassword();
@@ -3207,8 +4780,8 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       return;
     }
 
-    if (!name || !description || (!isEdit && (!htmlFile || !cssFile))) {
-      alert('Upload world.html and world.css, then fill in name and description.');
+    if (!name || (!isEdit && (!htmlFile || !cssFile))) {
+      alert('Upload world.html and world.css, then fill in name.');
       return;
     }
 
@@ -3220,10 +4793,18 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     dom.codePublish.textContent = isEdit ? 'updating...' : 'publishing...';
 
     try {
+      const assetFiles = validateWorldUiAssetFiles(dom.codeAssets?.files || []);
+      const htmlTextForValidation = htmlFile ? await htmlFile.text() : '';
+      const cssTextForValidation = cssFile ? await cssFile.text() : '';
+      validateCustomWorldAssetReferences(htmlTextForValidation, cssTextForValidation, assetFiles, {
+        requireAll: !isEdit
+      });
+      const styleDraft = readMakerStyle('code');
       const draft = {
         name,
-        description,
-        category: null,
+        description: '',
+        category: String(dom.codeCategoryHidden?.value || '').trim() || null,
+        ...styleDraft,
         is_public_view: dom.codeVisibility.value !== 'false',
         is_public_edit: dom.codeEditing.value !== 'false'
       };
@@ -3250,9 +4831,6 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
             parent_world_id: activeWorld?.id || null,
             background_url: null,
             custom_code_url: null,
-            font_family: null,
-            font_color: null,
-            ui_color: DEFAULT_UI_COLOR,
             update_mode: 'auto'
           }])
           .select('*')
@@ -3263,16 +4841,49 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       }
 
       let customCodeUrl = nextWorld.custom_code_url || null;
+      const codeFilesChanged = Boolean(htmlFile || cssFile);
 
-      if (htmlFile) {
-        customCodeUrl = await uploadWorldFile(nextWorld.id, 'world.html', htmlFile);
+      if (codeFilesChanged) {
+        const htmlText = htmlFile
+          ? htmlTextForValidation
+          : await fetchCustomWorldText(customCodeUrl);
+        let cssText = cssFile ? cssTextForValidation : '';
+        if (!cssFile) {
+          try {
+            cssText = await fetchCustomWorldText(getCustomWorldCssUrl(customCodeUrl));
+          } catch {
+            cssText = '';
+          }
+        }
+
+        if (cssFile) {
+          await uploadWorldFile(nextWorld.id, 'world.css', cssFile);
+        }
+
+        customCodeUrl = await uploadWorldFile(
+          nextWorld.id,
+          'world.html',
+          buildCustomWorldHtmlFile(htmlText, cssText)
+        );
+        customWorldFrameVersionById.set(String(nextWorld.id), String(Date.now()));
       }
 
-      if (cssFile) {
-        await uploadWorldFile(nextWorld.id, 'world.css', cssFile);
+      if (assetFiles.length > 0) {
+        await uploadWorldUiAssets(nextWorld.id, assetFiles);
       }
 
-      if (customCodeUrl !== nextWorld.custom_code_url) {
+      if (coverFile) {
+        const optimizedCoverFile = await optimizeWorldCoverImage(coverFile);
+        const coverUrl = await uploadWorldFile(
+          nextWorld.id,
+          `cover-${Date.now()}-${normalizeStorageName(optimizedCoverFile?.name || coverFile.name)}`,
+          optimizedCoverFile || coverFile
+        );
+
+        nextWorld = await updateWorldCoverAsset(nextWorld.id, currentUser.id, coverUrl);
+      }
+
+      if (codeFilesChanged || customCodeUrl !== nextWorld.custom_code_url) {
         const { data: updatedCode, error: updateCodeError } = await supabase
           .from('worlds')
           .update({ custom_code_url: customCodeUrl })
@@ -3284,8 +4895,9 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         nextWorld = updatedCode;
       }
 
-      if (resolvedPassword?.trim()) {
+      if (resolvedPassword) {
         await setWorldPassword(nextWorld.id, resolvedPassword);
+        nextWorld = await loadWorldById(nextWorld.id) || nextWorld;
       }
 
       if (activeWorld?.id === nextWorld.id) {
@@ -3442,6 +5054,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     const card = document.createElement('div');
     card.className = 'post-card world-card';
     card.dataset.worldId = world.id;
+    card.dataset.scaleKey = `world:${world.id}`;
     card.dataset.lod = 'near';
 
     const idx = options.index || 0;
@@ -3550,49 +5163,34 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     return card;
   }
 
-  function handleCheatCode(event) {
-    if (event.defaultPrevented) return;
-    if (event.ctrlKey || event.metaKey || event.altKey) return;
-    if (isTypingSurface()) {
-      keyBuffer = '';
-      return;
-    }
-
-    const key = String(event.key || '').toLowerCase();
-    if (!/^[a-z]$/.test(key)) return;
-
-    keyBuffer = `${keyBuffer}${key}`.slice(-Math.max(WORLD_TRIGGER.length, WORLD_EDIT_TRIGGER.length));
-    if (keyBuffer.endsWith(WORLD_EDIT_TRIGGER) && activeWorld?.id && String(getCurrentUser?.()?.id || '') === String(activeWorld?.user_id || '')) {
-      keyBuffer = '';
-      event.preventDefault();
-      void openMakerForEdit(activeWorld);
-      return;
-    }
-
-    if (keyBuffer.endsWith(WORLD_TRIGGER)) {
-      keyBuffer = '';
-      event.preventDefault();
-      void openMaker();
-    }
-  }
-
-  function closeActiveUi() {
+  async function closeActiveUi() {
     if (isMakerOpen()) {
-      closeMaker();
+      await maybeCloseMaker();
       return true;
     }
     return false;
   }
 
+  window.addEventListener('message', (event) => {
+    void handleCustomWorldBridgeMessage(event);
+  });
+  dom.modeFrame?.addEventListener('load', () => {
+    if (dom.modeFrame.src !== 'about:blank') {
+      dom.modeFrame.removeAttribute('data-loading');
+      dom.modeFrame.style.visibility = '';
+    }
+    void postCustomWorldBridgeReady();
+  });
   dom.modePlugBtn.addEventListener('click', () => showStep('plug'));
   dom.modeCodeBtn.addEventListener('click', () => showStep('code'));
-  dom.makerClose.addEventListener('click', closeMaker);
-  dom.plugBack.addEventListener('click', closeMaker);
-  dom.codeBack.addEventListener('click', closeMaker);
+  dom.makerClose.addEventListener('click', () => { void maybeCloseMaker(); });
+  dom.plugBack.addEventListener('click', () => { void maybeCloseMaker(); });
+  dom.codeBack.addEventListener('click', () => { void maybeCloseMaker(); });
   dom.plugPublish.addEventListener('click', publishPlugWorld);
   dom.codePublish.addEventListener('click', publishCodeWorld);
   dom.codeDownload.addEventListener('click', downloadTemplateZip);
   wirePlugCategoryEvents();
+  wireCodeCategoryEvents();
   dom.logoutBtn?.addEventListener('click', async () => {
     const { error } = await supabase.auth.signOut();
     if (error) {
@@ -3607,7 +5205,27 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     const ownerId = String(activeWorld?.user_id || '').trim();
     if (!currentUserId || !ownerId || currentUserId !== ownerId) return;
     const latestWorld = await loadWorldById(activeWorld.id);
+    customWorldEditRevealWorldId = '';
+    renderWorldModeChrome(activeWorld, activeWorldCreator);
     await openMakerForEdit(latestWorld || activeWorld);
+  });
+  dom.modeNavBar?.addEventListener('contextmenu', (event) => {
+    if (!activeWorld?.id || !canUseCustomWorldFrame(activeWorld)) return;
+
+    const currentUserId = String(getCurrentUser?.()?.id || '').trim();
+    const ownerId = String(activeWorld?.user_id || '').trim();
+    if (!currentUserId || !ownerId || currentUserId !== ownerId) return;
+
+    event.preventDefault();
+    const now = Date.now();
+    const isDoubleRightClick = now - worldNavLastRightClickAt <= 400;
+    worldNavLastRightClickAt = now;
+    if (!isDoubleRightClick) return;
+
+    worldNavLastRightClickAt = 0;
+    const activeWorldId = String(activeWorld.id);
+    customWorldEditRevealWorldId = customWorldEditRevealWorldId === activeWorldId ? '' : activeWorldId;
+    renderWorldModeChrome(activeWorld, activeWorldCreator);
   });
   dom.modeDelete.addEventListener('click', async () => {
     if (activeWorld) {
@@ -3640,7 +5258,8 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       return;
     }
 
-    const nextPassword = dom.passwordInput.value.trim();
+    const nextPassword = readPasswordInput(dom.passwordInput);
+    const nextEditPassword = readPasswordInput(dom.editPasswordInput);
     if (!nextPassword && !passwordPromptState?.allowEmpty) {
       if (dom.passwordError) {
         dom.passwordError.textContent = passwordPromptState?.emptyError || 'Enter a password.';
@@ -3648,10 +5267,15 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       return;
     }
 
+    if (passwordPromptState?.includeEdit) {
+      closePasswordPrompt({ viewPassword: nextPassword, editPassword: nextEditPassword });
+      return;
+    }
+
     closePasswordPrompt(nextPassword);
   });
 
-  dom.passwordInput?.addEventListener('keydown', (event) => {
+  [dom.passwordInput, dom.editPasswordInput].forEach((input) => input?.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
       event.preventDefault();
       dom.passwordSubmit?.click();
@@ -3661,7 +5285,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       event.preventDefault();
       closePasswordPrompt(null);
     }
-  });
+  }));
 
   dom.passwordOverlay?.addEventListener('click', (event) => {
     const isBackdropTarget = event.target === dom.passwordOverlay
@@ -3674,7 +5298,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
 
   dom.makerOverlay.addEventListener('click', (event) => {
     if (event.target === dom.makerOverlay) {
-      closeMaker();
+      void maybeCloseMaker();
     }
   });
 
@@ -3700,15 +5324,29 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
   dom.codeCss.addEventListener('change', () => {
     dom.codeCssLabel.textContent = dom.codeCss.files?.[0]?.name || 'choose css';
   });
+  dom.codeCover.addEventListener('change', () => {
+    dom.codeCoverLabel.textContent = dom.codeCover.files?.[0]?.name || 'choose world card cover';
+  });
+  dom.codeAssets.addEventListener('change', () => {
+    const files = Array.from(dom.codeAssets.files || []);
+    if (!files.length) {
+      dom.codeAssetsLabel.textContent = 'choose ui assets';
+      return;
+    }
+    const pngCount = files.filter((file) => getWorldUiAssetKind(file) === 'png').length;
+    const jpegCount = files.filter((file) => getWorldUiAssetKind(file) === 'jpeg').length;
+    dom.codeAssetsLabel.textContent = `${pngCount} png / ${jpegCount} jpg ui assets`;
+  });
 
   setupWorldDropdown(dom.plugVisibility);
   setupWorldDropdown(dom.plugEditing);
+  setupWorldDropdown(dom.plugFont, { useOptionFontFamily: true });
   setupWorldDropdown(dom.codeVisibility);
   setupWorldDropdown(dom.codeEditing);
+  setupWorldDropdown(dom.codeFont, { useOptionFontFamily: true });
 
   syncCategories();
   syncCodeAccessPasswordVisibility();
-  document.addEventListener('keydown', handleCheatCode);
   hydrateMyWorlds().catch((error) => {
     console.warn('Failed to hydrate My Worlds:', error);
   });
@@ -3723,11 +5361,13 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     hideTransitionLoader,
     setWorldLoaderProgress,
     syncCategories,
+    openWorldMaker: openMaker,
     maybeCloseMaker,
     closeActiveUi,
     isMakerOpen,
     isInWorldMode,
     openWorldById,
+    ensureWorldEditAccess,
     optimizeExistingWorldBackgrounds,
     refreshActiveWorldChrome: async (nextWorld = null) => {
       if (nextWorld && activeWorld && nextWorld.id === activeWorld.id) {

@@ -12,8 +12,8 @@
   bottom: 44px;
   left: 0;
   right: var(--toolbar-w);
-  --pd-ui-bg: var(--sys-fg);
-  --pd-ui-fg: var(--sys-bg);
+  --pd-ui-bg: var(--post-overlay-bg, var(--sys-fg));
+  --pd-ui-fg: var(--post-overlay-color, var(--sys-bg));
   --pd-ui-fg-soft: color-mix(in srgb, var(--pd-ui-fg) 72%, transparent);
   --pd-ui-fg-muted: color-mix(in srgb, var(--pd-ui-fg) 50%, transparent);
   --pd-preview-fg: var(--pd-ui-fg);
@@ -982,7 +982,7 @@
 /* Unified system-theme + connected boxes for post detail modal */
 #postDetailModal,
 #postDetailModal * {
-  font-family: var(--sys-font, inherit);
+  font-family: var(--post-overlay-font, var(--sys-font, inherit));
 }
 
 #postDetailModal {
@@ -1247,6 +1247,12 @@ body.app-edit-mode #canvasViewport::before {
   text-shadow: none;
 }
 
+body.post-form-open #postCanvas .post-card,
+body.world-maker-open #postCanvas .post-card {
+  opacity: 0.0;
+  pointer-events: none;
+}
+
 .post-card-wireframe {
   width: 330px;
   min-height: 220px;
@@ -1412,10 +1418,23 @@ body.anim-hard-freeze #categoryLayer path {
   height: calc(100vh - 88px);
   background: var(--sys-fg);
   border-left: 1px solid var(--sys-bg);
-  z-index: 200;
+  z-index: 500;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
+}
+
+.world-nav-boot-shell {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 44px;
+  min-height: 44px;
+  background: var(--sys-bg);
+  border-bottom: 1px solid var(--sys-fg);
+  z-index: 180;
+  pointer-events: none;
 }
 
 .toolbar-btn {
@@ -1468,6 +1487,13 @@ body.anim-hard-freeze #categoryLayer path {
   height: 28px;
 }
 
+#toolbarProfileBtn .icon-profile {
+  width: 100%;
+  height: 100%;
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
+}
+
 .toolbar-btn:last-child {
   border-bottom: none;
 }
@@ -1515,7 +1541,7 @@ body.app-edit-mode .right-toolbar {
   background: var(--sys-fg);
   border-right: 1px solid var(--sys-bg);
   color: var(--sys-bg);
-  z-index: 150;
+  z-index: 220;
   transition: left 0.25s ease;
   display: flex;
   flex-direction: column;
@@ -1631,7 +1657,7 @@ body.app-edit-mode .right-toolbar {
   color: var(--sys-bg);
   backdrop-filter: var(--overlay-blur-utility);
   -webkit-backdrop-filter: var(--overlay-blur-utility);
-  z-index: 150;
+  z-index: 220;
   transition: left 0.25s ease;
   display: flex;
   flex-direction: column;
@@ -1790,8 +1816,8 @@ body.app-edit-mode .right-toolbar {
   z-index: 50;
   max-height: 180px;
   overflow-y: auto;
-  backdrop-filter: blur(8px) saturate(110%);
-  -webkit-backdrop-filter: blur(8px) saturate(110%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   box-shadow: none;
 }
 
@@ -1815,7 +1841,7 @@ body.app-edit-mode .right-toolbar {
 
 .ui-dropdown--world {
   --ui-dd-color: var(--post-overlay-color, var(--sys-fg));
-  --ui-dd-bg: color-mix(in srgb, var(--post-overlay-bg, rgba(4, 8, 16, 0.28)) 20%, transparent);
+  --ui-dd-bg: var(--post-overlay-bg, var(--sys-bg));
 }
 
 .settings-select-wrap {
@@ -2323,7 +2349,7 @@ body.app-edit-mode .right-toolbar {
   left: calc(-1 * var(--utility-panel-w));
   width: var(--utility-panel-w);
   height: calc(100vh - 88px);
-  z-index: 150;
+  z-index: 220;
   background: var(--sys-fg);
   border-right: 1px solid var(--sys-bg);
   display: flex;
@@ -2344,7 +2370,7 @@ body.app-edit-mode .right-toolbar {
   left: 0;
   right: var(--toolbar-w);
   bottom: 44px;
-  z-index: 95;
+  z-index: 190;
   display: none;
   background: color-mix(in srgb, var(--post-overlay-bg, rgba(18, 22, 32, 0.22)) 10%, transparent);
   backdrop-filter: var(--overlay-blur-utility);
@@ -2395,7 +2421,7 @@ body.profile-open.notif-open .help-overlay { left: var(--utility-panel-w); }
   border-top: 1px solid var(--sys-fg);
   display: flex;
   align-items: center;
-  z-index: 200;
+  z-index: 500;
   overflow: visible;
 }
 
@@ -2713,26 +2739,22 @@ body.profile-open.notif-open .help-overlay { left: var(--utility-panel-w); }
   display: flex;
 }
 
-body.music-panel-open .world-mode-chrome,
 body.music-panel-open .music-bar {
-  z-index: 300;
+  z-index: 500;
 }
 
-body.notif-open .world-mode-pfp-wrap,
 body.notif-open .world-mode-title-card,
-body.profile-open .world-mode-pfp-wrap,
 body.profile-open .world-mode-title-card,
-body.toolbar-modal-open .world-mode-pfp-wrap,
 body.toolbar-modal-open .world-mode-title-card,
-body.music-panel-open .world-mode-pfp-wrap,
 body.music-panel-open .world-mode-title-card,
-body.post-detail-open .world-mode-pfp-wrap,
-body.post-detail-open .world-mode-title-card {
+body.post-form-open .world-mode-title-card,
+body.post-detail-open .world-mode-title-card,
+body.world-maker-open .world-mode-title-card {
   display: none;
 }
 
 .music-panel {
-  background: var(--sys-fg);
+  background: var(--music-panel-bg, var(--sys-fg));
   border-top: none;
   width: 100%;
   max-width: 100%;
@@ -2740,15 +2762,16 @@ body.post-detail-open .world-mode-title-card {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  color: var(--sys-bg);
+  color: var(--music-panel-fg, var(--sys-bg));
   font-size: var(--inner-system-modal-font);
+  font-family: var(--music-panel-font, var(--sys-font, inherit));
 }
 
 .music-panel-top-controls {
   display: flex;
   width: 100%;
   flex-shrink: 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--sys-bg) 20%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--music-panel-fg, var(--sys-bg)) 20%, transparent);
 }
 
 .music-panel-top-btn {
@@ -2756,9 +2779,9 @@ body.post-detail-open .world-mode-title-card {
   min-height: 44px;
   margin: 0;
   border: none;
-  border-right: 1px solid color-mix(in srgb, var(--sys-bg) 20%, transparent);
+  border-right: 1px solid color-mix(in srgb, var(--music-panel-fg, var(--sys-bg)) 20%, transparent);
   border-radius: 0;
-  color: var(--sys-bg);
+  color: var(--music-panel-fg, var(--sys-bg));
   font-size: var(--inner-system-modal-font);
   line-height: 1;
   letter-spacing: 0.02em;
@@ -2787,11 +2810,11 @@ body.post-detail-open .world-mode-title-card {
   min-width: 0;
   background: transparent;
   border: none;
-  border-right: 1px solid color-mix(in srgb, var(--sys-bg) 20%, transparent);
-  color: var(--sys-bg);
+  border-right: 1px solid color-mix(in srgb, var(--music-panel-fg, var(--sys-bg)) 20%, transparent);
+  color: var(--music-panel-fg, var(--sys-bg));
   font-size: var(--inner-system-modal-font);
   letter-spacing: 0.01em;
-  font-family: var(--sys-font, inherit);
+  font-family: var(--music-panel-font, var(--sys-font, inherit));
   padding: 12px 10px;
   outline: none;
   transition: color 0.15s ease;
@@ -2806,11 +2829,11 @@ body.post-detail-open .world-mode-title-card {
 }
 
 .music-link-inline-input::placeholder {
-  color: var(--sys-bg);
+  color: var(--music-panel-fg, var(--sys-bg));
 }
 
 .music-link-inline-input:focus {
-  color: var(--sys-bg);
+  color: var(--music-panel-fg, var(--sys-bg));
 }
 
 .music-track-list {
@@ -2826,7 +2849,7 @@ body.post-detail-open .world-mode-title-card {
   box-sizing: border-box;
   height: 46px;
   padding: 8px 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--sys-bg) 8%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--music-panel-fg, var(--sys-bg)) 8%, transparent);
   cursor: pointer;
   transition: none;
 }
@@ -2863,8 +2886,8 @@ body.post-detail-open .world-mode-title-card {
 
 .music-track-poster {
   font-size: var(--inner-system-modal-font);
-  color: var(--sys-bg);
-  font-family: var(--sys-font, inherit);
+  color: var(--music-panel-fg, var(--sys-bg));
+  font-family: var(--music-panel-font, var(--sys-font, inherit));
   text-align: right;
   white-space: nowrap;
   overflow: hidden;
@@ -2874,8 +2897,8 @@ body.post-detail-open .world-mode-title-card {
 
 .music-track-song {
   font-size: var(--inner-system-modal-font);
-  color: var(--sys-bg);
-  font-family: var(--sys-font, inherit);
+  color: var(--music-panel-fg, var(--sys-bg));
+  font-family: var(--music-panel-font, var(--sys-font, inherit));
   text-align: right;
   white-space: nowrap;
   overflow: hidden;
@@ -2883,7 +2906,7 @@ body.post-detail-open .world-mode-title-card {
 }
 
 .music-track-row.active .music-track-song {
-  color: var(--sys-bg);
+  color: var(--music-panel-fg, var(--sys-bg));
 }
 
 .music-track-row.edit-mode .music-track-right {
@@ -2899,16 +2922,16 @@ body.post-detail-open .world-mode-title-card {
 }
 
 .music-track-row.edit-mode.drop-before {
-  box-shadow: inset 0 2px 0 var(--sys-bg);
+  box-shadow: inset 0 2px 0 var(--music-panel-fg, var(--sys-bg));
 }
 
 .music-track-row.edit-mode.drop-after {
-  box-shadow: inset 0 -2px 0 var(--sys-bg);
+  box-shadow: inset 0 -2px 0 var(--music-panel-fg, var(--sys-bg));
 }
 
 .music-track-drag-handle {
   flex-shrink: 0;
-  color: var(--sys-bg);
+  color: var(--music-panel-fg, var(--sys-bg));
   font-size: var(--inner-system-modal-font);
   line-height: 1;
   opacity: 0.7;
@@ -2919,17 +2942,17 @@ body.post-detail-open .world-mode-title-card {
 .music-track-title {
   display: block;
   font-size: var(--inner-system-modal-font);
-  color: var(--sys-bg);
+  color: var(--music-panel-fg, var(--sys-bg));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-family: var(--sys-font, inherit);
+  font-family: var(--music-panel-font, var(--sys-font, inherit));
 }
 
 .music-track-artist {
   font-size: var(--inner-system-modal-font);
-  color: var(--sys-bg);
-  font-family: var(--sys-font, inherit);
+  color: var(--music-panel-fg, var(--sys-bg));
+  font-family: var(--music-panel-font, var(--sys-font, inherit));
   text-align: right;
   white-space: nowrap;
   max-width: 220px;
@@ -2947,10 +2970,10 @@ body.post-detail-open .world-mode-title-card {
   background: transparent;
   border: none;
   outline: none;
-  color: var(--sys-bg);
+  color: var(--music-panel-fg, var(--sys-bg));
   font-size: var(--inner-system-modal-font);
   cursor: pointer;
-  font-family: var(--sys-font, inherit);
+  font-family: var(--music-panel-font, var(--sys-font, inherit));
   padding: 0 4px;
   line-height: 1;
   transition: none;
@@ -2960,8 +2983,8 @@ body.post-detail-open .world-mode-title-card {
   background: transparent;
   border: none;
   border-bottom: 1px solid transparent;
-  color: var(--sys-bg);
-  font-family: var(--sys-font, inherit);
+  color: var(--music-panel-fg, var(--sys-bg));
+  font-family: var(--music-panel-font, var(--sys-font, inherit));
   font-size: var(--inner-system-modal-font);
   outline: none;
   width: 100%;
@@ -2974,17 +2997,17 @@ body.post-detail-open .world-mode-title-card {
 }
 
 .music-rename-input:focus {
-  border-bottom-color: color-mix(in srgb, var(--sys-bg) 45%, transparent);
-  color: var(--sys-bg);
+  border-bottom-color: color-mix(in srgb, var(--music-panel-fg, var(--sys-bg)) 45%, transparent);
+  color: var(--music-panel-fg, var(--sys-bg));
 }
 
 .music-rename-input.music-rename-artist {
   font-size: var(--inner-system-modal-font);
-  color: var(--sys-bg);
+  color: var(--music-panel-fg, var(--sys-bg));
 }
 
 .music-rename-input.music-rename-artist:focus {
-  color: var(--sys-bg);
+  color: var(--music-panel-fg, var(--sys-bg));
 }
 
 /* Edit mode row — no pointer cursor, not clickable to play */
@@ -2994,24 +3017,24 @@ body.post-detail-open .world-mode-title-card {
 
 /* Outline on the panel when editing */
 .music-panel.edit-mode {
-  outline: 1px solid color-mix(in srgb, var(--sys-bg) 18%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--music-panel-fg, var(--sys-bg)) 18%, transparent);
   outline-offset: -1px;
 }
 
 .music-panel-footer {
   padding: 10px 20px 14px;
-  border-top: 1px solid color-mix(in srgb, var(--sys-bg) 10%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--music-panel-fg, var(--sys-bg)) 10%, transparent);
   flex-shrink: 0;
   display: flex;
   justify-content: flex-end;
 }
 
 .music-empty {
-  color: var(--sys-bg);
+  color: var(--music-panel-fg, var(--sys-bg));
   font-size: var(--inner-system-modal-font);
   padding: 24px 0;
   text-align: center;
-  font-family: var(--sys-font, inherit);
+  font-family: var(--music-panel-font, var(--sys-font, inherit));
 }
 
 /* 20.2 HELP OVERLAY                            */
@@ -3023,7 +3046,7 @@ body.post-detail-open .world-mode-title-card {
   left: 0;
   bottom: 44px;
   right: var(--toolbar-w);
-  z-index: 150;
+  z-index: 220;
   background: transparent;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
@@ -3155,11 +3178,13 @@ body.post-detail-open .world-mode-title-card {
   left: 0;
   bottom: 44px;
   right: var(--toolbar-w);
-  z-index: 180;
+  z-index: 320;
   padding: 0;
-  background: transparent;
-  backdrop-filter: var(--overlay-blur-form);
-  -webkit-backdrop-filter: var(--overlay-blur-form);
+  background: var(--post-overlay-bg, var(--sys-bg));
+  color: var(--post-overlay-color, var(--sys-fg));
+  font-family: var(--world-maker-font-family, var(--sys-font, inherit));
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   display: flex;
   align-items: stretch;
   justify-content: stretch;
@@ -3178,7 +3203,7 @@ body.profile-open.notif-open .world-maker-overlay { left: var(--utility-panel-w)
   min-height: 100%;
   max-height: 100%;
   overflow: auto;
-  background: color-mix(in srgb, var(--post-overlay-bg, rgba(4, 8, 16, 0.28)) 20%, transparent);
+  background: var(--post-overlay-bg, var(--sys-bg));
   border: none;
   box-shadow: none;
   backdrop-filter: none;
@@ -3186,7 +3211,7 @@ body.profile-open.notif-open .world-maker-overlay { left: var(--utility-panel-w)
   padding: clamp(16px, 2.4vw, 30px);
   position: relative;
   z-index: 2;
-  font-family: var(--world-mode-font-family, var(--post-overlay-font, inherit));
+  font-family: inherit;
   color: var(--post-overlay-color, var(--sys-fg));
 }
 
@@ -3463,15 +3488,15 @@ body.profile-open.notif-open .world-maker-overlay { left: var(--utility-panel-w)
   flex-direction: column;
   position: static;
   width: 100%;
-  background: color-mix(in srgb, var(--post-overlay-bg, rgba(4, 8, 16, 0.28)) 20%, transparent);
+  background: var(--post-overlay-bg, var(--sys-bg));
   border: 1px solid var(--post-overlay-color, var(--sys-fg));
   border-top: none;
   border-radius: 2px;
   z-index: 50;
   max-height: 180px;
   overflow-y: auto;
-  backdrop-filter: blur(8px) saturate(110%);
-  -webkit-backdrop-filter: blur(8px) saturate(110%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   box-shadow: none;
 }
 
@@ -3688,8 +3713,11 @@ body.profile-open.notif-open .world-maker-overlay { left: var(--utility-panel-w)
 }
 
 .world-card {
+  --post-scale: 1;
   position: absolute;
   width: 376px;
+  transform: scale(var(--post-scale));
+  transform-origin: top left;
   background: transparent !important;
   border: none !important;
   box-shadow: none !important;
@@ -3847,9 +3875,9 @@ body.profile-open.notif-open .world-maker-overlay { left: var(--utility-panel-w)
 .world-mode-chrome {
   position: fixed;
   inset: 0 0 44px 0;
-  z-index: 200;
+  z-index: 180;
   pointer-events: none;
-  font-family: var(--world-mode-font-family, inherit);
+  font-family: var(--sys-font, inherit);
   color: var(--world-mode-font-color, inherit);
 }
 
@@ -4040,21 +4068,6 @@ body.app-edit-mode .world-mode-chrome {
   box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.72);
 }
 
-.world-mode-pfp-wrap {
-  position: absolute;
-  top: 52px;
-  left: 12px;
-  z-index: 2;
-}
-
-.world-mode-pfp {
-  width: 80px;
-  height: 80px;
-  object-fit: cover;
-  display: block;
-  pointer-events: auto;
-}
-
 .world-mode-identity-panel {
   position: absolute;
   right: calc(var(--toolbar-w) + 24px);
@@ -4077,12 +4090,14 @@ body.app-edit-mode .world-mode-chrome {
 
 .world-mode-frame {
   position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
+  top: 44px;
+  left: 0;
+  width: calc(100% - var(--toolbar-w));
+  height: calc(100% - 44px);
   border: 0;
-  opacity: 0.88;
-  pointer-events: none;
+  opacity: 1;
+  background: var(--sys-bg);
+  pointer-events: auto;
 }
 
 .world-loader-overlay {
@@ -4090,12 +4105,12 @@ body.app-edit-mode .world-mode-chrome {
   inset: 44px var(--notif-bar-w) 44px 0;
   z-index: 141;
   overflow: hidden;
-  background: var(--sys-bg);
-  background-color: var(--sys-bg);
+  background: var(--world-loader-bg-color, var(--sys-bg));
+  background-color: var(--world-loader-bg-color, var(--sys-bg));
   background-image: none;
   opacity: 1;
-  color: var(--sys-fg);
-  font-family: var(--sys-font, inherit);
+  color: var(--world-loader-font-color, var(--sys-fg));
+  font-family: var(--world-loader-font-family, var(--sys-font, inherit));
   transition: left 0.2s ease, right 0.2s ease;
 }
 
@@ -4134,15 +4149,26 @@ body.profile-open.notif-open .world-loader-overlay {
 }
 
 .world-loader-pfp {
-  position: absolute;
-  top: 24px;
-  left: 26px;
   z-index: 1;
   width: 56px;
   height: 56px;
   object-fit: cover;
   border-radius: 50%;
   display: block;
+  color: var(--world-loader-font-color, var(--sys-fg));
+  order: 3;
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.world-loader-pfp[data-default-avatar="1"] {
+  background-color: currentColor;
+  border-radius: 0;
+  color: var(--world-loader-font-color, var(--sys-fg));
+  object-fit: contain;
+  object-position: center;
+  -webkit-mask: url('../toolbaricons/toolbaricons_profile_cutout.svg') center / 100% 100% no-repeat;
+  mask: url('../toolbaricons/toolbaricons_profile_cutout.svg') center / 100% 100% no-repeat;
 }
 
 .world-loader-copy {
@@ -4165,7 +4191,7 @@ body.profile-open.notif-open .world-loader-overlay {
 
 .world-loader-title {
   margin: 0;
-  color: var(--sys-fg);
+  color: var(--world-loader-font-color, var(--sys-fg));
   font-size: clamp(1.9rem, 4.2vw, 3.3rem);
   font-weight: 400;
   letter-spacing: -0.03em;
@@ -4177,7 +4203,7 @@ body.profile-open.notif-open .world-loader-overlay {
 
 .world-loader-meta {
   margin: 0;
-  color: color-mix(in srgb, var(--sys-fg) 72%, transparent);
+  color: color-mix(in srgb, var(--world-loader-font-color, var(--sys-fg)) 72%, transparent);
   font-size: 0.78rem;
   letter-spacing: 0.05em;
   text-transform: lowercase;
@@ -4189,7 +4215,7 @@ body.profile-open.notif-open .world-loader-overlay {
 .world-loader-description {
   display: none;
   margin: 0;
-  color: color-mix(in srgb, var(--sys-fg) 82%, transparent);
+  color: color-mix(in srgb, var(--world-loader-font-color, var(--sys-fg)) 82%, transparent);
   font-size: 0.92rem;
   line-height: 1.5;
   text-align: right;
@@ -4219,7 +4245,7 @@ body.profile-open.notif-open .world-loader-overlay {
   position: absolute;
   inset: 0 auto 0 0;
   width: var(--world-loader-progress, 0%);
-  background: var(--sys-fg);
+  background: var(--world-loader-ui-color, var(--world-loader-font-color, var(--sys-fg)));
   transform: none;
   border-radius: 0;
 }
@@ -4232,17 +4258,15 @@ body.profile-open.notif-open .world-loader-overlay {
   position: absolute;
   inset: 50% auto auto 50%;
   z-index: 2;
-  width: min(430px, calc(100% - 32px));
+  width: min(380px, calc(100% - 32px));
   transform: translate(-50%, -50%);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(10, 12, 16, 0.72);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  box-shadow: 0 18px 54px rgba(0, 0, 0, 0.44);
-  padding: 24px;
+  border: 1px solid var(--world-loader-ui-color, var(--world-loader-font-color, var(--sys-fg)));
+  background: color-mix(in srgb, var(--world-loader-bg-color, var(--sys-bg)) 76%, transparent);
+  box-shadow: none;
+  padding: 18px;
   display: none;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
 }
 
 .world-loader-overlay[data-mode="password"] .world-password-panel {
@@ -4253,61 +4277,28 @@ body.profile-open.notif-open .world-loader-overlay {
   opacity: 0;
 }
 
-.world-password-kicker {
-  color: rgba(255, 255, 255, 0.42);
-  font-size: 0.72rem;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-}
-
-.world-password-title {
-  margin: 0;
-  color: rgba(255, 255, 255, 0.94);
-  font-size: 1.36rem;
-  font-weight: 400;
-}
-
-.world-password-copy {
-  margin: 0;
-  color: rgba(255, 255, 255, 0.66);
-  font-size: 0.88rem;
-  line-height: 1.45;
-}
-
-.world-password-field {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.world-password-field > span {
-  color: rgba(255, 255, 255, 0.62);
-  font-size: 0.74rem;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-}
-
-.world-password-field input {
+.world-password-input {
   width: 100%;
-  border: none;
-  border-bottom: 2px solid rgba(255, 255, 255, 0.22);
+  border: 1px solid var(--world-loader-ui-color, var(--world-loader-font-color, var(--sys-fg)));
   background: transparent;
-  color: rgba(255, 255, 255, 0.9);
+  color: var(--world-loader-font-color, var(--sys-fg));
   font-family: inherit;
   font-size: 0.96rem;
-  padding: 8px 0;
+  padding: 10px 12px;
   outline: none;
-  transition: border-bottom-color 0.15s ease;
+  text-align: center;
 }
 
-.world-password-field input:focus {
-  border-bottom-color: rgba(255, 255, 255, 0.5);
+.world-password-input::placeholder {
+  color: color-mix(in srgb, var(--world-loader-font-color, var(--sys-fg)) 65%, transparent);
+  font-style: italic;
 }
 
 .world-password-error {
   min-height: 1.2em;
-  color: rgba(255, 163, 163, 0.95);
+  color: color-mix(in srgb, #ff9d9d 88%, var(--world-loader-font-color, var(--sys-fg)) 12%);
   font-size: 0.8rem;
+  text-align: center;
 }
 
 .world-password-actions {
@@ -4318,9 +4309,9 @@ body.profile-open.notif-open .world-loader-overlay {
 
 .world-password-secondary,
 .world-password-primary {
-  border: 1px solid rgba(255, 255, 255, 0.24);
+  border: 1px solid color-mix(in srgb, var(--world-loader-ui-color, var(--world-loader-font-color, var(--sys-fg))) 44%, transparent);
   background: transparent;
-  color: rgba(255, 255, 255, 0.76);
+  color: color-mix(in srgb, var(--world-loader-font-color, var(--sys-fg)) 76%, transparent);
   font-family: inherit;
   font-size: 0.8rem;
   letter-spacing: 0.06em;
@@ -4333,18 +4324,18 @@ body.profile-open.notif-open .world-loader-overlay {
 
 .world-password-secondary:hover,
 .world-password-primary:hover {
-  color: rgba(255, 255, 255, 0.95);
-  border-color: rgba(255, 255, 255, 0.44);
+  color: var(--world-loader-font-color, var(--sys-fg));
+  border-color: color-mix(in srgb, var(--world-loader-ui-color, var(--world-loader-font-color, var(--sys-fg))) 72%, transparent);
 }
 
 .world-password-primary {
-  color: rgba(142, 198, 255, 0.96);
-  border-color: rgba(142, 198, 255, 0.48);
+  color: var(--world-loader-ui-color, var(--world-loader-font-color, var(--sys-fg)));
+  border-color: color-mix(in srgb, var(--world-loader-ui-color, var(--world-loader-font-color, var(--sys-fg))) 72%, transparent);
 }
 
 .world-password-primary:hover {
-  color: rgba(188, 223, 255, 0.98);
-  border-color: rgba(188, 223, 255, 0.72);
+  color: var(--world-loader-font-color, var(--sys-fg));
+  border-color: var(--world-loader-ui-color, var(--world-loader-font-color, var(--sys-fg)));
 }
 
 .post-form-category-display.is-disabled,
@@ -4367,22 +4358,12 @@ body.profile-open.notif-open .world-loader-overlay {
     grid-template-columns: 1fr;
   }
 
-  .world-mode-pfp-wrap {
-    top: 52px;
-    left: 8px;
-  }
-
   .world-mode-nav-bar {
     padding: 0 0 0 12px;
   }
 
   .world-mode-breadcrumbs {
     max-width: calc(100% - 24px);
-  }
-
-  .world-mode-pfp {
-    width: 66px;
-    height: 66px;
   }
 
   .world-mode-identity-panel {

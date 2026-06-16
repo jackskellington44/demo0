@@ -43,6 +43,21 @@ const MAX_PFP_BYTES = 2 * 1024 * 1024; // 2 MB
 const ALLOWED_PFP_MIMETYPES = new Set(['image/webp', 'image/gif', 'image/png', 'image/jpeg']);
 const MIME_TO_EXT = { 'image/webp': 'webp', 'image/gif': 'gif', 'image/png': 'png', 'image/jpeg': 'jpg' };
 
+function inferPublicObjectContentType(objectKey = '') {
+  const normalized = String(objectKey || '').split('?')[0].toLowerCase();
+  if (normalized.endsWith('.html')) return 'text/html; charset=utf-8';
+  if (normalized.endsWith('.css')) return 'text/css; charset=utf-8';
+  if (normalized.endsWith('.js')) return 'text/javascript; charset=utf-8';
+  if (normalized.endsWith('.json')) return 'application/json; charset=utf-8';
+  if (normalized.endsWith('.svg')) return 'image/svg+xml';
+  if (normalized.endsWith('.png')) return 'image/png';
+  if (normalized.endsWith('.jpg') || normalized.endsWith('.jpeg')) return 'image/jpeg';
+  if (normalized.endsWith('.webp')) return 'image/webp';
+  if (normalized.endsWith('.gif')) return 'image/gif';
+  if (normalized.endsWith('.avif')) return 'image/avif';
+  return 'application/octet-stream';
+}
+
 // Username: 1–30 chars, letters/digits/underscore/hyphen only
 const USERNAME_RE = /^[A-Za-z0-9_-]{1,30}$/;
 const MIN_PASSWORD_LENGTH = 6;
@@ -648,6 +663,19 @@ app.get('/api/storage/public/:bucket/*', async (req, res) => {
   const objectKey = req.params[0];
 
   try {
+    let stat = null;
+    try {
+      stat = await minioClient.statObject(bucket, objectKey);
+    } catch {
+      stat = null;
+    }
+
+    const meta = stat?.metaData || {};
+    const contentType = meta['content-type'] || meta['Content-Type'] || inferPublicObjectContentType(objectKey);
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', bucket === 'worlds' ? 'no-store' : 'public, max-age=3600');
+    if (stat?.size) res.setHeader('Content-Length', String(stat.size));
+
     const stream = await minioClient.getObject(bucket, objectKey);
     stream.pipe(res);
   } catch (err) {
@@ -656,39 +684,98 @@ app.get('/api/storage/public/:bucket/*', async (req, res) => {
   }
 });
 
-async function verifyWorldPassword(worldId, password) {
+function normalizeWorldPasswordMode(mode = 'view') {
+  return String(mode || 'view').toLowerCase() === 'edit' ? 'edit' : 'view';
+}
+
+function getWorldPasswordHash(row, mode = 'view') {
+  const normalizedMode = normalizeWorldPasswordMode(mode);
+  if (normalizedMode === 'edit') {
+    return row?.edit_password_hash || row?.password_hash || null;
+  }
+  return row?.view_password_hash || row?.password_hash || null;
+}
+
+async function verifyWorldPassword(worldId, password, mode = 'view') {
+  const normalizedMode = normalizeWorldPasswordMode(mode);
   const result = await pool.query(
-    'SELECT password_hash FROM public.worlds WHERE id = $1',
+    'SELECT password_hash, view_password_hash, edit_password_hash FROM public.worlds WHERE id = $1',
     [worldId]
   );
-  const hash = result.rows[0]?.password_hash;
+  const hash = getWorldPasswordHash(result.rows[0], normalizedMode);
   if (!hash) return false;
   return bcrypt.compare(String(password || ''), hash);
 }
 
-async function grantWorldAccess(userId, worldId, password) {
-  const allowed = await verifyWorldPassword(worldId, password);
+async function grantWorldAccess(userId, worldId, password, mode = 'view') {
+  const normalizedMode = normalizeWorldPasswordMode(mode);
+  const allowed = await verifyWorldPassword(worldId, password, normalizedMode);
   if (!allowed) return false;
 
+  const columnName = normalizedMode === 'edit' ? 'edit_unlocked_at' : 'view_unlocked_at';
+
   await pool.query(
-    `INSERT INTO public.world_access (user_id, world_id, unlocked_at)
-     VALUES ($1, $2, NOW())
+    `INSERT INTO public.world_access (user_id, world_id, unlocked_at, ${columnName})
+     VALUES ($1, $2, NOW(), NOW())
      ON CONFLICT (user_id, world_id)
-     DO UPDATE SET unlocked_at = EXCLUDED.unlocked_at`,
+     DO UPDATE SET unlocked_at = EXCLUDED.unlocked_at, ${columnName} = EXCLUDED.${columnName}`,
     [userId, worldId]
   );
 
   return true;
 }
 
-async function setWorldPassword(userId, worldId, password) {
-  const trimmed = String(password || '').trim();
-  const passwordHash = trimmed ? await bcrypt.hash(trimmed, BCRYPT_ROUNDS) : null;
+async function setWorldPassword(userId, worldId, options = {}) {
+  const hasLegacyPassword = Object.prototype.hasOwnProperty.call(options, 'password');
+  const hasViewPassword = Object.prototype.hasOwnProperty.call(options, 'viewPassword');
+  const hasEditPassword = Object.prototype.hasOwnProperty.call(options, 'editPassword');
+  const viewPassword = String((hasViewPassword ? options.viewPassword : options.password) || '').trim();
+  const editPassword = String((hasEditPassword ? options.editPassword : options.password) || '').trim();
+  const viewIsPublic = Boolean(options.viewIsPublic);
+  const editIsPublic = Boolean(options.editIsPublic);
+
+  const updates = [];
+  const values = [];
+  const pushUpdate = (sql, value) => {
+    values.push(value);
+    updates.push(sql.replace('?', `$${values.length}`));
+  };
+
+  if (viewIsPublic) {
+    updates.push('view_password_hash = NULL', 'view_password_updated_at = NOW()');
+  } else if (viewPassword) {
+    pushUpdate('view_password_hash = ?', await bcrypt.hash(viewPassword, BCRYPT_ROUNDS));
+    updates.push('view_password_updated_at = NOW()');
+  } else if (hasLegacyPassword) {
+    updates.push('view_password_hash = NULL', 'view_password_updated_at = NOW()');
+  }
+
+  if (editIsPublic) {
+    updates.push('edit_password_hash = NULL', 'edit_password_updated_at = NOW()');
+  } else if (editPassword) {
+    pushUpdate('edit_password_hash = ?', await bcrypt.hash(editPassword, BCRYPT_ROUNDS));
+    updates.push('edit_password_updated_at = NOW()');
+  } else if (hasLegacyPassword) {
+    updates.push('edit_password_hash = NULL', 'edit_password_updated_at = NOW()');
+  }
+
+  if (hasLegacyPassword) {
+    const legacyPassword = viewPassword || editPassword;
+    if (legacyPassword) {
+      pushUpdate('password_hash = ?', await bcrypt.hash(legacyPassword, BCRYPT_ROUNDS));
+    } else {
+      updates.push('password_hash = NULL');
+    }
+  }
+
+  if (!updates.length) return true;
+
+  values.push(worldId, userId);
   const result = await pool.query(
     `UPDATE public.worlds
-     SET password_hash = $1
-     WHERE id = $2 AND user_id = $3`,
-    [passwordHash, worldId, userId]
+     SET ${updates.join(', ')}
+     WHERE id = $${values.length - 1} AND user_id = $${values.length}`,
+    values
   );
 
   return result.rowCount > 0;
@@ -710,22 +797,36 @@ app.post('/api/rpc/:name', readLimiter, async (req, res) => {
     try {
       const worldId = args.p_world_id || args.world_id;
       const password = args.p_password ?? args.password ?? '';
+      const mode = args.p_mode ?? args.mode ?? 'view';
       if (!worldId) {
         return res.status(400).json({ data: null, error: 'world id is required' });
       }
 
       if (fnName === 'verify_world_password') {
-        const data = await verifyWorldPassword(worldId, password);
+        const data = await verifyWorldPassword(worldId, password, mode);
         return res.json({ data, error: null });
       }
 
       if (fnName === 'grant_world_access') {
-        const data = await grantWorldAccess(req.user.id, worldId, password);
+        const data = await grantWorldAccess(req.user.id, worldId, password, mode);
         return res.json({ data, error: null });
       }
 
       if (fnName === 'set_world_password') {
-        const data = await setWorldPassword(req.user.id, worldId, password);
+        const passwordOptions = {
+          viewIsPublic: args.p_view_public ?? args.view_public,
+          editIsPublic: args.p_edit_public ?? args.edit_public
+        };
+        if (Object.prototype.hasOwnProperty.call(args, 'p_password') || Object.prototype.hasOwnProperty.call(args, 'password')) {
+          passwordOptions.password = password;
+        }
+        if (Object.prototype.hasOwnProperty.call(args, 'p_view_password') || Object.prototype.hasOwnProperty.call(args, 'view_password')) {
+          passwordOptions.viewPassword = args.p_view_password ?? args.view_password;
+        }
+        if (Object.prototype.hasOwnProperty.call(args, 'p_edit_password') || Object.prototype.hasOwnProperty.call(args, 'edit_password')) {
+          passwordOptions.editPassword = args.p_edit_password ?? args.edit_password;
+        }
+        const data = await setWorldPassword(req.user.id, worldId, passwordOptions);
         return res.json({ data, error: null });
       }
 

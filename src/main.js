@@ -48,6 +48,8 @@ import nspell from 'nspell';
 import enAff from './spell/en.aff?raw';
 import enDic from './spell/en.dic?raw';
 
+const PASSWORD_MASK_PLACEHOLDER = '#**^%**+!@*!+^%**+!*%';
+
 if (typeof window !== 'undefined') {
   window.__mainDebug = window.__mainDebug || { events: [], errors: [] };
   window.__mainDebug.events.push({
@@ -98,6 +100,7 @@ const postFeed = document.getElementById('postFeed');
 // Post form overlay
 const postDeleteBtn = document.getElementById('postDeleteBtn');
 const postFormOverlay = document.getElementById('postFormOverlay');
+const postForm = document.getElementById('postForm');
 const postTitle = document.getElementById('postTitle');
 const postCategory = document.getElementById('postCategory');
 const postCategoryDisplay = document.getElementById('postCategoryDisplay');
@@ -227,6 +230,9 @@ const CATEGORY_OWNER_COLUMN_CANDIDATES = [
   'created_by_user_id'
 ];
 
+const CATEGORY_WORLD_COLUMN = 'world_id';
+let categoryWorldColumnSupported = true;
+
 // Filters (normal mode only)
 let activeUserFilter = null;      // user_id
 let activeCategoryFilter = null;  // category name or NONE_CATEGORY_FILTER
@@ -283,6 +289,7 @@ const UI_STATE_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 3;
 const DEFAULT_BOOT_SCALE = 0.14;
 const DEFAULT_BG_URL = `${import.meta.env.BASE_URL}images/background.jpg`;
 const DEFAULT_PFP_URL = `${import.meta.env.BASE_URL}images/pfps/default.png`;
+const TRANSPARENT_AVATAR_URL = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 let restoredUiState = null;
 let restoreInFlight = false;
@@ -302,6 +309,7 @@ let worldModeReloadResolve = null;
 let worldModeReloadSeq = 0;
 let worldModeTransitionPromise = null;
 let worldModeTransitionKey = '';
+let worldShortcutBuffer = '';
 let notificationsLoadPromise = null;
 let notificationsLastRequestAt = 0;
 let notificationsRetryAfter = 0;
@@ -417,6 +425,21 @@ function getLoadPostsRequestKey() {
   });
 }
 
+function getActiveCategoryWorldId() {
+  return activeWorldContext?.world?.id ? String(activeWorldContext.world.id) : null;
+}
+
+function getActiveWorldTheme() {
+  const world = activeWorldContext?.world || null;
+  if (!world?.id) return null;
+
+  const bg = String(world.background_color || world.ui_color || world.font_color || '').trim() || 'var(--sys-bg)';
+  const fg = String(world.font_color || world.ui_color || '').trim() || 'var(--sys-fg)';
+  const ui = fg;
+  const font = String(world.font_family || '').trim();
+  return { bg, fg, ui, font };
+}
+
 function cloneFeedRows(rows = []) {
   return (rows || []).map((row) => ({ ...row }));
 }
@@ -495,6 +518,7 @@ function renderFeedCards(posts = [], worlds = [], userMap = {}, options = {}) {
         loadPosts();
       }
     });
+    applyCardScale(card, getStoredPostScale(getCardScaleKey(card, world.id)));
     if (wireframe) card.classList.add('post-card-wireframe', 'post-card-wireframe--world');
     postCanvas.appendChild(card);
   });
@@ -672,6 +696,19 @@ function updateToolbarProfileAvatar() {
   toolbarBtn.innerHTML = '<span class="ui-icon icon-profile" aria-hidden="true"></span>';
 }
 
+function isDefaultPfpUrl(src = '') {
+  return /(?:^|\/)images\/pfps\/default\.png(?:[?#].*)?$/i.test(String(src || '').trim());
+}
+
+function applyDefaultAvatarState(img) {
+  if (!(img instanceof HTMLImageElement)) return;
+  const isDefault = isDefaultPfpUrl(img.getAttribute('src') || img.currentSrc || img.src || '');
+  img.dataset.defaultAvatar = isDefault ? '1' : '0';
+  if (isDefault) {
+    img.src = TRANSPARENT_AVATAR_URL;
+  }
+}
+
 function applyImageRuntimeDefaults(rootEl) {
   if (!rootEl) return;
 
@@ -692,12 +729,16 @@ function applyImageRuntimeDefaults(rootEl) {
       || img.id === 'pdPfp';
 
     if (isAvatar && img.dataset.avatarFallbackBound !== '1') {
+      applyDefaultAvatarState(img);
       img.dataset.avatarFallbackBound = '1';
       img.addEventListener('error', () => {
         if (img.dataset.avatarFallbackApplied === '1') return;
         img.dataset.avatarFallbackApplied = '1';
-        img.src = DEFAULT_PFP_URL;
+        img.dataset.defaultAvatar = '1';
+        img.src = TRANSPARENT_AVATAR_URL;
       });
+    } else if (isAvatar) {
+      applyDefaultAvatarState(img);
     }
   });
 }
@@ -1089,6 +1130,13 @@ async function updateCategoryColorInDb(categoryName, colorValue) {
       .update({ [column]: colorValue })
       .eq('group_id', 'group0')
       .eq('name', categoryName);
+
+    if (categoryWorldColumnSupported) {
+      const worldId = getActiveCategoryWorldId();
+      colorUpdateQuery = worldId
+        ? colorUpdateQuery.eq(CATEGORY_WORLD_COLUMN, worldId)
+        : colorUpdateQuery.is(CATEGORY_WORLD_COLUMN, null);
+    }
 
     if (categoryOwnerColumn && !currentUserData?.is_admin) {
       colorUpdateQuery = colorUpdateQuery.eq(categoryOwnerColumn, currentUser.id);
@@ -1591,6 +1639,8 @@ function loadSysTheme() {
   } catch {}
 }
 
+loadSysTheme();
+
 function saveSysTheme() {
   try {
     const root = document.documentElement;
@@ -1860,6 +1910,10 @@ function getStoredPostScale(postId) {
   const raw = Number(postScaleById[String(postId)]);
   if (!Number.isFinite(raw)) return 1;
   return clampPostScale(raw);
+}
+
+function getCardScaleKey(cardEl, fallbackId = '') {
+  return String(cardEl?.dataset?.scaleKey || fallbackId || '').trim();
 }
 
 function setStoredPostScale(postId, scale) {
@@ -2161,6 +2215,29 @@ function reconcileEditSelectionForVisiblePosts() {
   }
 }
 
+function getElementFromEventTarget(target) {
+  if (!target) return null;
+  if (target instanceof Element) return target;
+  if (target.nodeType === Node.TEXT_NODE) return target.parentElement || null;
+  return null;
+}
+
+function isPostCardActionTarget(target) {
+  const element = getElementFromEventTarget(target);
+  return Boolean(
+    element?.closest?.(
+      'a, button, input, textarea, select, iframe, [contenteditable="true"], .post-footer-action, .post-edit-button, .post-footer-pfp, .post-footer-username, .post-preview-mute-btn, .post-file-preview-play, .post-file-preview-download-btn, .post-file-preview-youtube-activate, .post-resize-handle, .post-resize-tab'
+    )
+  );
+}
+
+async function openPostDetailFromCard(post, user = null) {
+  if (!post || editMode) return false;
+  const resolvedUser = user || (await getUsersMapByIds([post.user_id]))[String(post.user_id)] || {};
+  await openPostDetailModal(post, resolvedUser);
+  return true;
+}
+
 function updatePlacementPosition(e) {
   if (!isPlacing || !placingCardEl) return;
 
@@ -2233,7 +2310,7 @@ function beginPostResize(e, cardEl, postId, corner = 'se') {
   const startScale = getCardScale(cardEl);
   resizingPostState = {
     cardEl,
-    postId: String(postId),
+    postId: getCardScaleKey(cardEl, String(postId)),
     startX: e.clientX,
     startY: e.clientY,
     startScale,
@@ -2276,6 +2353,7 @@ function endPostResize() {
 
 async function tryDropPlacement(e) {
   if (!isPlacing || !placingCardEl || !placingPost) return;
+  const placedItem = placingPost;
 
   const x = parseFloat(placingCardEl.style.left || '0');
   const y = parseFloat(placingCardEl.style.top || '0');
@@ -2285,7 +2363,7 @@ async function tryDropPlacement(e) {
   }
 
   const worldId = String(placingCardEl.dataset.worldId || '').trim();
-  const postId = String(placingPost?.id || '').trim();
+  const postId = String(placedItem?.id || '').trim();
 
   let placementQuery = null;
   if (worldId) {
@@ -2322,8 +2400,8 @@ async function tryDropPlacement(e) {
     return;
   }
 
-  placingPost.x = x;
-  placingPost.y = y;
+  placedItem.x = x;
+  placedItem.y = y;
 
   stopPlacement();
   renderLinks(lastLoadedPosts, lastLoadedLinks);
@@ -2856,16 +2934,18 @@ function applyWorldFormCategoryLock() {
 
 function applyOverlayThemeVars() {
   const root = document.documentElement;
-  const world = activeWorldContext?.world || null;
-
-  const worldFont = String(world?.font_family || '').trim();
-  if (worldFont) {
-    root.style.setProperty('--post-overlay-font', worldFont);
-  } else {
-    root.style.removeProperty('--post-overlay-font');
-  }
+  root.style.removeProperty('--post-overlay-font');
   root.style.removeProperty('--post-overlay-color');
   root.style.removeProperty('--post-overlay-bg');
+  root.style.removeProperty('--post-overlay-outline');
+
+  const theme = getActiveWorldTheme();
+  if (!theme) return;
+
+  if (theme.font) root.style.setProperty('--post-overlay-font', theme.font);
+  root.style.setProperty('--post-overlay-bg', theme.bg);
+  root.style.setProperty('--post-overlay-color', theme.fg);
+  root.style.setProperty('--post-overlay-outline', theme.ui);
 }
 
 function clearVisibleCanvasContent() {
@@ -2929,6 +3009,9 @@ async function enterWorldMode(worldPayload) {
     stopPlacement();
     stopBulkPlacement();
     activeWorldContext = worldPayload;
+    syncToolbarPostButtonForWorldContext();
+    await loadCategories();
+    applyOverlayThemeVars();
     worldsFeature?.setWorldLoaderProgress?.(0);
     setCanvasLoadingState(true, 'loading world...');
     worldsFeature?.setWorldLoaderProgress?.(16);
@@ -2974,6 +3057,9 @@ async function exitWorldMode() {
     stopPlacement();
     stopBulkPlacement();
     activeWorldContext = null;
+    syncToolbarPostButtonForWorldContext();
+    await loadCategories();
+    applyOverlayThemeVars();
     worldsFeature?.setWorldLoaderProgress?.(0);
     setCanvasLoadingState(true, 'loading main...');
     worldsFeature?.setWorldLoaderProgress?.(16);
@@ -3056,6 +3142,10 @@ async function ensureExclusiveSurface(target) {
   const confirmTitle = 'are you sure you meant to exit?';
   const confirmMessage = 'You have unsaved changes. Closing now will lose them.';
 
+  if (target !== 'music') {
+    closeMusicPanel();
+  }
+
   if (target !== 'world-maker' && worldsFeature?.isMakerOpen?.()) {
     const closed = await worldsFeature.maybeCloseMaker?.({
       title: confirmTitle,
@@ -3101,10 +3191,79 @@ async function ensureExclusiveSurface(target) {
   return true;
 }
 
-async function openPostForm() {
+function requestPostFormWorldPassword({ message = '' } = {}) {
+  if (!postFormOverlay || !postForm) return Promise.resolve(null);
+
+  return new Promise((resolve) => {
+    const gate = document.createElement('div');
+    gate.className = 'post-form post-form-password-gate';
+    gate.innerHTML = `
+      <input type="password" class="post-form-title post-form-password-input" autocomplete="off" spellcheck="false" placeholder="${PASSWORD_MASK_PLACEHOLDER}">
+      <div class="post-form-password-error" aria-live="polite"></div>
+    `;
+
+    const input = gate.querySelector('.post-form-password-input');
+    const error = gate.querySelector('.post-form-password-error');
+    attachFakePasswordInput(input);
+    setFakePasswordValue(input, '');
+    if (error) error.textContent = message || '';
+
+    const cleanup = (value) => {
+      gate.remove();
+      if (value) {
+        resolve(value);
+        return;
+      }
+      postForm.style.display = '';
+      if (!postFormOverlay.querySelector('.post-form-password-gate')) {
+        postFormOverlay.style.display = 'none';
+        document.body.classList.remove('post-form-open');
+        document.getElementById('toolbarPostBtn')?.classList.remove('active');
+        updateToolbarModalLockState();
+      }
+      resolve(value);
+    };
+
+    const submit = () => {
+      const password = String(getFakePasswordValue(input) || '').trim();
+      if (!password) {
+        if (error) error.textContent = 'Enter a password.';
+        return;
+      }
+      cleanup(password);
+    };
+
+    gate.addEventListener('click', (event) => event.stopPropagation());
+    input?.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        submit();
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        cleanup(null);
+      }
+    });
+
+    postForm.style.display = 'none';
+    postFormOverlay.appendChild(gate);
+    postFormOverlay.style.display = 'flex';
+    document.body.classList.add('post-form-open');
+    document.getElementById('toolbarPostBtn')?.classList.add('active');
+    updateToolbarModalLockState();
+    input?.focus();
+  });
+}
+
+async function openPostForm({ allowCustomWorldContext = false } = {}) {
+  if (isActiveCustomWorldContext() && !allowCustomWorldContext) return;
+
   if (activeWorldContext?.world && activeWorldContext.world.is_public_edit === false) {
-    if ((currentUser?.id || null) !== activeWorldContext.world.user_id) {
-      alert('Only the world creator can post here.');
+    const canEditWorld = await worldsFeature?.ensureWorldEditAccess?.(activeWorldContext.world, {
+      promptPassword: requestPostFormWorldPassword,
+      deniedMessage: 'You need edit access to post here.'
+    });
+    if (!canEditWorld) {
       return;
     }
   }
@@ -3112,7 +3271,9 @@ async function openPostForm() {
   if (!canOpen) return;
   applyOverlayThemeVars();
   postFileInput.multiple = true;
+  if (postForm) postForm.style.display = '';
   postFormOverlay.style.display = 'flex';
+  document.body.classList.add('post-form-open');
   document.getElementById('toolbarPostBtn')?.classList.add('active');
   updateToolbarModalLockState();
   schedulePostTextMentionRefresh();
@@ -3165,10 +3326,14 @@ function closeCategoryEditorPanel() {
 }
 
 function closePostForm() {
+  blurActiveTypingElement();
   postCoverImageInput.value = '';
   postCoverFileName.textContent = 'choose cover image';
   postCoverImageLabel.style.display = 'none';
   postFormOverlay.style.display = 'none';
+  postFormOverlay.querySelectorAll('.post-form-password-gate').forEach((gate) => gate.remove());
+  if (postForm) postForm.style.display = '';
+  document.body.classList.remove('post-form-open');
   postTitle.value = '';
   postFileInput.value = '';
   postFileName.textContent = 'choose file';
@@ -5496,6 +5661,7 @@ async function openPostDetailModal(post, user) {
   const isAudio = (post.file_type === 'audio' && !isVideoExtension(ext)) || isAudioExtension(ext);
   const isVideo = (post.file_type === 'video' || isVideoExtension(ext)) && !isAudio;
   const hasCover = !!post.cover_image_url;
+  const isMulti = !!(post.files && post.files.length > 1);
 
   let visualFiles = []; // { url, name, type:'image'|'video'|'youtube'|'pdf' }
   let attachments = []; // { url, name, kind:'audio'|'file'|'pdf'|'visual', visualType?:'image'|'video' }
@@ -5919,11 +6085,28 @@ async function handleDeletePosts(postIds = []) {
 // ============================================
 
 async function loadCategories() {
-  const { data, error } = await supabase
+  const worldId = getActiveCategoryWorldId();
+  let query = supabase
     .from('categories')
     .select('*')
-    .eq('group_id', 'group0')
-    .order('name', { ascending: true });
+    .eq('group_id', 'group0');
+
+  if (categoryWorldColumnSupported) {
+    query = worldId ? query.eq(CATEGORY_WORLD_COLUMN, worldId) : query.is(CATEGORY_WORLD_COLUMN, null);
+  }
+
+  let { data, error } = await query.order('name', { ascending: true });
+
+  if (error && categoryWorldColumnSupported && /world_id|schema cache|column/i.test(`${error?.code || ''} ${error?.message || ''}`)) {
+    categoryWorldColumnSupported = false;
+    const fallback = await supabase
+      .from('categories')
+      .select('*')
+      .eq('group_id', 'group0')
+      .order('name', { ascending: true });
+    data = fallback.data;
+    error = fallback.error;
+  }
 
   if (error) {
     console.error('Failed to load categories:', error);
@@ -6018,6 +6201,9 @@ async function handleAddCategory() {
 
   try {
     const insertRecord = { name, group_id: 'group0' };
+    if (categoryWorldColumnSupported) {
+      insertRecord[CATEGORY_WORLD_COLUMN] = getActiveCategoryWorldId();
+    }
     if (categoryOwnerColumn && currentUser?.id) {
       insertRecord[categoryOwnerColumn] = currentUser.id;
     }
@@ -6068,6 +6254,13 @@ async function handleRenameCategory(oldName, nextName) {
       .eq('group_id', 'group0')
       .eq('name', trimmedOldName);
 
+    if (categoryWorldColumnSupported) {
+      const worldId = getActiveCategoryWorldId();
+      renameQuery = worldId
+        ? renameQuery.eq(CATEGORY_WORLD_COLUMN, worldId)
+        : renameQuery.is(CATEGORY_WORLD_COLUMN, null);
+    }
+
     if (categoryOwnerColumn && !currentUserData?.is_admin) {
       renameQuery = renameQuery.eq(categoryOwnerColumn, currentUser.id);
     }
@@ -6076,18 +6269,36 @@ async function handleRenameCategory(oldName, nextName) {
 
     if (categoryError) throw categoryError;
 
-    const { error: postError } = await supabase
+    let postRenameQuery = supabase
       .from('posts')
       .update({ category: trimmedNextName })
       .eq('group_id', 'group0')
       .eq('category', trimmedOldName);
 
+    if (categoryWorldColumnSupported) {
+      const worldId = getActiveCategoryWorldId();
+      postRenameQuery = worldId
+        ? postRenameQuery.eq('world_id', worldId)
+        : postRenameQuery.is('world_id', null);
+    }
+
+    const { error: postError } = await postRenameQuery;
+
     if (postError) throw postError;
 
-    const { error: worldsError } = await supabase
+    let worldsRenameQuery = supabase
       .from('worlds')
       .update({ category: trimmedNextName })
       .eq('category', trimmedOldName);
+
+    if (categoryWorldColumnSupported) {
+      const worldId = getActiveCategoryWorldId();
+      worldsRenameQuery = worldId
+        ? worldsRenameQuery.eq('parent_world_id', worldId)
+        : worldsRenameQuery.is('parent_world_id', null);
+    }
+
+    const { error: worldsError } = await worldsRenameQuery;
 
     if (worldsError) throw worldsError;
 
@@ -6135,18 +6346,36 @@ async function handleDeleteCategory(name) {
   if (!confirmed) return;
 
   try {
-    const { error: postError } = await supabase
+    let postDeleteCategoryQuery = supabase
       .from('posts')
       .update({ category: null })
       .eq('group_id', 'group0')
       .eq('category', trimmedName);
 
+    if (categoryWorldColumnSupported) {
+      const worldId = getActiveCategoryWorldId();
+      postDeleteCategoryQuery = worldId
+        ? postDeleteCategoryQuery.eq('world_id', worldId)
+        : postDeleteCategoryQuery.is('world_id', null);
+    }
+
+    const { error: postError } = await postDeleteCategoryQuery;
+
     if (postError) throw postError;
 
-    const { error: worldsError } = await supabase
+    let worldsDeleteCategoryQuery = supabase
       .from('worlds')
       .delete()
       .eq('category', trimmedName);
+
+    if (categoryWorldColumnSupported) {
+      const worldId = getActiveCategoryWorldId();
+      worldsDeleteCategoryQuery = worldId
+        ? worldsDeleteCategoryQuery.eq('parent_world_id', worldId)
+        : worldsDeleteCategoryQuery.is('parent_world_id', null);
+    }
+
+    const { error: worldsError } = await worldsDeleteCategoryQuery;
 
     if (worldsError) throw worldsError;
 
@@ -6155,6 +6384,13 @@ async function handleDeleteCategory(name) {
       .delete()
       .eq('group_id', 'group0')
       .eq('name', trimmedName);
+
+    if (categoryWorldColumnSupported) {
+      const worldId = getActiveCategoryWorldId();
+      deleteCategoryQuery = worldId
+        ? deleteCategoryQuery.eq(CATEGORY_WORLD_COLUMN, worldId)
+        : deleteCategoryQuery.is(CATEGORY_WORLD_COLUMN, null);
+    }
 
     if (categoryOwnerColumn && !currentUserData?.is_admin) {
       deleteCategoryQuery = deleteCategoryQuery.eq(categoryOwnerColumn, currentUser.id);
@@ -6853,7 +7089,7 @@ async function openProfileModal(userId) {
     profilePasswordChangeLocked = false;
     if (profilePasswordInput) {
       setFakePasswordValue(profilePasswordInput, '');
-      profilePasswordInput.placeholder = 'current password';
+      profilePasswordInput.placeholder = PASSWORD_MASK_PLACEHOLDER;
       profilePasswordInput.readOnly = false;
     }
     if (profileNewPasswordInput) setFakePasswordValue(profileNewPasswordInput, '');
@@ -6965,7 +7201,7 @@ async function openProfileModal(userId) {
   ] = await Promise.all([
     supabase
       .from('worlds')
-      .select('id, user_id, name, description, category, background_url, font_family, font_color, ui_color, is_public_view, is_public_edit')
+      .select('id, user_id, name, description, category, background_url, font_family, font_color, ui_color, background_color, is_public_view, is_public_edit')
       .eq('user_id', userId)
       .eq('group_id', 'group0')
       .order('created_at', { ascending: false }),
@@ -7017,7 +7253,7 @@ async function openProfileModal(userId) {
       if (!sameWorld) {
         const { data: worldRow, error: worldError } = await supabase
           .from('worlds')
-          .select('id, user_id, name, description, category, background_url, custom_code_url, font_family, font_color, ui_color, is_public_view, is_public_edit')
+          .select('id, user_id, name, description, category, background_url, custom_code_url, font_family, font_color, ui_color, background_color, is_public_view, is_public_edit')
           .eq('id', fullPost.world_id)
           .maybeSingle();
 
@@ -7187,7 +7423,7 @@ function closeProfileModal() {
   const profileConfirmPasswordInput = document.getElementById('profileConfirmPasswordInput');
   if (profilePasswordInput) setFakePasswordValue(profilePasswordInput, '');
   if (profilePasswordInput) {
-    profilePasswordInput.placeholder = 'current password';
+    profilePasswordInput.placeholder = PASSWORD_MASK_PLACEHOLDER;
     profilePasswordInput.readOnly = false;
   }
   if (profileNewPasswordFields) profileNewPasswordFields.style.display = 'none';
@@ -7901,6 +8137,225 @@ async function submitComment() {
   await loadCommentsForPost(activePostForModal.id);
 
   postDetailModal.scrollTop = postDetailModal.scrollHeight;
+}
+
+function getBridgeActiveWorldId(world = null) {
+  const requestedWorldId = String(world?.id || '').trim();
+  const activeWorldId = String(activeWorldContext?.world?.id || '').trim();
+  return requestedWorldId && requestedWorldId === activeWorldId ? activeWorldId : '';
+}
+
+function serializeBridgeUser(user = null) {
+  if (!user) return null;
+  return {
+    id: user.id || null,
+    username: user.username || user.email || '',
+    pfp: user.pfp || null,
+    pfp_url: user.pfp_url || null
+  };
+}
+
+function serializeBridgePost(post = null, user = null) {
+  if (!post) return null;
+  return {
+    id: post.id || null,
+    user_id: post.user_id || null,
+    world_id: post.world_id || null,
+    title: post.title || '',
+    body: post.body || '',
+    category: post.category || null,
+    file_url: post.file_url || null,
+    file_name: post.file_name || null,
+    file_type: post.file_type || null,
+    files: Array.isArray(post.files) ? post.files : null,
+    cover_image_url: post.cover_image_url || null,
+    youtube_url: post.youtube_url || null,
+    x: Number.isFinite(Number(post.x)) ? Number(post.x) : null,
+    y: Number.isFinite(Number(post.y)) ? Number(post.y) : null,
+    created_at: post.created_at || null,
+    updated_at: post.updated_at || null,
+    user: serializeBridgeUser(user)
+  };
+}
+
+function serializeBridgeComment(comment = null, user = null) {
+  if (!comment) return null;
+  return {
+    id: comment.id || null,
+    post_id: comment.post_id || null,
+    user_id: comment.user_id || null,
+    body: comment.body || '',
+    created_at: comment.created_at || null,
+    user: serializeBridgeUser(user)
+  };
+}
+
+async function getBridgeScopedPost(postId, worldId) {
+  const id = String(postId || '').trim();
+  if (!id || !worldId) return null;
+
+  const post = await getPostRecordById(id);
+  if (!post || String(post.world_id || '') !== String(worldId)) return null;
+  return post;
+}
+
+async function listCustomWorldPostsForBridge({ world, params = {} } = {}) {
+  const worldId = getBridgeActiveWorldId(world);
+  if (!worldId) return [];
+
+  const limit = Math.max(1, Math.min(200, Number(params?.limit) || 100));
+  let query = supabase
+    .from('posts')
+    .select('*')
+    .eq('group_id', 'group0')
+    .eq('world_id', worldId)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  const category = String(params?.category || '').trim();
+  if (category) query = query.eq('category', category);
+
+  const userId = String(params?.userId || '').trim();
+  if (userId) query = query.eq('user_id', userId);
+
+  const { data, error } = await query;
+  if (error) throw error;
+
+  const posts = data || [];
+  const userIds = [...new Set(posts.map((post) => post.user_id).filter(Boolean))];
+  const userMap = await getUsersMapByIds(userIds);
+  return posts.map((post) => serializeBridgePost(post, userMap[String(post.user_id)] || null));
+}
+
+async function createCustomWorldPostForBridge({ world, params = {} } = {}) {
+  const worldId = getBridgeActiveWorldId(world);
+  if (!worldId || !currentUser?.id) return null;
+
+  if (activeWorldContext?.world && activeWorldContext.world.is_public_edit === false) {
+    const canEditWorld = await worldsFeature?.ensureWorldEditAccess?.(activeWorldContext.world, {
+      promptPassword: requestPostFormWorldPassword,
+      deniedMessage: 'You need edit access to post here.'
+    });
+    if (!canEditWorld) return null;
+  }
+
+  const title = String(params?.title || '').trim().slice(0, 180);
+  const body = String(params?.body || '').trim();
+  const category = String(params?.category || '').trim() || null;
+  const rawLink = String(params?.youtube_url || params?.url || '').trim();
+  const normalizedLinkUrl = rawLink ? normalizeLinkUrl(rawLink) : null;
+  const youtubeId = rawLink ? (extractYouTubeId(rawLink) || extractYouTubeId(normalizedLinkUrl || '')) : null;
+  const storedLinkUrl = rawLink
+    ? (normalizedLinkUrl || (youtubeId ? `https://youtu.be/${youtubeId}` : null))
+    : null;
+
+  if (rawLink && !storedLinkUrl) {
+    throw new Error('Enter a valid URL.');
+  }
+
+  if (!title && !getBodyPlainText(body) && !storedLinkUrl) {
+    throw new Error('Add a title, text, or URL.');
+  }
+
+  const x = Number(params?.x);
+  const y = Number(params?.y);
+  const postRecord = {
+    title: title || null,
+    body: body || null,
+    category,
+    youtube_url: storedLinkUrl,
+    file_url: null,
+    file_name: null,
+    file_type: null,
+    files: null,
+    user_id: currentUser.id,
+    group_id: 'group0',
+    world_id: worldId
+  };
+
+  if (Number.isFinite(x)) postRecord.x = clampCanvasCoord(x);
+  if (Number.isFinite(y)) postRecord.y = clampCanvasCoord(y);
+
+  const created = await savePost(postRecord);
+  await queueMentionNotifications({
+    notificationType: 'post_mention',
+    sourcePostId: created.id,
+    sourceText: body,
+    actorUserId: currentUser.id
+  });
+
+  void refreshFeedAfterMutation();
+  return serializeBridgePost(created, currentUserData || currentUser);
+}
+
+async function openCustomWorldPostForBridge({ world, postId } = {}) {
+  const worldId = getBridgeActiveWorldId(world);
+  const post = await getBridgeScopedPost(postId, worldId);
+  if (!post) return false;
+
+  const userMap = await getUsersMapByIds([post.user_id]);
+  return openPostDetailFromCard(post, userMap[String(post.user_id)] || {});
+}
+
+async function openCustomWorldPostFormForBridge({ world } = {}) {
+  const worldId = getBridgeActiveWorldId(world);
+  if (!worldId) return false;
+  await openPostForm({ allowCustomWorldContext: true });
+  return postFormOverlay?.style.display === 'flex';
+}
+
+async function listCustomWorldCommentsForBridge({ world, postId } = {}) {
+  const worldId = getBridgeActiveWorldId(world);
+  const post = await getBridgeScopedPost(postId, worldId);
+  if (!post) return [];
+
+  const { data, error } = await supabase
+    .from('comments')
+    .select('id, post_id, body, created_at, user_id')
+    .eq('post_id', post.id)
+    .order('created_at', { ascending: true });
+
+  if (error) throw error;
+
+  const comments = data || [];
+  const userIds = [...new Set(comments.map((comment) => comment.user_id).filter(Boolean))];
+  const userMap = await getUsersMapByIds(userIds);
+  return comments.map((comment) => serializeBridgeComment(comment, userMap[String(comment.user_id)] || null));
+}
+
+async function createCustomWorldCommentForBridge({ world, postId, body } = {}) {
+  const worldId = getBridgeActiveWorldId(world);
+  const post = await getBridgeScopedPost(postId, worldId);
+  const text = String(body || '').trim();
+  if (!post || !text || !currentUser?.id) return null;
+
+  const { data, error } = await supabase
+    .from('comments')
+    .insert([{
+      post_id: post.id,
+      user_id: currentUser.id,
+      body: text
+    }])
+    .select('id, post_id, body, created_at, user_id')
+    .single();
+
+  if (error) throw error;
+
+  await queueMentionNotifications({
+    notificationType: 'comment_mention',
+    sourcePostId: post.id,
+    sourceText: text,
+    actorUserId: currentUser.id
+  });
+
+  return serializeBridgeComment(data, currentUserData || currentUser);
+}
+
+function getCustomWorldContextForBridge() {
+  return {
+    currentUser: serializeBridgeUser(currentUserData || currentUser),
+    activeWorldId: activeWorldContext?.world?.id || null
+  };
 }
 
 function resizeCommentInput() {
@@ -9302,9 +9757,8 @@ function initializeRealtimeRefresh() {
     });
 }
 
-function handleGlobalKeydown(e) {
-  const tag = document.activeElement?.tagName?.toLowerCase();
-  const isTyping = tag === 'input' || tag === 'textarea' || document.activeElement?.isContentEditable;
+async function handleGlobalKeydown(e) {
+  const isTyping = isActiveTypingSurface();
 
   if (!isTyping && postDetailOverlay?.style.display === 'flex') {
     if (e.key === 'ArrowLeft' && pdVisualNavController?.hasMultiple?.()) {
@@ -9329,7 +9783,9 @@ function handleGlobalKeydown(e) {
 
   if (e.key !== 'Escape') return;
 
-  if (worldsFeature?.closeActiveUi?.()) {
+  e.preventDefault();
+
+  if (await worldsFeature?.closeActiveUi?.()) {
     return;
   }
 
@@ -9345,10 +9801,97 @@ function handleGlobalKeydown(e) {
   } else if (postDetailOverlay?.style.display === 'flex') {
     closePostDetailModal();
   } else if (postFormOverlay?.style.display === 'flex') {
-    maybeClosePostForm();
+    await maybeClosePostForm();
+  } else if (profileOverlay?.classList?.contains('open')) {
+    closeProfileModal();
+  } else if (notifPanel?.classList?.contains('open')) {
+    closeNotificationsPanel();
   } else if (editMode) {
     toggleEditMode();
   }
+}
+
+function isActiveTypingSurface() {
+  const target = document.activeElement;
+  if (!target) return false;
+  const element = target instanceof Element ? target : null;
+  if (element) {
+    if (!isElementVisible(element)) return false;
+  }
+  const tag = target.tagName?.toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || tag === 'select') return !target.readOnly && !target.disabled;
+  if (!target.isContentEditable) return false;
+  return Boolean(element?.closest?.('.post-form, .comment-input-wrap, .world-maker-modal, .profile-modal, .settings-panel'));
+}
+
+function isElementVisible(element) {
+  const rects = element.getClientRects?.();
+  const styles = window.getComputedStyle(element);
+  return rects?.length > 0 && styles.visibility !== 'hidden' && styles.display !== 'none';
+}
+
+function isTypingElement(element) {
+  if (!(element instanceof Element)) return false;
+  const tag = element.tagName?.toLowerCase();
+  return tag === 'input' || tag === 'textarea' || tag === 'select' || element.isContentEditable;
+}
+
+function isVisibleTypingEventTarget(target) {
+  const element = target instanceof Element ? target : null;
+  return Boolean(element && isTypingElement(element) && isElementVisible(element));
+}
+
+function blurActiveTypingElement() {
+  if (isTypingElement(document.activeElement)) {
+    document.activeElement?.blur?.();
+  }
+}
+
+function canUseWorldShortcutContext() {
+  if (!activeWorldContext?.world?.id) return true;
+  return !String(activeWorldContext.world.custom_code_url || '').trim();
+}
+
+function isActiveCustomWorldContext() {
+  return Boolean(activeWorldContext?.world?.id && String(activeWorldContext.world.custom_code_url || '').trim());
+}
+
+function syncToolbarPostButtonForWorldContext() {
+  const toolbarPostBtn = document.getElementById('toolbarPostBtn');
+  if (!toolbarPostBtn) return;
+
+  const hidePostButton = isActiveCustomWorldContext();
+  toolbarPostBtn.hidden = hidePostButton;
+  toolbarPostBtn.disabled = hidePostButton;
+  toolbarPostBtn.classList.toggle('is-hidden-in-custom-world', hidePostButton);
+  if (hidePostButton) toolbarPostBtn.classList.remove('active');
+}
+
+function handleWorldShortcutKey(event) {
+  if (event.type !== 'keydown') return false;
+  if (event.ctrlKey || event.metaKey || event.altKey) return false;
+  if (!canUseWorldShortcutContext() || isActiveTypingSurface() || isVisibleTypingEventTarget(event.target)) {
+    worldShortcutBuffer = '';
+    return false;
+  }
+
+  const key = String(event.key || '').toLowerCase();
+  if (!/^[a-z]$/.test(key)) return false;
+
+  worldShortcutBuffer = `${worldShortcutBuffer}${key}`.slice(-5);
+  if (worldShortcutBuffer !== 'world') return false;
+
+  worldShortcutBuffer = '';
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  void worldsFeature?.openWorldMaker?.();
+  return true;
+}
+
+function installWorldShortcutListeners() {
+  window.removeEventListener('keydown', handleWorldShortcutKey, true);
+  window.removeEventListener('keyup', handleWorldShortcutKey, true);
+  window.addEventListener('keydown', handleWorldShortcutKey, true);
 }
 
 function applyMarqueeIfNeeded(containerEl, trackEl, separator = '\u00A0\u00A0') {
@@ -9931,7 +10474,15 @@ function buildPostCard(post, user) {
   }
 
   card.addEventListener('click', async (e) => {
-    if (!editMode) return;
+    const shouldIgnoreCardAction = isPostCardActionTarget(e.target);
+
+    if (!editMode) {
+      if (isPlacing || isBulkPlacing || shouldIgnoreCardAction) return;
+      e.stopPropagation();
+      e.preventDefault();
+      await openPostDetailFromCard(post, user || {});
+      return;
+    }
 
     if (suppressEditSelectionClickPostId === String(post.id)) {
       suppressEditSelectionClickPostId = null;
@@ -9955,17 +10506,7 @@ function buildPostCard(post, user) {
       return;
     }
 
-    if (
-      e.target.closest('.post-footer-action') ||
-      e.target.closest('.post-edit-button') ||
-      e.target.closest('.post-footer-pfp') ||
-      e.target.closest('.post-footer-username') ||
-      e.target.closest('.post-preview-mute-btn') ||
-      e.target.closest('.post-file-preview-play') ||
-      e.target.closest('.post-file-preview-download-btn') ||
-      e.target.closest('.post-file-preview-youtube-activate') ||
-      e.target.closest('.post-resize-handle')
-    ) {
+    if (shouldIgnoreCardAction) {
       return;
     }
 
@@ -9986,34 +10527,6 @@ function buildPostCard(post, user) {
     if (sourceId === targetId) return;
 
     await toggleThreadLinkBetweenPosts(sourceId, targetId);
-  });
-
-  attachLongPress(card, () => openPostDetailModal(post, user), {
-    duration: 400,
-    shouldIgnorePointerDown: (e) => Boolean(
-      e.target.closest('.post-edit-button') ||
-      e.target.closest('.post-footer-pfp') ||
-      e.target.closest('.post-footer-username') ||
-      e.target.closest('.post-footer-action') ||
-      e.target.closest('.post-resize-tab') ||
-      e.target.closest('.post-preview-mute-btn') ||
-      e.target.closest('.post-file-preview-play') ||
-      e.target.closest('.post-file-preview-download-btn')
-    ),
-    shouldIgnoreMouseDown: (e) => {
-      if (isPlacing || isBulkPlacing) return true;
-      return Boolean(
-        e.target.closest('.post-edit-button') ||
-        e.target.closest('.post-footer-pfp') ||
-        e.target.closest('.post-footer-username') ||
-        e.target.closest('.post-footer-action') ||
-        e.target.closest('.post-resize-tab') ||
-        e.target.closest('.post-preview-mute-btn') ||
-        e.target.closest('.post-file-preview-play') ||
-        e.target.closest('.post-file-preview-download-btn') ||
-        e.target.closest('.post-file-preview-youtube-activate')
-      );
-    }
   });
 
   return card;
@@ -10048,10 +10561,35 @@ function initializeEventListeners() {
   let panStartPointerOffsetX = 0;
   let panStartPointerOffsetY = 0;
 
+  const openClickedPostCard = async (event) => {
+    if (editMode || event.defaultPrevented || isPostCardActionTarget(event.target)) return;
+    const clickedCard = getElementFromEventTarget(event.target)?.closest('.post-card[data-post-id]:not(.world-card)');
+    if (!clickedCard) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (isPlacing || isBulkPlacing) {
+      stopPlacement();
+      stopBulkPlacement();
+    }
+
+    const post = await getPostRecordById(clickedCard.dataset.postId);
+    if (!post) return;
+
+    await openPostDetailFromCard(post);
+  };
+
+  postCanvas?.addEventListener('click', (event) => {
+    void openClickedPostCard(event);
+  });
+
   const beginPointerPan = (e) => {
     if (isPlacing || isBulkPlacing) return;
     if (e.target.closest('.post-card')) return;
     if (e.target.closest('#linkLayer')) return;
+
+    blurActiveTypingElement();
 
     if (activeLinkTreeRootPostId) {
       activeLinkTreeRootPostId = null;
@@ -10091,6 +10629,7 @@ function initializeEventListeners() {
   // Canvas pan controls
   canvasViewport.addEventListener('mousedown', (e) => {
     if (e.button !== 1) return;
+    blurActiveTypingElement();
     e.preventDefault();
     isPanning = true;
     panStartX = e.clientX;
@@ -10112,6 +10651,8 @@ function initializeEventListeners() {
     if (isPlacing || isBulkPlacing) return;
     if (e.target.closest('.post-card')) return;
     if (e.target.closest('#linkLayer')) return;
+
+    blurActiveTypingElement();
 
     if (activeLinkTreeRootPostId) {
       activeLinkTreeRootPostId = null;
@@ -10662,7 +11203,8 @@ function initializeEventListeners() {
   });
 
   // Global keyboard shortcuts and dismiss behavior
-  document.addEventListener('keydown', handleGlobalKeydown);
+  installWorldShortcutListeners();
+  document.addEventListener('keydown', handleGlobalKeydown, true);
 
   const helpOverlay = document.getElementById('helpOverlay');
   helpOverlay?.addEventListener('click', (e) => {
@@ -10704,15 +11246,17 @@ function initializeEventListeners() {
 
   toolbarPostBtn?.addEventListener('click', async () => {
     closeMusicPanel();
-    if (editMode) return;
+    if (editMode || isActiveCustomWorldContext()) return;
     const isOpen = postFormOverlay?.style.display === 'flex';
     if (isOpen) {
       await maybeClosePostForm();
     } else {
       await openPostForm();
-      toolbarPostBtn.classList.add('active');
+      if (!isActiveCustomWorldContext()) toolbarPostBtn.classList.add('active');
     }
   });
+
+  syncToolbarPostButtonForWorldContext();
 
   toolbarSettingsBtn?.addEventListener('click', async () => {
     closeMusicPanel();
@@ -10748,7 +11292,12 @@ function initializeEventListeners() {
 // 24. APP BOOTSTRAP
 // ============================================
 
-document.addEventListener('DOMContentLoaded', async () => {
+let mainPageBootstrapStarted = false;
+
+async function bootstrapMainPage() {
+  if (mainPageBootstrapStarted) return;
+  mainPageBootstrapStarted = true;
+
   console.log('Main page loaded');
   console.log('[main-debug] startup', {
     path: window.location.pathname,
@@ -10829,6 +11378,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
       try {
         const insertRecord = { name, group_id: 'group0' };
+        if (categoryWorldColumnSupported) insertRecord[CATEGORY_WORLD_COLUMN] = getActiveCategoryWorldId();
         if (categoryOwnerColumn && currentUser?.id) insertRecord[categoryOwnerColumn] = currentUser.id;
         const { error } = await supabase.from('categories').insert([insertRecord]);
         if (error) throw error;
@@ -10853,6 +11403,8 @@ document.addEventListener('DOMContentLoaded', async () => {
           uiColor: world.ui_color || world.font_color || 'rgba(255,255,255,0.7)'
         };
         activeWorldContext = updatedPayload;
+        syncToolbarPostButtonForWorldContext();
+        applyOverlayThemeVars();
         applyWorldModeVisuals(updatedPayload);
       }
 
@@ -10893,18 +11445,30 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
       await scheduleWorldModeReload('exit');
     },
+    onBeforeShowLoader: async () => {
+      return ensureExclusiveSurface('world-loader');
+    },
     onOpenProfile: async (userId) => {
       await openProfileModal(userId);
     },
     onBeforeOpenMaker: async () => {
       return ensureExclusiveSurface('world-maker');
     },
+    onCustomWorldGetContext: getCustomWorldContextForBridge,
+    onCustomWorldListPosts: listCustomWorldPostsForBridge,
+    onCustomWorldCreatePost: createCustomWorldPostForBridge,
+    onCustomWorldOpenPost: openCustomWorldPostForBridge,
+    onCustomWorldOpenPostForm: openCustomWorldPostFormForBridge,
+    onCustomWorldListComments: listCustomWorldCommentsForBridge,
+    onCustomWorldCreateComment: createCustomWorldCommentForBridge,
     onRequestCloseEditorMode: async () => {
       if (!editMode) return true;
       toggleEditMode();
       return !editMode;
     }
   });
+
+  installWorldShortcutListeners();
 
   if (typeof window !== 'undefined') {
     window.optimizeMyWorldBackgrounds = async (options = {}) => {
@@ -10973,4 +11537,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   scheduleAutoFreezeRelease([deferredLinksPromise, deferredNotificationsPromise]);
 
   console.log('Main page ready');
-});
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => { void bootstrapMainPage(); }, { once: true });
+} else {
+  void bootstrapMainPage();
+}

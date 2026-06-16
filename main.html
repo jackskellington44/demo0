@@ -27,6 +27,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>monkey space</title>
     <link rel="icon" href="./images/favicon.png" />
+    <script>
+      (() => {
+        try {
+          const saved = JSON.parse(localStorage.getItem('demo4-sys-theme-v1') || 'null');
+          if (!saved || typeof saved !== 'object') return;
+          const root = document.documentElement;
+          if (saved.bg) root.style.setProperty('--sys-bg', saved.bg);
+          if (saved.fg) root.style.setProperty('--sys-fg', saved.fg);
+          if (saved.font) root.style.setProperty('--sys-font', saved.font);
+        } catch {}
+      })();
+    </script>
     <link rel="stylesheet" href="./style.css">
 </head>
 
@@ -181,6 +193,8 @@
   <!-- ================================================ -->
   <!-- 5. RIGHT TOOLBAR                                 -->
   <!-- ================================================ -->
+  <div id="worldNavBootShell" class="world-nav-boot-shell" aria-hidden="true"></div>
+
   <div id="rightToolbar" class="right-toolbar">
     <button id="toolbarProfileBtn" class="toolbar-btn" type="button" title="your profile" aria-label="your profile"><span class="ui-icon icon-profile" aria-hidden="true"></span></button>
     <button id="toolbarNotifBtn" class="toolbar-btn" type="button" title="notifications" aria-label="notifications"><span class="ui-icon icon-notifications" aria-hidden="true"></span></button>
@@ -266,14 +280,14 @@
 
             <div class="profile-edit-fields" id="profileEditFields" style="display:none;">
               <div class="profile-edit-field">
-                <input id="profilePasswordInput" class="profile-edit-input" type="password" autocomplete="current-password" spellcheck="false" autocorrect="off" autocapitalize="off" placeholder="current password">
+                <input id="profilePasswordInput" class="profile-edit-input" type="password" autocomplete="current-password" spellcheck="false" autocorrect="off" autocapitalize="off" placeholder="#**^%**+!@*!+^%**+!*%">
               </div>
               <div id="profileNewPasswordFields" class="profile-edit-field-group" style="display:none;">
                 <div class="profile-edit-field">
-                  <input id="profileNewPasswordInput" class="profile-edit-input" type="password" autocomplete="new-password" spellcheck="false" autocorrect="off" autocapitalize="off" placeholder="new password">
+                  <input id="profileNewPasswordInput" class="profile-edit-input" type="password" autocomplete="new-password" spellcheck="false" autocorrect="off" autocapitalize="off" placeholder="#**^%**+!@*!+^%**+!*%">
                 </div>
                 <div class="profile-edit-field">
-                  <input id="profileConfirmPasswordInput" class="profile-edit-input" type="password" autocomplete="new-password" spellcheck="false" autocorrect="off" autocapitalize="off" placeholder="confirm new password">
+                  <input id="profileConfirmPasswordInput" class="profile-edit-input" type="password" autocomplete="new-password" spellcheck="false" autocorrect="off" autocapitalize="off" placeholder="confirm#**^%**+!@*!+^%**+!*%">
                 </div>
               </div>
             </div>

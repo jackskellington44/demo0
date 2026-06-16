@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>strawberry fields</title>
+  <link rel="stylesheet" href="./world.css">
+</head>
+<body>
+  <main class="strawberry-world" id="strawberryWorld">
+    <section class="field-panel" aria-label="strawberry posts">
+      <div class="berry-grid" id="berryGrid" aria-live="polite"></div>
+    </section>
+
+    <aside class="text-panel" id="textPanel" aria-live="polite">
+      <div class="reader-card">
+        <p class="kicker">strawberry fields</p>
+        <h1>click a strawberry</h1>
+        <p>read what was left here, or press the strawberry with the cross to plant something new.</p>
+      </div>
+    </aside>
+  </main>
+
+  <script>
+    (function () {
+      var requestId = 0;
+      var pending = new Map();
+
+      function request(method, params) {
+        requestId += 1;
+        var id = String(requestId);
+
+        window.parent.postMessage({
+          demo0WorldBridge: true,
+          type: 'request',
+          requestId: id,
+          method: method,
+          params: params || {}
+        }, '*');
+
+        return new Promise(function (resolve, reject) {
+          pending.set(id, { resolve: resolve, reject: reject });
+
+          window.setTimeout(function () {
+            if (!pending.has(id)) return;
+            pending.delete(id);
+            reject(new Error('WorldSDK request timed out: ' + method));
+          }, 15000);
+        });
+      }
+
+      window.addEventListener('message', function (event) {
+        var data = event.data || {};
+
+        if (data.demo0WorldBridge !== true) return;
+
+        if (data.type === 'ready') {
+          window.WorldSDK.context = data.payload || null;
+          window.dispatchEvent(new CustomEvent('worldsdkready', { detail: data.payload || null }));
+          return;
+        }
+
+        if (data.type !== 'response') return;
+
+        var waiter = pending.get(data.requestId);
+        if (!waiter) return;
+
+        pending.delete(data.requestId);
+
+        if (data.ok) waiter.resolve(data.payload);
+        else waiter.reject(new Error(data.error || 'WorldSDK request failed'));
+      });
+
+      window.WorldSDK = {
+        version: 1,
+        context: null,
+        request: request,
+        auth: {
+          currentUser: function () { return request('auth.currentUser'); }
+        },
+        contextApi: {
+          get: function () { return request('context.get'); }
+        },
+        posts: {
+          list: function (params) { return request('posts.list', params); },
+          create: function (params) { return request('posts.create', params); },
+          open: function (postId) { return request('posts.open', { postId: postId }); },
+          openCreateForm: function () { return request('posts.openCreateForm'); }
+        },
+        comments: {
+          list: function (postId) { return request('comments.list', { postId: postId }); },
+          create: function (postId, body) { return request('comments.create', { postId: postId, body: body }); }
+        },
+        worlds: {
+          list: function () { return request('worlds.list'); },
+          create: function (params) { return request('worlds.create', params); },
+          open: function (worldId) { return request('worlds.open', { worldId: worldId }); },
+          openMaker: function () { return request('worlds.openMaker'); }
+        },
+        categories: {
+          list: function () { return request('categories.list'); }
+        }
+      };
+    })();
+
+    var berryGrid = document.getElementById('berryGrid');
+    var textPanel = document.getElementById('textPanel');
+
+    var POST_CATEGORY = 'strawberry-fields';
+    var POST_LIMIT = 500;
+    var clickedStorageKey = 'strawberry-fields-clicked';
+    var clickedPostIds = new Set();
+    var activeComposeButton = null;
+
+    var berries = [
+      {
+        id: 1,
+        berry: './assets/berry1.png',
+        drip: './assets/berry1-drip.png',
+        alt: 'strawberry one'
+      },
+      {
+        id: 2,
+        berry: './assets/berry2.png',
+        drip: './assets/berry2-drip.png',
+        alt: 'strawberry two'
+      },
+      {
+        id: 3,
+        berry: './assets/berry3.png',
+        drip: './assets/berry3-drip.png',
+        alt: 'strawberry three'
+      },
+      {
+        id: 4,
+        berry: './assets/berry4.png',
+        drip: './assets/berry4-drip.png',
+        alt: 'strawberry four'
+      }
+    ];
+
+    var composeBerry = {
+      berry: './assets/berry-post.png',
+      drip: './assets/berry-post-drip.png',
+      alt: 'plant a new post'
+    };
+
+    function escapeHtml(value) {
+      return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    function normalizePostId(post) {
+      return String(post && post.id != null ? post.id : '');
+    }
+
+    function getClickedKey(context) {
+      var worldId = context && context.world && context.world.id ? context.world.id : window.location.pathname;
+      return 'strawberry-fields-clicked:' + worldId;
+    }
+
+    function loadClickedPosts() {
+      try {
+        clickedPostIds = new Set(JSON.parse(localStorage.getItem(clickedStorageKey) || '[]').map(String));
+      } catch (error) {
+        clickedPostIds = new Set();
+      }
+    }
+
+    function saveClickedPosts() {
+      try {
+        localStorage.setItem(clickedStorageKey, JSON.stringify(Array.from(clickedPostIds)));
+      } catch (error) {
+        console.warn('Could not save clicked strawberries', error);
+      }
+    }
+
+    function hashString(value) {
+      var hash = 0;
+      var stringValue = String(value || '');
+      for (var i = 0; i < stringValue.length; i += 1) {
+        hash = ((hash << 5) - hash) + stringValue.charCodeAt(i);
+        hash |= 0;
+      }
+      return Math.abs(hash);
+    }
+
+    function getBerryForPost(post) {
+      var storedVariant = Number(post && post.x);
+
+      if (storedVariant >= 1 && storedVariant <= berries.length) {
+        return berries[storedVariant - 1];
+      }
+
+      return berries[hashString(normalizePostId(post) || post.title || post.body) % berries.length];
+    }
+
+    function getPostTitle(body) {
+      var clean = String(body || '').replace(/\s+/g, ' ').trim();
+      if (!clean) return 'strawberry note';
+      return clean.length > 64 ? clean.slice(0, 64) + '...' : clean;
+    }
+
+    function showStatus(message) {
+      berryGrid.innerHTML = '<div class="grid-status">' + escapeHtml(message) + '</div>';
+    }
+
+    function setIntro() {
+      textPanel.innerHTML = [
+        '<div class="reader-card">',
+        '<p class="kicker">strawberry fields</p>',
+        '<h1>click a strawberry</h1>',
+        '<p>read what was left here, or press the strawberry with the cross to plant something new.</p>',
+        '</div>'
+      ].join('');
+    }
+
+    function showPost(post) {
+      var title = post.title || 'strawberry';
+      var body = post.body || '';
+
+      textPanel.innerHTML = [
+        '<article class="reader-card post-reader">',
+        '<p class="kicker">picked strawberry</p>',
+        '<h1>' + escapeHtml(title) + '</h1>',
+        '<div class="post-body">' + escapeHtml(body).replace(/\n/g, '<br>') + '</div>',
+        '</article>'
+      ].join('');
+    }
+
+    function showComposer() {
+      textPanel.innerHTML = [
+        '<form class="reader-card compose-card" id="composeForm">',
+        '<p class="kicker">plant a strawberry</p>',
+        '<h1>leave something in the field</h1>',
+        '<label class="sr-only" for="postBody">post text</label>',
+        '<textarea id="postBody" name="postBody" maxlength="5000" placeholder="write whatever you want..." required></textarea>',
+        '<div class="compose-actions">',
+        '<button type="submit">submit</button>',
+        '<button type="button" id="cancelCompose">cancel</button>',
+        '</div>',
+        '<p class="small-note" id="composeNote">your post will become a new strawberry in the field.</p>',
+        '</form>'
+      ].join('');
+
+      var form = document.getElementById('composeForm');
+      var textarea = document.getElementById('postBody');
+      var cancelButton = document.getElementById('cancelCompose');
+      var note = document.getElementById('composeNote');
+
+      textarea.focus();
+
+      cancelButton.addEventListener('click', function () {
+        if (activeComposeButton) activeComposeButton.classList.remove('is-dripping');
+        activeComposeButton = null;
+        setIntro();
+      });
+
+      form.addEventListener('submit', async function (event) {
+        event.preventDefault();
+
+        var body = textarea.value.trim();
+        if (!body) {
+          note.textContent = 'write something first.';
+          return;
+        }
+
+        var variant = Math.floor(Math.random() * berries.length) + 1;
+
+        note.textContent = 'planting...';
+        form.classList.add('is-loading');
+
+        try {
+          await window.WorldSDK.posts.create({
+            title: getPostTitle(body),
+            body: body,
+            category: POST_CATEGORY,
+            x: variant,
+            y: 0
+          });
+
+          textarea.value = '';
+          note.textContent = 'planted.';
+          await render();
+          setIntro();
+        } catch (error) {
+          note.textContent = error.message || 'could not plant this strawberry.';
+        } finally {
+          form.classList.remove('is-loading');
+          if (activeComposeButton) activeComposeButton.classList.remove('is-dripping');
+          activeComposeButton = null;
+        }
+      });
+    }
+
+    function makeBerryButton(config, options) {
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'berry-tile';
+      button.setAttribute('aria-label', options.label || config.alt || 'strawberry');
+
+      if (options.kind) button.dataset.kind = options.kind;
+
+      button.innerHTML = [
+        '<span class="berry-stack">',
+        '<img class="berry-img berry-base" src="' + config.berry + '" alt="">',
+        '<img class="berry-img berry-drip" src="' + config.drip + '" alt="">',
+        '</span>'
+      ].join('');
+
+      return button;
+    }
+
+    function addComposeTile() {
+      var button = makeBerryButton(composeBerry, {
+        kind: 'compose',
+        label: 'plant a new strawberry post'
+      });
+
+      button.addEventListener('click', function () {
+        if (activeComposeButton && activeComposeButton !== button) {
+          activeComposeButton.classList.remove('is-dripping');
+        }
+
+        activeComposeButton = button;
+        button.classList.add('is-dripping');
+        showComposer();
+      });
+
+      berryGrid.appendChild(button);
+    }
+
+    function addPostTile(post) {
+      var postId = normalizePostId(post);
+      var config = getBerryForPost(post);
+      var button = makeBerryButton(config, {
+        kind: 'post',
+        label: post.title || 'open strawberry post'
+      });
+
+      if (clickedPostIds.has(postId)) {
+        button.classList.add('is-dripping');
+      }
+
+      button.addEventListener('click', function () {
+        clickedPostIds.add(postId);
+        saveClickedPosts();
+        button.classList.add('is-dripping');
+        showPost(post);
+      });
+
+      berryGrid.appendChild(button);
+    }
+
+    function normalizePosts(posts) {
+      if (!Array.isArray(posts)) return [];
+
+      return posts
+        .filter(function (post) {
+          return post && (post.id != null || post.body || post.title);
+        })
+        .slice(0, POST_LIMIT);
+    }
+
+    async function render() {
+      showStatus('loading strawberries...');
+
+      var context = await window.WorldSDK.contextApi.get().catch(function () { return null; });
+      clickedStorageKey = getClickedKey(context);
+      loadClickedPosts();
+
+      var posts = await window.WorldSDK.posts.list({ limit: POST_LIMIT });
+      posts = normalizePosts(posts);
+
+      berryGrid.innerHTML = '';
+      addComposeTile();
+
+      posts.forEach(function (post, index) {
+        addPostTile(post);
+
+        if ((index + 1) % 20 === 0) {
+          addComposeTile();
+        }
+      });
+
+      if (!posts.length) {
+        setIntro();
+      }
+    }
+
+    window.addEventListener('worldsdkready', function () {
+      render().catch(function (error) {
+        showStatus(error.message || 'could not load strawberries.');
+      });
+    });
+
+    window.setTimeout(function () {
+      if (!window.WorldSDK.context) {
+        render().catch(function (error) {
+          showStatus(error.message || 'could not load strawberries.');
+        });
+      }
+    }, 500);
+  </script>
+</body>
+</html>
