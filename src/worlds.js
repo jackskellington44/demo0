@@ -26,9 +26,11 @@ const WORLD_COVER_MAX_STATIC_BYTES = 2 * 1024 * 1024;
 const WORLD_COVER_MAX_SOURCE_BYTES = 20 * 1024 * 1024;
 const WORLD_UI_ASSET_MAX_PNGS = 20;
 const WORLD_UI_ASSET_MAX_JPEGS = 4;
+const WORLD_UI_ASSET_MAX_VIDEOS = 2;
 const WORLD_UI_ASSET_MAX_PNG_BYTES = 2 * 1024 * 1024;
 const WORLD_UI_ASSET_MAX_JPEG_BYTES = 4 * 1024 * 1024;
-const WORLD_UI_ASSET_MAX_TOTAL_BYTES = 32 * 1024 * 1024;
+const WORLD_UI_ASSET_MAX_VIDEO_BYTES = 80 * 1024 * 1024;
+const WORLD_UI_ASSET_MAX_TOTAL_BYTES = 180 * 1024 * 1024;
 const PASSWORD_MASK_PLACEHOLDER = '#**^%**+!@*!+^%**+!*%';
 
 const WORLD_COVER_ALLOWED_MIME_TYPES = new Set([
@@ -106,6 +108,8 @@ function guessMimeFromFileName(fileName = '') {
   if (ext === 'gif') return 'image/gif';
   if (ext === 'heic') return 'image/heic';
   if (ext === 'heif') return 'image/heif';
+  if (ext === 'mp4') return 'video/mp4';
+  if (ext === 'webm') return 'video/webm';
   return '';
 }
 
@@ -573,6 +577,25 @@ function getWorldAccent(world) {
   return String(world?.ui_color || world?.font_color || DEFAULT_UI_COLOR).trim() || DEFAULT_UI_COLOR;
 }
 
+function getSystemSettingsBackgroundColor() {
+  const root = document.documentElement;
+  const inlineBg = root.style.getPropertyValue('--sys-bg').trim();
+  if (inlineBg) return inlineBg;
+
+  try {
+    const saved = JSON.parse(localStorage.getItem('demo4-sys-theme-v1') || 'null');
+    const savedBg = String(saved?.bg || '').trim();
+    if (savedBg) return savedBg;
+  } catch {}
+
+  const bgInput = document.getElementById('settingsBgColor');
+  const inputBg = String(bgInput?.value || '').trim();
+  if (inputBg) return inputBg;
+
+  const rootStyles = getComputedStyle(root);
+  return rootStyles.getPropertyValue('--sys-bg').trim() || '#ffffff';
+}
+
 function normalizeColorInputValue(value, fallback) {
   const color = String(value || '').trim();
   return /^#[0-9a-f]{6}$/i.test(color) ? color : fallback;
@@ -766,7 +789,7 @@ function createWorldsDom(baseUrl) {
               <label class="world-maker-field world-maker-field--upload world-maker-field--wide">
                 <label class="world-maker-upload world-maker-upload--compact world-maker-input-box">
                   <span id="worldCodeAssetsLabel">choose ui assets</span>
-                  <input type="file" id="worldCodeAssets" accept="image/png,image/jpeg,.png,.jpg,.jpeg" multiple>
+                  <input type="file" id="worldCodeAssets" accept="image/png,image/jpeg,video/mp4,video/webm,.png,.jpg,.jpeg,.mp4,.webm" multiple>
                 </label>
               </label>
               <label class="world-maker-field world-maker-field--upload world-maker-field--wide">
@@ -851,7 +874,9 @@ function createWorldsDom(baseUrl) {
           </div>
           <div class="world-loader-status-text" id="worldLoaderStatus">loading world...</div>
         </div>
-        <img class="world-loader-pfp" id="worldLoaderPfp" src="" alt="" aria-hidden="true">
+        <span class="world-loader-pfp-box" id="worldLoaderPfpBox" aria-hidden="true">
+          <img class="world-loader-pfp" id="worldLoaderPfp" src="" alt="">
+        </span>
       </div>
 
       <div class="world-password-panel" id="worldPasswordPanel">
@@ -1267,9 +1292,9 @@ body {
 - You do not get direct access to the parent app DOM or raw Supabase client.
 - Use window.WorldSDK from world.html to ask the parent app for approved capabilities.
 - Custom-code worlds can upload a world card cover in the native maker; SDK-created code worlds can pass cover.
-- You can upload initial UI assets with the custom-code maker: up to 20 PNG files and 4 JPEG files.
-- PNG UI assets must be 2 MB or smaller each; JPEG UI assets must be 4 MB or smaller each; total UI assets must stay under 32 MB.
-- Reference uploaded UI assets from world.html/world.css with ./assets/filename.png or ./assets/filename.jpg.
+- You can upload initial UI assets with the custom-code maker: up to 20 PNG files, 4 JPEG files, and 2 video files.
+- PNG UI assets must be 2 MB or smaller each; JPEG UI assets must be 4 MB or smaller each; video UI assets must be 80 MB or smaller each; total UI assets must stay under 180 MB.
+- Reference uploaded UI assets from world.html/world.css with ./assets/filename.png, ./assets/filename.jpg, ./assets/filename.mp4, or ./assets/filename.webm.
 - Asset filenames are cleaned before upload, so simple lowercase names without spaces are safest.
 - Uploaded UI asset metadata is also written to ./assets/manifest.json.
 - Available SDK methods in v1:
@@ -3607,6 +3632,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       dom.loaderOverlay.style.removeProperty('--world-loader-font-color');
       dom.loaderOverlay.style.removeProperty('--world-loader-ui-color');
       dom.loaderOverlay.style.removeProperty('--world-loader-bg-color');
+      dom.loaderOverlay.style.setProperty('--world-loader-system-bg-color', getSystemSettingsBackgroundColor());
       delete dom.loaderOverlay.dataset.loaderTintKey;
       if (world?.id) {
         const bgColor = String(world.background_color || world.ui_color || world.font_color || '').trim();
@@ -3623,9 +3649,12 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     const pfpSrc = getPfpSrc(_creator, baseUrl);
     if (dom.loaderPfp) {
       const isDefaultPfp = isDefaultPfpSrc(pfpSrc);
+      dom.loaderPfp.parentElement?.classList.toggle('is-default-avatar', isDefaultPfp);
       dom.loaderPfp.dataset.defaultAvatar = isDefaultPfp ? '1' : '0';
       dom.loaderPfp.src = isDefaultPfp ? TRANSPARENT_AVATAR_URL : pfpSrc;
-      dom.loaderPfp.style.display = pfpSrc ? '' : 'none';
+      if (dom.loaderPfp.parentElement) {
+        dom.loaderPfp.parentElement.style.display = pfpSrc ? '' : 'none';
+      }
     }
     if (dom.loaderTitle) dom.loaderTitle.textContent = nextTitle;
     if (dom.loaderMeta) {
@@ -4344,6 +4373,8 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     const ext = getFileExtension(file?.name || '');
     if (type === 'image/png' || ext === 'png') return 'png';
     if (type === 'image/jpeg' || ext === 'jpg' || ext === 'jpeg') return 'jpeg';
+    if (type === 'video/mp4' || ext === 'mp4') return 'video';
+    if (type === 'video/webm' || ext === 'webm') return 'video';
     return '';
   }
 
@@ -4356,13 +4387,14 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     const assetFiles = Array.from(files || []).filter(Boolean);
     let pngCount = 0;
     let jpegCount = 0;
+    let videoCount = 0;
     let totalBytes = 0;
     const storageNames = new Set();
 
     for (const file of assetFiles) {
       const kind = getWorldUiAssetKind(file);
       if (!kind) {
-        throw new Error('UI assets must be PNG or JPEG files.');
+        throw new Error('UI assets must be PNG, JPEG, MP4, or WebM files.');
       }
 
       const size = Number(file.size || 0);
@@ -4379,6 +4411,13 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         jpegCount += 1;
         if (size > WORLD_UI_ASSET_MAX_JPEG_BYTES) {
           throw new Error(`"${file.name}" is too large. JPEG UI assets must be 4 MB or smaller.`);
+        }
+      }
+
+      if (kind === 'video') {
+        videoCount += 1;
+        if (size > WORLD_UI_ASSET_MAX_VIDEO_BYTES) {
+          throw new Error(`"${file.name}" is too large. Video UI assets must be 80 MB or smaller.`);
         }
       }
 
@@ -4401,8 +4440,12 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       throw new Error(`Choose ${WORLD_UI_ASSET_MAX_JPEGS} JPEG UI assets or fewer.`);
     }
 
+    if (videoCount > WORLD_UI_ASSET_MAX_VIDEOS) {
+      throw new Error(`Choose ${WORLD_UI_ASSET_MAX_VIDEOS} video UI assets or fewer.`);
+    }
+
     if (totalBytes > WORLD_UI_ASSET_MAX_TOTAL_BYTES) {
-      throw new Error('UI assets are too large together. Keep the total at 32 MB or less.');
+      throw new Error('UI assets are too large together. Keep the total at 180 MB or less.');
     }
 
     return assetFiles;
@@ -5335,7 +5378,8 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     }
     const pngCount = files.filter((file) => getWorldUiAssetKind(file) === 'png').length;
     const jpegCount = files.filter((file) => getWorldUiAssetKind(file) === 'jpeg').length;
-    dom.codeAssetsLabel.textContent = `${pngCount} png / ${jpegCount} jpg ui assets`;
+    const videoCount = files.filter((file) => getWorldUiAssetKind(file) === 'video').length;
+    dom.codeAssetsLabel.textContent = `${pngCount} png / ${jpegCount} jpg / ${videoCount} video ui assets`;
   });
 
   setupWorldDropdown(dom.plugVisibility);

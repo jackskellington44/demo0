@@ -49,7 +49,7 @@
     display: flex;
     align-items: stretch;
     justify-content: stretch;
-    z-index: 100;
+    z-index: 230;
 }
 
 /* === 10.1 POST FORM === */
@@ -955,12 +955,9 @@ a.post-external-link:hover {
     --post-card-space: 14px;
     --post-text-card-pad: 22px;
     --post-scale: 1;
-    --post-card-stroke-w: min(1px, calc(1px / var(--canvas-scale, 1)));
-    --post-card-inner-stroke-w: min(0.72px, calc(var(--post-card-stroke-w) * 0.72));
     --post-card-surface: var(--post-overlay-bg, var(--sys-fg));
     --post-card-ink: var(--post-overlay-color, var(--sys-bg));
     --post-card-ink-muted: color-mix(in srgb, var(--post-card-ink) 70%, transparent);
-    --post-card-line: var(--post-overlay-outline, color-mix(in srgb, var(--post-card-ink) 70%, transparent));
     --post-card-line-soft: color-mix(in srgb, var(--post-card-line) 48%, transparent);
     display: flex;
     flex-direction: column;
@@ -2137,8 +2134,8 @@ img[data-default-avatar="1"] {
     background: currentColor;
     color: inherit;
     object-fit: contain;
-    -webkit-mask: url('../toolbaricons/toolbaricons_profile.svg') center / contain no-repeat;
-    mask: url('../toolbaricons/toolbaricons_profile.svg') center / contain no-repeat;
+    -webkit-mask: url('../toolbaricons/toolbaricons_profile_filled.svg') center / contain no-repeat;
+    mask: url('../toolbaricons/toolbaricons_profile_filled.svg') center / contain no-repeat;
 }
 
 .post-footer-username {

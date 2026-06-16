@@ -55,6 +55,8 @@ function inferPublicObjectContentType(objectKey = '') {
   if (normalized.endsWith('.webp')) return 'image/webp';
   if (normalized.endsWith('.gif')) return 'image/gif';
   if (normalized.endsWith('.avif')) return 'image/avif';
+  if (normalized.endsWith('.mp4')) return 'video/mp4';
+  if (normalized.endsWith('.webm')) return 'video/webm';
   return 'application/octet-stream';
 }
 
