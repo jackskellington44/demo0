@@ -40,6 +40,9 @@ function getEnvInt(name, fallback, min = 1) {
 }
 
 const MAX_PFP_BYTES = 2 * 1024 * 1024; // 2 MB
+const MAX_MEDIA_UPLOAD_BYTES = getEnvInt('MAX_MEDIA_UPLOAD_MB', 220) * 1024 * 1024;
+const UPLOAD_REQUEST_TIMEOUT_MS = getEnvInt('UPLOAD_REQUEST_TIMEOUT_MS', 10 * 60 * 1000);
+const DIRECT_UPLOAD_URL_TTL_SECONDS = getEnvInt('DIRECT_UPLOAD_URL_TTL_SECONDS', 15 * 60);
 const ALLOWED_PFP_MIMETYPES = new Set(['image/webp', 'image/gif', 'image/png', 'image/jpeg']);
 const MIME_TO_EXT = { 'image/webp': 'webp', 'image/gif': 'gif', 'image/png': 'png', 'image/jpeg': 'jpg' };
 
@@ -110,7 +113,10 @@ const upload = multer({
   limits: { fileSize: MAX_PFP_BYTES },
 });
 
-const uploadAny = multer({ storage: multer.memoryStorage() });
+const uploadAny = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_MEDIA_UPLOAD_BYTES }
+});
 
 // ─── App middleware ────────────────────────────────────────────────────────────
 
@@ -604,7 +610,46 @@ app.post('/api/db/mutate', mutateLimiter, authMiddleware, async (req, res) => {
 
 // ─── POST /api/storage/upload ──────────────────────────────────────────────────
 
-app.post('/api/storage/upload', mediaUploadLimiter, authMiddleware, uploadAny.single('file'), async (req, res) => {
+app.post('/api/storage/presign-upload', mediaUploadLimiter, authMiddleware, async (req, res) => {
+  const { bucket = 'uploads', path, contentType = 'application/octet-stream', size = 0 } = req.body || {};
+  const fileSize = Number(size || 0);
+
+  if (!path) return res.status(400).json({ data: null, error: 'path is required' });
+  if (fileSize > MAX_MEDIA_UPLOAD_BYTES) {
+    return res.status(413).json({
+      data: null,
+      error: `Upload is too large. Max is ${Math.floor(MAX_MEDIA_UPLOAD_BYTES / (1024 * 1024))} MB.`
+    });
+  }
+
+  try {
+    const uploadUrl = await minioClient.presignedPutObject(bucket, path, DIRECT_UPLOAD_URL_TTL_SECONDS);
+    const url = `${MINIO_PROTOCOL}://${MINIO_ENDPOINT}:${MINIO_PORT}/${bucket}/${path}`;
+    return res.json({ data: { path, url, uploadUrl, contentType }, error: null });
+  } catch (err) {
+    console.error('Storage presign error:', err);
+    return res.status(500).json({ data: null, error: err.message });
+  }
+});
+
+function handleUploadMulterError(err, req, res, next) {
+  if (!err) return next();
+  if (err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({
+      data: null,
+      error: `Upload is too large. Max is ${Math.floor(MAX_MEDIA_UPLOAD_BYTES / (1024 * 1024))} MB.`
+    });
+  }
+  return res.status(400).json({ data: null, error: err.message || 'Upload failed.' });
+}
+
+function setUploadRequestTimeout(req, res, next) {
+  req.setTimeout(UPLOAD_REQUEST_TIMEOUT_MS);
+  res.setTimeout(UPLOAD_REQUEST_TIMEOUT_MS);
+  next();
+}
+
+app.post('/api/storage/upload', mediaUploadLimiter, authMiddleware, setUploadRequestTimeout, uploadAny.single('file'), handleUploadMulterError, async (req, res) => {
   if (!req.file) return res.status(400).json({ data: null, error: 'No file uploaded' });
 
   const bucket  = req.body.bucket || 'uploads';
@@ -966,6 +1011,8 @@ app.post('/api/admin/purge-deleted-posts', authLimiter, async (req, res) => {
 // ─── Start ─────────────────────────────────────────────────────────────────────
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Backend listening on port ${PORT}`);
 });
+server.requestTimeout = Math.max(server.requestTimeout || 0, UPLOAD_REQUEST_TIMEOUT_MS);
+server.headersTimeout = Math.max(server.headersTimeout || 0, UPLOAD_REQUEST_TIMEOUT_MS + 5000);

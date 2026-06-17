@@ -2,9 +2,10 @@ const API_BASE = (import.meta.env.VITE_API_URL || '').trim();
 const AUTH_PATH = '/api/auth';
 const RETRY_DELAY_MS = 1000;
 const MAX_RETRIES = 1;
-const UPLOAD_BASE_TIMEOUT_MS = 120000;
-const UPLOAD_TIMEOUT_PER_MB_MS = 5000;
-const UPLOAD_MAX_TIMEOUT_MS = 480000;
+const UPLOAD_BASE_TIMEOUT_MS = 180000;
+const UPLOAD_TIMEOUT_PER_MB_MS = 8000;
+const UPLOAD_MAX_TIMEOUT_MS = 900000;
+const DIRECT_UPLOAD_MIN_BYTES = 8 * 1024 * 1024;
 
 function truncateForDebug(value, max = 220) {
   if (!value) return '';
@@ -87,6 +88,62 @@ function getUploadTimeoutMs(file) {
     UPLOAD_MAX_TIMEOUT_MS,
     UPLOAD_BASE_TIMEOUT_MS + (fileMb * UPLOAD_TIMEOUT_PER_MB_MS)
   );
+}
+
+async function tryDirectStorageUpload({ token, fields = {}, file } = {}) {
+  if (!file || !fields.bucket || !fields.path || Number(file.size || 0) < DIRECT_UPLOAD_MIN_BYTES) {
+    return { skipped: true };
+  }
+
+  const presign = await apiFetch('/api/storage/presign-upload', {
+    method: 'POST',
+    token,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      bucket: fields.bucket,
+      path: fields.path,
+      contentType: file.type || 'application/octet-stream',
+      size: file.size || 0,
+      upsert: fields.upsert === 'true'
+    })
+  });
+
+  if (presign.error || !presign.data?.uploadUrl) {
+    return { skipped: true, error: presign.error };
+  }
+
+  try {
+    const res = await fetchWithTimeoutAndRetry(presign.data.uploadUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': file.type || 'application/octet-stream' },
+      body: file
+    }, getUploadTimeoutMs(file));
+
+    if (!res.ok) {
+      const rawText = await res.text().catch(() => '');
+      return {
+        skipped: true,
+        error: buildResponseDebugError({
+          path: '/api/storage/presign-upload',
+          status: res.status,
+          statusText: res.statusText,
+          contentType: res.headers.get('content-type') || '',
+          bodyPreview: rawText,
+          context: 'Direct upload'
+        })
+      };
+    }
+
+    return {
+      data: {
+        path: presign.data.path || fields.path,
+        url: presign.data.url || getPublicObjectUrl(fields.bucket, fields.path)
+      },
+      error: null
+    };
+  } catch (err) {
+    return { skipped: true, error: buildNetworkDebugError('/api/storage/presign-upload', err, 'Direct upload') };
+  }
 }
 
 async function fetchWithTimeoutAndRetry(url, options = {}, timeoutMs = 30000) {
@@ -226,6 +283,11 @@ export async function apiRequest(path, { method = 'GET', token, body } = {}, tim
 }
 
 export async function apiUpload(path, { token, fields = {}, file } = {}) {
+  if (path === '/api/storage/upload') {
+    const directResult = await tryDirectStorageUpload({ token, fields, file });
+    if (!directResult.skipped) return directResult;
+  }
+
   const formData = new FormData();
   for (const [key, value] of Object.entries(fields)) {
     formData.append(key, value);
