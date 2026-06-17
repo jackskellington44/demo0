@@ -1252,6 +1252,12 @@ body.world-maker-open #postCanvas .post-card {
   pointer-events: none;
 }
 
+body.custom-world-frame-active #postCanvas,
+body.custom-world-frame-active #categoryLayer {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 
 
 /* ============================================ */
@@ -4098,11 +4104,6 @@ body.profile-open.notif-open .world-loader-overlay {
   margin-top: 2px;
 }
 
-.world-loader-pfp-box.is-default-avatar {
-  background-color: var(--world-loader-font-color, var(--sys-fg));
-  color: var(--world-loader-system-bg-color, var(--sys-bg, #ffffff));
-}
-
 .world-loader-pfp {
   width: 100%;
   height: 100%;
@@ -4112,17 +4113,10 @@ body.profile-open.notif-open .world-loader-overlay {
   color: inherit;
 }
 
-.world-loader-pfp[data-default-avatar="1"] {
-  width: 84%;
-  height: 84%;
-  background: var(--world-loader-system-bg-color, var(--sys-bg, #ffffff)) !important;
-  background-color: var(--world-loader-system-bg-color, var(--sys-bg, #ffffff)) !important;
-  color: var(--world-loader-system-bg-color, var(--sys-bg, #ffffff)) !important;
-  border-radius: 0;
-  object-fit: contain;
-  object-position: center;
-  -webkit-mask: url('../toolbaricons/toolbaricons_profile_filled.svg') center / contain no-repeat;
-  mask: url('../toolbaricons/toolbaricons_profile_filled.svg') center / contain no-repeat;
+.world-loader-profile-icon {
+  width: 42px;
+  height: 42px;
+  color: inherit;
 }
 
 .world-loader-copy {

@@ -2,6 +2,9 @@ const API_BASE = (import.meta.env.VITE_API_URL || '').trim();
 const AUTH_PATH = '/api/auth';
 const RETRY_DELAY_MS = 1000;
 const MAX_RETRIES = 1;
+const UPLOAD_BASE_TIMEOUT_MS = 120000;
+const UPLOAD_TIMEOUT_PER_MB_MS = 5000;
+const UPLOAD_MAX_TIMEOUT_MS = 480000;
 
 function truncateForDebug(value, max = 220) {
   if (!value) return '';
@@ -75,6 +78,15 @@ function buildNetworkDebugError(path, err, context = 'API request') {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getUploadTimeoutMs(file) {
+  const fileSize = Number(file?.size || 0);
+  const fileMb = fileSize > 0 ? Math.ceil(fileSize / (1024 * 1024)) : 0;
+  return Math.min(
+    UPLOAD_MAX_TIMEOUT_MS,
+    UPLOAD_BASE_TIMEOUT_MS + (fileMb * UPLOAD_TIMEOUT_PER_MB_MS)
+  );
 }
 
 async function fetchWithTimeoutAndRetry(url, options = {}, timeoutMs = 30000) {
@@ -222,7 +234,11 @@ export async function apiUpload(path, { token, fields = {}, file } = {}) {
   const headers = {};
   if (token) headers['Authorization'] = 'Bearer ' + token;
   try {
-    const res = await fetch(`${API_BASE}${path}`, { method: 'POST', headers, body: formData });
+    const res = await fetchWithTimeoutAndRetry(`${API_BASE}${path}`, {
+      method: 'POST',
+      headers,
+      body: formData
+    }, getUploadTimeoutMs(file));
     const contentType = res.headers.get('content-type') || '';
     const rawText = await res.text();
     let json = {};

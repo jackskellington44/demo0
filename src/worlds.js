@@ -13,7 +13,6 @@ const DEFAULT_LOADER_TINT = '23, 27, 34';
 const DEFAULT_UI_COLOR = '#cfd8e3';
 const DEFAULT_WORLD_TITLE = 'untitled world';
 const DEFAULT_WORLD_DESCRIPTION = 'No description yet.';
-const TRANSPARENT_AVATAR_URL = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 const WORLD_BG_MAX_WIDTH = 2560;
 const WORLD_BG_MAX_HEIGHT = 1440;
 const WORLD_BG_TARGET_TYPE = 'image/webp';
@@ -32,6 +31,26 @@ const WORLD_UI_ASSET_MAX_JPEG_BYTES = 4 * 1024 * 1024;
 const WORLD_UI_ASSET_MAX_VIDEO_BYTES = 80 * 1024 * 1024;
 const WORLD_UI_ASSET_MAX_TOTAL_BYTES = 180 * 1024 * 1024;
 const PASSWORD_MASK_PLACEHOLDER = '#**^%**+!@*!+^%**+!*%';
+
+function getWorldPathSlug(world) {
+  const rawName = String(world?.name || '').trim();
+  const slug = rawName
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+  return slug || String(world?.id || '').trim();
+}
+
+function normalizeWorldPathSegment(value = '') {
+  return String(value || '')
+    .trim()
+    .replace(/^\/+|\/+$/g, '')
+    .toLowerCase();
+}
 
 const WORLD_COVER_ALLOWED_MIME_TYPES = new Set([
   'image/jpeg',
@@ -569,6 +588,7 @@ function getPfpSrc(user, baseUrl) {
   if (!user) return fallback;
   return user.pfp_url || (user.pfp ? `${baseUrl}images/pfps/${user.pfp}` : fallback);
 }
+
 function isDefaultPfpSrc(src = '') {
   return /(?:^|\/)images\/pfps\/default\.png(?:[?#].*)?$/i.test(String(src || '').trim());
 }
@@ -876,6 +896,7 @@ function createWorldsDom(baseUrl) {
         </div>
         <span class="world-loader-pfp-box" id="worldLoaderPfpBox" aria-hidden="true">
           <img class="world-loader-pfp" id="worldLoaderPfp" src="" alt="">
+          <span class="ui-icon icon-profile world-loader-profile-icon" id="worldLoaderProfileIcon" aria-hidden="true"></span>
         </span>
       </div>
 
@@ -977,6 +998,7 @@ function createWorldsDom(baseUrl) {
     loaderWash: host.querySelector('#worldLoaderWash'),
     loaderKicker: host.querySelector('#worldLoaderKicker'),
     loaderPfp: host.querySelector('#worldLoaderPfp'),
+    loaderProfileIcon: host.querySelector('#worldLoaderProfileIcon'),
     loaderTitle: host.querySelector('#worldLoaderTitle'),
     loaderMeta: host.querySelector('#worldLoaderMeta'),
     loaderDescription: host.querySelector('#worldLoaderDescription'),
@@ -1383,6 +1405,8 @@ export function initWorldsFeature(options) {
   let loadWorldsInFlightKey = '';
   let customWorldFrameSrc = '';
   let customWorldFrameLoadSeq = 0;
+  let customWorldFrameReadyPromise = Promise.resolve(false);
+  let resolveCustomWorldFrameReady = null;
   const customWorldFrameVersionById = new Map();
   let myWorldIds = [];
   let myWorldMap = new Map();
@@ -2490,23 +2514,27 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     }
   }
 
-  function setWorldUrl(worldId) {
-    const nextId = String(worldId || '').trim();
-    if (!nextId) return;
+  function setWorldUrl(world) {
+    const slug = getWorldPathSlug(world);
+    if (!slug) return;
     const current = new URL(window.location.href);
-    if (current.searchParams.get(WORLD_QUERY_PARAM) === nextId) return;
+    const currentSlug = normalizeWorldPathSegment(current.pathname);
+    if (currentSlug === slug && !current.searchParams.has(WORLD_QUERY_PARAM)) return;
 
     const next = new URL(window.location.href);
+    next.pathname = `/${encodeURIComponent(slug)}`;
     next.search = '';
-    next.searchParams.set(WORLD_QUERY_PARAM, nextId);
     window.history.replaceState(window.history.state, '', `${next.pathname}${next.search}${next.hash}`);
   }
 
   function clearWorldUrl() {
     const current = new URL(window.location.href);
-    if (!current.searchParams.has(WORLD_QUERY_PARAM)) return;
+    const hasWorldQuery = current.searchParams.has(WORLD_QUERY_PARAM);
+    const hasWorldPath = Boolean(normalizeWorldPathSegment(current.pathname));
+    if (!hasWorldQuery && !hasWorldPath) return;
 
     const next = new URL(window.location.href);
+    next.pathname = '/';
     next.search = '';
     window.history.replaceState(window.history.state, '', `${next.pathname}${next.hash}`);
   }
@@ -2986,11 +3014,40 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
   function hideCustomWorldFrame() {
     customWorldFrameSrc = '';
     customWorldFrameLoadSeq += 1;
+    document.body.classList.remove('custom-world-frame-active', 'custom-world-frame-loading');
     dom.modeFrame.style.display = 'none';
     dom.modeFrame.style.visibility = '';
     dom.modeFrame.removeAttribute('data-loading');
     dom.modeFrame.removeAttribute('srcdoc');
     dom.modeFrame.src = 'about:blank';
+    resolveCustomWorldFrameReady?.(false);
+    resolveCustomWorldFrameReady = null;
+    customWorldFrameReadyPromise = Promise.resolve(false);
+  }
+
+  function revealCustomWorldFrame(loadSeq = customWorldFrameLoadSeq, expectedSrc = customWorldFrameSrc) {
+    if (loadSeq !== customWorldFrameLoadSeq || expectedSrc !== customWorldFrameSrc) return;
+    if (!dom.modeFrame || dom.modeFrame.style.display === 'none') return;
+    dom.modeFrame.removeAttribute('data-loading');
+    dom.modeFrame.style.visibility = '';
+    document.body.classList.remove('custom-world-frame-loading');
+    document.body.classList.add('custom-world-frame-active');
+    resolveCustomWorldFrameReady?.(true);
+    resolveCustomWorldFrameReady = null;
+  }
+
+  function beginCustomWorldFrameLoad() {
+    resolveCustomWorldFrameReady?.(false);
+    customWorldFrameReadyPromise = new Promise((resolve) => {
+      resolveCustomWorldFrameReady = resolve;
+    });
+  }
+
+  async function waitForCustomWorldFrameReady(timeoutMs = 2500) {
+    const timeoutPromise = new Promise((resolve) => {
+      window.setTimeout(() => resolve(false), Math.max(0, Number(timeoutMs) || 0));
+    });
+    return Promise.race([customWorldFrameReadyPromise, timeoutPromise]);
   }
 
   async function loadCustomWorldFrameDocument(world, nextSrc, loadSeq) {
@@ -3009,6 +3066,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       dom.modeFrame.srcdoc = buildCustomWorldHtmlText(htmlText, cssText, {
         baseHref: getCustomWorldBaseHref(nextSrc)
       });
+      requestAnimationFrame(() => revealCustomWorldFrame(loadSeq, nextSrc));
     } catch (error) {
       console.warn('Custom world inline load failed, falling back to storage URL:', error?.message || error);
       if (loadSeq !== customWorldFrameLoadSeq || customWorldFrameSrc !== nextSrc) return;
@@ -3025,11 +3083,14 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     }
 
     dom.modeFrame.style.display = 'block';
+    document.body.classList.add('custom-world-frame-active');
     if (customWorldFrameSrc !== nextSrc) {
       customWorldFrameSrc = nextSrc;
       customWorldFrameLoadSeq += 1;
+      beginCustomWorldFrameLoad();
       dom.modeFrame.dataset.loading = 'true';
       dom.modeFrame.style.visibility = 'hidden';
+      document.body.classList.add('custom-world-frame-loading');
       dom.modeFrame.removeAttribute('srcdoc');
       dom.modeFrame.src = 'about:blank';
       void loadCustomWorldFrameDocument(world, nextSrc, customWorldFrameLoadSeq);
@@ -3647,14 +3708,16 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     }
     if (dom.loaderKicker) dom.loaderKicker.textContent = kicker;
     const pfpSrc = getPfpSrc(_creator, baseUrl);
+    const useProfileIcon = isDefaultPfpSrc(pfpSrc);
     if (dom.loaderPfp) {
-      const isDefaultPfp = isDefaultPfpSrc(pfpSrc);
-      dom.loaderPfp.parentElement?.classList.toggle('is-default-avatar', isDefaultPfp);
-      dom.loaderPfp.dataset.defaultAvatar = isDefaultPfp ? '1' : '0';
-      dom.loaderPfp.src = isDefaultPfp ? TRANSPARENT_AVATAR_URL : pfpSrc;
+      dom.loaderPfp.src = useProfileIcon ? '' : pfpSrc;
+      dom.loaderPfp.style.display = useProfileIcon ? 'none' : '';
       if (dom.loaderPfp.parentElement) {
         dom.loaderPfp.parentElement.style.display = pfpSrc ? '' : 'none';
       }
+    }
+    if (dom.loaderProfileIcon) {
+      dom.loaderProfileIcon.style.display = useProfileIcon ? '' : 'none';
     }
     if (dom.loaderTitle) dom.loaderTitle.textContent = nextTitle;
     if (dom.loaderMeta) {
@@ -3818,6 +3881,24 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     return data || null;
   }
 
+  async function loadWorldByPathSegment(pathSegment) {
+    const targetSlug = normalizeWorldPathSegment(pathSegment);
+    if (!targetSlug) return null;
+
+    const { data, error } = await supabase
+      .from('worlds')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(500);
+
+    if (error) {
+      console.error('Failed to load world path:', error);
+      return null;
+    }
+
+    return (data || []).find((world) => getWorldPathSlug(world) === targetSlug) || null;
+  }
+
   function getKnownWorldById(worldId) {
     const normalizedId = String(worldId || '').trim();
     if (!normalizedId) return null;
@@ -3867,6 +3948,16 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     setWorldLoaderProgress(20);
     const nextCreator = await resolveWorldCreator(nextWorld);
     await openWorldMode(nextWorld, nextCreator);
+  }
+
+  async function openWorldByPathSegment(pathSegment) {
+    const world = await loadWorldByPathSegment(pathSegment);
+    if (!world?.id) {
+      console.warn('No world found for path:', pathSegment);
+      return;
+    }
+
+    await openWorldById(world.id, { world });
   }
 
   function clearWorldModeChrome() {
@@ -4147,7 +4238,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
 
       await hydrateMyWorlds();
       await rememberWorld(world);
-      setWorldUrl(world.id);
+      setWorldUrl(world);
 
       populateWorldLoader(world, activeWorldCreator, {
         mode: 'loading',
@@ -4164,6 +4255,9 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         uiColor: getWorldAccent(world)
       });
     } finally {
+      if (activeWorld?.id && canUseCustomWorldFrame(activeWorld)) {
+        await waitForCustomWorldFrameReady();
+      }
       setWorldLoaderVisible(false);
     }
   }
@@ -4451,12 +4545,14 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     return assetFiles;
   }
 
-  async function uploadWorldUiAssets(worldId, files = []) {
+  async function uploadWorldUiAssets(worldId, files = [], options = {}) {
     const assetFiles = validateWorldUiAssetFiles(files);
     const uploaded = [];
 
-    for (const file of assetFiles) {
+    for (let index = 0; index < assetFiles.length; index += 1) {
+      const file = assetFiles[index];
       const storageName = getWorldUiAssetStorageName(file);
+      options.onUploadStart?.({ file, storageName, index, total: assetFiles.length });
       const url = await uploadWorldFile(worldId, `assets/${storageName}`, file);
       uploaded.push({
         name: storageName,
@@ -4469,6 +4565,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     }
 
     if (uploaded.length > 0) {
+      options.onManifestStart?.();
       const manifestFile = new File([
         JSON.stringify({ assets: uploaded }, null, 2)
       ], 'manifest.json', { type: 'application/json' });
@@ -4758,6 +4855,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       const bgFile = dom.plugBackground.files?.[0] || null;
       const coverFile = dom.plugCover.files?.[0] || null;
       if (bgFile) {
+        dom.plugPublish.textContent = 'uploading background...';
         const optimizedBgFile = await optimizeWorldBackgroundImage(bgFile);
         const backgroundUrl = await uploadWorldFile(
           nextWorld.id,
@@ -4777,6 +4875,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       }
 
       if (coverFile) {
+        dom.plugPublish.textContent = 'uploading cover...';
         const optimizedCoverFile = await optimizeWorldCoverImage(coverFile);
         const coverUrl = await uploadWorldFile(
           nextWorld.id,
@@ -4788,6 +4887,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       }
 
       if (resolvedPassword) {
+        dom.plugPublish.textContent = 'saving access...';
         await setWorldPassword(nextWorld.id, resolvedPassword);
         nextWorld = await loadWorldById(nextWorld.id) || nextWorld;
       }
@@ -4836,6 +4936,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     dom.codePublish.textContent = isEdit ? 'updating...' : 'publishing...';
 
     try {
+      dom.codePublish.textContent = isEdit ? 'saving world...' : 'creating world...';
       const assetFiles = validateWorldUiAssetFiles(dom.codeAssets?.files || []);
       const htmlTextForValidation = htmlFile ? await htmlFile.text() : '';
       const cssTextForValidation = cssFile ? await cssFile.text() : '';
@@ -4900,9 +5001,11 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         }
 
         if (cssFile) {
+          dom.codePublish.textContent = 'uploading css...';
           await uploadWorldFile(nextWorld.id, 'world.css', cssFile);
         }
 
+        dom.codePublish.textContent = 'uploading html...';
         customCodeUrl = await uploadWorldFile(
           nextWorld.id,
           'world.html',
@@ -4912,10 +5015,19 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       }
 
       if (assetFiles.length > 0) {
-        await uploadWorldUiAssets(nextWorld.id, assetFiles);
+        await uploadWorldUiAssets(nextWorld.id, assetFiles, {
+          onUploadStart: ({ file, index, total }) => {
+            const fileName = String(file?.name || 'asset').trim() || 'asset';
+            dom.codePublish.textContent = `uploading ${index + 1}/${total}: ${fileName}`;
+          },
+          onManifestStart: () => {
+            dom.codePublish.textContent = 'saving asset list...';
+          }
+        });
       }
 
       if (coverFile) {
+        dom.codePublish.textContent = 'uploading cover...';
         const optimizedCoverFile = await optimizeWorldCoverImage(coverFile);
         const coverUrl = await uploadWorldFile(
           nextWorld.id,
@@ -4927,6 +5039,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       }
 
       if (codeFilesChanged || customCodeUrl !== nextWorld.custom_code_url) {
+        dom.codePublish.textContent = 'saving code link...';
         const { data: updatedCode, error: updateCodeError } = await supabase
           .from('worlds')
           .update({ custom_code_url: customCodeUrl })
@@ -4939,6 +5052,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       }
 
       if (resolvedPassword) {
+        dom.codePublish.textContent = 'saving access...';
         await setWorldPassword(nextWorld.id, resolvedPassword);
         nextWorld = await loadWorldById(nextWorld.id) || nextWorld;
       }
@@ -5218,9 +5332,10 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     void handleCustomWorldBridgeMessage(event);
   });
   dom.modeFrame?.addEventListener('load', () => {
-    if (dom.modeFrame.src !== 'about:blank') {
-      dom.modeFrame.removeAttribute('data-loading');
-      dom.modeFrame.style.visibility = '';
+    const hasInlineDocument = dom.modeFrame.hasAttribute('srcdoc');
+    const isBlankNavigation = dom.modeFrame.src === 'about:blank' && !hasInlineDocument;
+    if (!isBlankNavigation) {
+      revealCustomWorldFrame();
     }
     void postCustomWorldBridgeReady();
   });
@@ -5411,6 +5526,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     isMakerOpen,
     isInWorldMode,
     openWorldById,
+    openWorldByPathSegment,
     ensureWorldEditAccess,
     optimizeExistingWorldBackgrounds,
     refreshActiveWorldChrome: async (nextWorld = null) => {
