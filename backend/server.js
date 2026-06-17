@@ -690,6 +690,42 @@ function normalizeWorldPasswordMode(mode = 'view') {
   return String(mode || 'view').toLowerCase() === 'edit' ? 'edit' : 'view';
 }
 
+const tableColumnCache = new Map();
+
+async function getTableColumns(tableName) {
+  const normalizedTable = String(tableName || '').trim();
+  if (!normalizedTable) return new Set();
+  if (tableColumnCache.has(normalizedTable)) return tableColumnCache.get(normalizedTable);
+
+  const result = await pool.query(
+    `SELECT column_name
+     FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = $1`,
+    [normalizedTable]
+  );
+  const columns = new Set((result.rows || []).map((row) => row.column_name));
+  tableColumnCache.set(normalizedTable, columns);
+  return columns;
+}
+
+async function hasColumns(tableName, columnNames = []) {
+  const columns = await getTableColumns(tableName);
+  return columnNames.every((columnName) => columns.has(columnName));
+}
+
+async function hasSplitWorldPasswordColumns() {
+  return hasColumns('worlds', [
+    'view_password_hash',
+    'edit_password_hash',
+    'view_password_updated_at',
+    'edit_password_updated_at'
+  ]);
+}
+
+async function hasSplitWorldAccessColumns() {
+  return hasColumns('world_access', ['view_unlocked_at', 'edit_unlocked_at']);
+}
+
 function getWorldPasswordHash(row, mode = 'view') {
   const normalizedMode = normalizeWorldPasswordMode(mode);
   if (normalizedMode === 'edit') {
@@ -700,8 +736,12 @@ function getWorldPasswordHash(row, mode = 'view') {
 
 async function verifyWorldPassword(worldId, password, mode = 'view') {
   const normalizedMode = normalizeWorldPasswordMode(mode);
+  const hasSplitColumns = await hasSplitWorldPasswordColumns();
+  const selectColumns = hasSplitColumns
+    ? 'password_hash, view_password_hash, edit_password_hash'
+    : 'password_hash';
   const result = await pool.query(
-    'SELECT password_hash, view_password_hash, edit_password_hash FROM public.worlds WHERE id = $1',
+    `SELECT ${selectColumns} FROM public.worlds WHERE id = $1`,
     [worldId]
   );
   const hash = getWorldPasswordHash(result.rows[0], normalizedMode);
@@ -714,13 +754,25 @@ async function grantWorldAccess(userId, worldId, password, mode = 'view') {
   const allowed = await verifyWorldPassword(worldId, password, normalizedMode);
   if (!allowed) return false;
 
-  const columnName = normalizedMode === 'edit' ? 'edit_unlocked_at' : 'view_unlocked_at';
+  if (await hasSplitWorldAccessColumns()) {
+    const columnName = normalizedMode === 'edit' ? 'edit_unlocked_at' : 'view_unlocked_at';
+
+    await pool.query(
+      `INSERT INTO public.world_access (user_id, world_id, unlocked_at, ${columnName})
+       VALUES ($1, $2, NOW(), NOW())
+       ON CONFLICT (user_id, world_id)
+       DO UPDATE SET unlocked_at = EXCLUDED.unlocked_at, ${columnName} = EXCLUDED.${columnName}`,
+      [userId, worldId]
+    );
+
+    return true;
+  }
 
   await pool.query(
-    `INSERT INTO public.world_access (user_id, world_id, unlocked_at, ${columnName})
-     VALUES ($1, $2, NOW(), NOW())
+    `INSERT INTO public.world_access (user_id, world_id, unlocked_at)
+     VALUES ($1, $2, NOW())
      ON CONFLICT (user_id, world_id)
-     DO UPDATE SET unlocked_at = EXCLUDED.unlocked_at, ${columnName} = EXCLUDED.${columnName}`,
+     DO UPDATE SET unlocked_at = EXCLUDED.unlocked_at`,
     [userId, worldId]
   );
 
@@ -742,6 +794,30 @@ async function setWorldPassword(userId, worldId, options = {}) {
     values.push(value);
     updates.push(sql.replace('?', `$${values.length}`));
   };
+
+  const hasSplitColumns = await hasSplitWorldPasswordColumns();
+
+  if (!hasSplitColumns) {
+    const legacyPassword = viewPassword || editPassword;
+    if (!viewIsPublic || !editIsPublic) {
+      if (!legacyPassword) return true;
+      pushUpdate('password_hash = ?', await bcrypt.hash(legacyPassword, BCRYPT_ROUNDS));
+    } else if (hasLegacyPassword || hasViewPassword || hasEditPassword) {
+      updates.push('password_hash = NULL');
+    }
+
+    if (!updates.length) return true;
+
+    values.push(worldId, userId);
+    const result = await pool.query(
+      `UPDATE public.worlds
+       SET ${updates.join(', ')}
+       WHERE id = $${values.length - 1} AND user_id = $${values.length}`,
+      values
+    );
+
+    return result.rowCount > 0;
+  }
 
   if (viewIsPublic) {
     updates.push('view_password_hash = NULL', 'view_password_updated_at = NOW()');
