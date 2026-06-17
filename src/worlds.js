@@ -4665,6 +4665,22 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     throw lastError || new Error('Failed to update world password.');
   }
 
+  function shouldUpdateWorldPassword(passwordOptions = {}, world = null) {
+    if (!passwordOptions) return false;
+
+    const viewIsPublic = passwordOptions.viewIsPublic !== false;
+    const editIsPublic = passwordOptions.editIsPublic !== false;
+    const viewPassword = String(passwordOptions.viewPassword || '').trim();
+    const editPassword = String(passwordOptions.editPassword || '').trim();
+
+    if (!viewIsPublic && viewPassword) return true;
+    if (!editIsPublic && editPassword) return true;
+    if (viewIsPublic && hasWorldPassword(world, 'view')) return true;
+    if (editIsPublic && hasWorldPassword(world, 'edit')) return true;
+
+    return false;
+  }
+
   function readBridgeBoolean(value, fallback = true) {
     if (typeof value === 'boolean') return value;
     if (typeof value === 'string') {
@@ -4886,7 +4902,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         nextWorld = await updateWorldCoverAsset(nextWorld.id, currentUser.id, coverUrl);
       }
 
-      if (resolvedPassword) {
+      if (shouldUpdateWorldPassword(resolvedPassword, isEdit ? makerEditingWorld : null)) {
         dom.plugPublish.textContent = 'saving access...';
         await setWorldPassword(nextWorld.id, resolvedPassword);
         nextWorld = await loadWorldById(nextWorld.id) || nextWorld;
@@ -5051,7 +5067,7 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         nextWorld = updatedCode;
       }
 
-      if (resolvedPassword) {
+      if (shouldUpdateWorldPassword(resolvedPassword, isEdit ? makerEditingWorld : null)) {
         dom.codePublish.textContent = 'saving access...';
         await setWorldPassword(nextWorld.id, resolvedPassword);
         nextWorld = await loadWorldById(nextWorld.id) || nextWorld;
