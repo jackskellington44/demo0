@@ -4026,12 +4026,6 @@ body.app-edit-mode .world-mode-chrome {
   pointer-events: auto;
 }
 
-.world-mode-description {
-  color: color-mix(in srgb, var(--world-mode-font-color, currentColor) 72%, transparent);
-  line-height: 1.35;
-  font-size: 0.72rem;
-}
-
 .world-mode-frame {
   position: absolute;
   top: 44px;
@@ -4158,17 +4152,6 @@ body.profile-open.notif-open .world-loader-overlay {
   text-align: right;
   max-width: 100%;
   order: 1;
-}
-
-.world-loader-description {
-  display: none;
-  margin: 0;
-  color: color-mix(in srgb, var(--world-loader-font-color, var(--sys-fg)) 82%, transparent);
-  font-size: 0.92rem;
-  line-height: 1.5;
-  text-align: right;
-  max-width: 40ch;
-  order: 3;
 }
 
 .world-loader-status {
@@ -4346,11 +4329,6 @@ body.profile-open.notif-open .world-loader-overlay {
 
   .world-loader-title {
     font-size: clamp(1.5rem, 7.8vw, 2.3rem);
-  }
-
-  .world-loader-description {
-    max-width: min(86vw, 28ch);
-    font-size: 0.84rem;
   }
 
   .world-loader-status {

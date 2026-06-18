@@ -12,7 +12,6 @@ const MAIN_WORLD_USERNAME = 'cu!>.<later';
 const DEFAULT_LOADER_TINT = '23, 27, 34';
 const DEFAULT_UI_COLOR = '#cfd8e3';
 const DEFAULT_WORLD_TITLE = 'untitled world';
-const DEFAULT_WORLD_DESCRIPTION = 'No description yet.';
 const WORLD_BG_MAX_WIDTH = 2560;
 const WORLD_BG_MAX_HEIGHT = 1440;
 const WORLD_BG_TARGET_TYPE = 'image/webp';
@@ -887,7 +886,6 @@ function createWorldsDom(baseUrl) {
         <div class="world-loader-kicker" id="worldLoaderKicker">world</div>
         <h2 class="world-loader-title" id="worldLoaderTitle">untitled world</h2>
         <div class="world-loader-meta" id="worldLoaderMeta">by unknown</div>
-        <p class="world-loader-description" id="worldLoaderDescription">No description yet.</p>
         <div class="world-loader-status" id="worldLoaderStatusWrap">
           <div class="world-loader-progress" aria-hidden="true">
             <span class="world-loader-progress-bar"></span>
@@ -920,7 +918,7 @@ function createWorldsDom(baseUrl) {
     plugFont: host.querySelector('#worldPlugFont'),
     plugBackgroundColor: host.querySelector('#worldPlugBackgroundColor'),
     plugFontColor: host.querySelector('#worldPlugFontColor'),
-    plugDescription: host.querySelector('#worldPlugDescription'),    plugCategoryHidden: host.querySelector('#worldPlugCategory'),
+    plugCategoryHidden: host.querySelector('#worldPlugCategory'),
     plugCategoryDisplay: host.querySelector('#worldPlugCategoryDisplay'),
     plugCategoryDisplayText: host.querySelector('#worldPlugCategoryDisplayText'),
     plugCategoryDropdownToggle: host.querySelector('#worldPlugCategoryDropdownToggle'),
@@ -990,8 +988,6 @@ function createWorldsDom(baseUrl) {
     modeDelete: host.querySelector('#worldModeDelete'),
     modeIdentityPanel: host.querySelector('.world-mode-identity-panel'),
     titleCard: host.querySelector('#worldModeTitleCard'),
-    modeDescription: host.querySelector('#worldModeDescription'),
-    modeDescription: host.querySelector('#worldModeDescription'),
     modeFrame: host.querySelector('#worldModeFrame'),
     loaderOverlay: host.querySelector('#worldLoaderOverlay'),
     loaderBackdrop: host.querySelector('#worldLoaderBackdrop'),
@@ -1001,7 +997,6 @@ function createWorldsDom(baseUrl) {
     loaderProfileIcon: host.querySelector('#worldLoaderProfileIcon'),
     loaderTitle: host.querySelector('#worldLoaderTitle'),
     loaderMeta: host.querySelector('#worldLoaderMeta'),
-    loaderDescription: host.querySelector('#worldLoaderDescription'),
     loaderStatusWrap: host.querySelector('#worldLoaderStatusWrap'),
     loaderStatus: host.querySelector('#worldLoaderStatus'),
     loaderCoverShell: host.querySelector('#worldLoaderCoverShell'),
@@ -1185,13 +1180,10 @@ async function buildTemplateZip() {
     newWorldBtn.addEventListener('click', async function () {
       var name = window.prompt('world name', '');
       if (name == null) return;
-      var description = window.prompt('world description', '');
-      if (description == null) return;
       try {
         await window.WorldSDK.worlds.create({
           type: 'plug',
           name: name,
-          description: description,
           visibility: 'public',
           editing: 'public'
         });
@@ -1329,7 +1321,7 @@ body {
   - WorldSDK.comments.list(postId)
   - WorldSDK.comments.create(postId, body)
   - WorldSDK.worlds.list()
-  - WorldSDK.worlds.create({ type, name, description, category, visibility, editing, viewPassword, editPassword, html, css, assets, cover })
+  - WorldSDK.worlds.create({ type, name, category, visibility, editing, viewPassword, editPassword, html, css, assets, cover })
   - WorldSDK.worlds.open(worldId)
   - WorldSDK.worlds.openMaker() for the native full world maker
   - WorldSDK.categories.list()
@@ -1437,7 +1429,6 @@ export function initWorldsFeature(options) {
       user_id: world.user_id || null,
       parent_world_id: world.parent_world_id || null,
       name: world.name || '',
-      description: world.description || '',
       category: world.category || null,
       background_url: world.background_url || null,
       cover_url: world.cover_url || null,
@@ -2719,7 +2710,6 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
             kicker: 'main',
             title: MAIN_WORLD_LABEL,
             meta: MAIN_WORLD_USERNAME,
-            description: 'Loading the main canvas and bringing everything back into view.',
             status: 'loading main...',
             backgroundUrl: getDefaultBackgroundUrl(baseUrl),
             coverUrl: getDefaultBackgroundUrl(baseUrl),
@@ -3680,13 +3670,11 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       status = 'loading world...',
       progress = 0,
       title,
-      meta,
-      description
+      meta
     } = options;
 
     const nextTitle = title ?? world?.name ?? DEFAULT_WORLD_TITLE;
     const nextMeta = meta ?? (_creator?.username || (nextTitle === MAIN_WORLD_LABEL ? MAIN_WORLD_USERNAME : ''));
-    const nextDescription = description ?? '';
     if (dom.loaderOverlay) dom.loaderOverlay.dataset.mode = mode;
     if (dom.loaderOverlay) {
       dom.loaderOverlay.style.removeProperty('--world-loader-font-family');
@@ -3723,10 +3711,6 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     if (dom.loaderMeta) {
       dom.loaderMeta.textContent = nextMeta;
       dom.loaderMeta.style.display = nextMeta ? '' : 'none';
-    }
-    if (dom.loaderDescription) {
-      dom.loaderDescription.textContent = nextDescription;
-      dom.loaderDescription.style.display = 'none';
     }
     if (dom.loaderStatus) dom.loaderStatus.textContent = status;
     setWorldLoaderProgress(progress);
@@ -3927,7 +3911,6 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
         mode: 'loading',
         kicker: 'world',
         title: loaderWorld.name || DEFAULT_WORLD_TITLE,
-        description: loaderWorld.description || DEFAULT_WORLD_DESCRIPTION,
         backgroundUrl: loaderWorld.background_url || getDefaultBackgroundUrl(baseUrl),
         coverUrl: getWorldCardCoverUrl(loaderWorld, baseUrl),
         showCover: true,
@@ -4280,7 +4263,6 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       kicker: 'main',
       title: '4thworld',
       meta: MAIN_WORLD_USERNAME,
-      description: '',
       status: 'loading main...',
       backgroundUrl: getDefaultBackgroundUrl(baseUrl),
       coverUrl: getDefaultBackgroundUrl(baseUrl),
@@ -4705,7 +4687,6 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
     const name = String(params?.name || '').trim().slice(0, 80);
     if (!name) throw new Error('World name is required.');
 
-    const description = String(params?.description || '').trim().slice(0, 500);
     const html = String(params?.html || '').trim();
     const css = String(params?.css || '').trim();
     const type = String(params?.type || (html ? 'code' : 'plug')).trim().toLowerCase();
@@ -4735,7 +4716,6 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       .from('worlds')
       .insert([{
         name,
-        description: description || '',
         category,
         font_family: fontFamily,
         font_color: fontColor,
@@ -4962,7 +4942,6 @@ Delete contained worlds to remove the full subtree, or move only the direct chil
       const styleDraft = readMakerStyle('code');
       const draft = {
         name,
-        description: '',
         category: String(dom.codeCategoryHidden?.value || '').trim() || null,
         ...styleDraft,
         is_public_view: dom.codeVisibility.value !== 'false',

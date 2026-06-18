@@ -7201,7 +7201,7 @@ async function openProfileModal(userId) {
   ] = await Promise.all([
     supabase
       .from('worlds')
-      .select('id, user_id, name, description, category, background_url, font_family, font_color, ui_color, background_color, is_public_view, is_public_edit')
+      .select('id, user_id, name, category, background_url, font_family, font_color, ui_color, background_color, is_public_view, is_public_edit')
       .eq('user_id', userId)
       .eq('group_id', 'group0')
       .order('created_at', { ascending: false }),
@@ -7253,7 +7253,7 @@ async function openProfileModal(userId) {
       if (!sameWorld) {
         const { data: worldRow, error: worldError } = await supabase
           .from('worlds')
-          .select('id, user_id, name, description, category, background_url, custom_code_url, font_family, font_color, ui_color, background_color, is_public_view, is_public_edit')
+          .select('id, user_id, name, category, background_url, custom_code_url, font_family, font_color, ui_color, background_color, is_public_view, is_public_edit')
           .eq('id', fullPost.world_id)
           .maybeSingle();
 
@@ -7317,7 +7317,7 @@ async function openProfileModal(userId) {
     }
 
     visibleWorlds.forEach((world) => {
-      const label = world.name || world.description?.slice(0, 60) || world.category || 'untitled world';
+      const label = world.name || world.category || 'untitled world';
       const worldPosts = visibleWorldPosts.filter((p) => String(p.world_id) === String(world.id));
 
       const worldItem = document.createElement('div');

@@ -83,6 +83,41 @@
     box-sizing: border-box;
 }
 
+html,
+body {
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+input,
+textarea,
+select,
+[contenteditable="true"],
+.post-form-text,
+.post-form-category-edit-input,
+.music-link-inline-input,
+.music-rename-input,
+.settings-color-hex,
+.profile-edit-input,
+.profile-username-input,
+#postDetailContent,
+#postDetailContent .post-body,
+#postDetailContent .post-body-formatted,
+.comment-body {
+    -webkit-user-select: text;
+    user-select: text;
+}
+
+img,
+svg,
+.ui-icon,
+button,
+[role="button"] {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-user-drag: none;
+}
+
 body {
     font-family: var(--sys-font, var(--font-family));
     overflow: hidden;
